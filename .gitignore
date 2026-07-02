@@ -1,4 +1,5 @@
 agent/auth.json
+agent/sessions
 
 package-lock.json
 
