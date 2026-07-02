@@ -1,357 +1,253 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 
-import { ApprovalCoordinator } from "./approval-coordinator.js";
-import { AuditLogger } from "./audit-logger.js";
-import { defaultAgentDir, defaultProjectPolicyPath, PolicyLoader } from "./policy-loader.js";
-import { PolicyResolver } from "./policy-resolver.js";
-import { accessTouchesProtectedResource } from "./protected-resources.js";
-import { accessFingerprintShape, stableFingerprint } from "./request-fingerprint.js";
-import { ResourceResolver } from "./resource-resolver.js";
-import { SessionGrantStore } from "./session-grants.js";
+import { ApprovalCoordinator } from "./approval.js";
+import { AuditLogger, sanitizeResource } from "./audit.js";
+import { builtinFileToolDescriptors, genericToolDescriptor } from "./file-tool-descriptors.js";
+import { FileResolver } from "./file-resolver.js";
+import { evaluateHardProtections } from "./hard-protections.js";
+import { LeaseStore, PersistentGrantStore, resourcesUnchanged, SessionGrantStore } from "./grants.js";
+import { evaluatePolicy, PolicyStore } from "./policy.js";
+import { PermissionSubjectRegistry } from "./subject-registry.js";
 import type {
-	PermissionAccess,
-	PermissionAction,
-	PermissionAuditEntry,
+	AuthorizationRequest,
+	AuthorizationResult,
+	CompiledDecision,
 	PermissionErrorCode,
-	PermissionMode,
 	PermissionPromptContext,
-	PermissionRequest,
+	PermissionResource,
 	PermissionServiceStatus,
-	PolicyEvaluation,
-	UserPermissionDecision,
+	PermissionSubjectDescriptor,
+	PolicySnapshot,
 } from "./permission-types.js";
-import { isWriteAction } from "./permission-types.js";
-import { identityEquals } from "./path-utils.js";
 
 export interface PermissionServiceOptions {
 	workspaceRoot: string;
-	agentDir?: string;
+	agentDir: string;
+	projectTrusted: boolean;
 	globalPolicyPath?: string;
 	projectPolicyPath?: string;
-	projectTrusted?: boolean;
-	mode?: PermissionMode;
-	promptTimeoutMs?: number;
 	auditLogPath?: string;
-	auditEnabled?: boolean;
-	extraSensitivePaths?: string[];
-	extraProtectedPaths?: string[];
-	approvalCoordinator?: ApprovalCoordinator;
-	sessionGrants?: SessionGrantStore;
+	persistentGrantPath?: string;
+	sessionId?: string;
 }
 
 export interface AuthorizeInput {
 	toolCallId: string;
 	toolName: string;
-	accesses: PermissionAccess[];
-	normalizedToolInput: unknown;
-	risk?: PermissionRequest["risk"];
-	promptContext: PermissionPromptContext;
-}
-
-/** 非路径工具的运行时授权输入；路径工具仍应传入真实 PermissionAccess。 */
-export interface AuthorizeToolCallInput {
-	toolCallId: string;
-	toolName: string;
 	normalizedToolInput: unknown;
 	promptContext: PermissionPromptContext;
+	consumeLease?: boolean;
 }
 
-export type PermissionAuthorizeResult =
-	| { ok: true; request: PermissionRequest; evaluation: PolicyEvaluation }
-	| { ok: false; code: PermissionErrorCode; message: string; request?: PermissionRequest; resources: Array<{ action: PermissionAction; path: string }> };
-
-/** 工具层统一入口：路径解析后在这里完成策略、grant、UI、审计和重试去重。 */
+/** 单一授权入口：策略、hard protection、grant、UI、lease 和审计都在这里完成。 */
 export class PermissionService {
-	private readonly grants: SessionGrantStore;
-	private readonly coordinator: ApprovalCoordinator;
+	private readonly registry = new PermissionSubjectRegistry();
+	private readonly policies: PolicyStore;
+	private readonly leases = new LeaseStore();
+	private readonly sessionGrants = new SessionGrantStore();
+	private readonly persistentGrants: PersistentGrantStore;
+	private readonly approval = new ApprovalCoordinator();
 	private readonly audit: AuditLogger;
-	private readonly loader: PolicyLoader;
 	private readonly recentErrors: string[] = [];
-	private readonly deniedFingerprints = new Set<string>();
-	private mode: PermissionMode;
-	private modeOverridden: boolean;
-	private lastStatus: PermissionServiceStatus | undefined;
+	private profileOverride: PolicySnapshot["profile"] | undefined;
+	private maintenance = false;
 
 	constructor(private readonly options: PermissionServiceOptions) {
-		const agentDir = options.agentDir ?? defaultAgentDir();
-		this.mode = options.mode ?? "safe";
-		this.modeOverridden = options.mode !== undefined;
-		this.grants = options.sessionGrants ?? new SessionGrantStore();
-		this.coordinator = options.approvalCoordinator ?? new ApprovalCoordinator();
+		for (const descriptor of builtinFileToolDescriptors()) this.registry.register(descriptor);
+		this.policies = new PolicyStore(options);
+		this.persistentGrants = new PersistentGrantStore(options.persistentGrantPath ?? path.join(options.agentDir, "permission-state", "grants.json"));
 		this.audit = new AuditLogger({
-			enabled: options.auditEnabled ?? false,
-			...(options.auditLogPath !== undefined ? { path: options.auditLogPath } : {}),
-		});
-		this.loader = new PolicyLoader({
-			...(options.globalPolicyPath !== undefined ? { globalPolicyPath: options.globalPolicyPath } : {}),
-			projectPolicyPath: options.projectPolicyPath ?? defaultProjectPolicyPath(options.workspaceRoot),
-			projectTrusted: options.projectTrusted ?? false,
-		});
-		this.options = { ...options, agentDir };
-	}
-
-	get resourceResolver(): ResourceResolver {
-		return new ResourceResolver({
-			workspaceRoot: this.options.workspaceRoot,
-			...(this.options.agentDir !== undefined ? { agentDir: this.options.agentDir } : {}),
-			...(this.options.extraSensitivePaths !== undefined ? { extraSensitivePaths: this.options.extraSensitivePaths } : {}),
+			path: options.auditLogPath ?? path.join(options.agentDir, "permission-state", "audit.jsonl"),
+			enabled: true,
 		});
 	}
 
-	getMode(): PermissionMode {
-		return this.mode;
+	get fileResolver(): FileResolver {
+		return new FileResolver({ workspaceRoot: this.options.workspaceRoot, agentDir: this.options.agentDir });
 	}
 
-	setMode(mode: PermissionMode): void {
-		this.mode = mode;
-		this.modeOverridden = true;
+	registerSubject(descriptor: PermissionSubjectDescriptor): void {
+		this.registry.register(descriptor);
 	}
 
-	getGrants(): SessionGrantStore {
-		return this.grants;
+	getRegistry(): PermissionSubjectRegistry {
+		return this.registry;
+	}
+
+	getSessionGrants(): SessionGrantStore {
+		return this.sessionGrants;
+	}
+
+	getPersistentGrants(): PersistentGrantStore {
+		return this.persistentGrants;
 	}
 
 	async status(): Promise<PermissionServiceStatus> {
-		const loaded = await this.loader.load();
-		this.applyConfiguredMode(loaded.global);
-		const status: PermissionServiceStatus = {
-			mode: this.mode,
-			globalPolicy: loaded.global,
-			projectPolicy: loaded.project,
-			projectTrusted: this.options.projectTrusted ?? false,
-			policyGeneration: loaded.generation,
-			sessionGrantCount: this.grants.count(),
-			recentErrors: [...this.recentErrors],
+		const snapshot = await this.snapshot();
+		await this.persistentGrants.load();
+		return {
+			profile: snapshot.profile,
+			globalPolicy: snapshot.global,
+			projectPolicy: snapshot.project,
+			projectTrusted: this.options.projectTrusted,
+			policyGeneration: snapshot.generation,
+			registryGeneration: this.registry.generation,
+			sessionGrantCount: this.sessionGrants.count(),
+			persistentGrantCount: this.persistentGrants.count(),
+			maintenance: this.maintenance,
 			auditEnabled: this.audit.isEnabled(),
+			recentErrors: [...this.recentErrors],
 		};
-		this.lastStatus = status;
-		return status;
 	}
 
-	async explain(access: PermissionAccess, toolName: string): Promise<PolicyEvaluation> {
-		const loaded = await this.loader.load();
-		this.applyConfiguredMode(loaded.global);
-		return new PolicyResolver({
+	setProfile(profile: PolicySnapshot["profile"]): void {
+		this.profileOverride = profile;
+	}
+
+	setMaintenance(enabled: boolean): void {
+		this.maintenance = enabled;
+	}
+
+	async authorizeToolCall(input: AuthorizeInput): Promise<AuthorizationResult> {
+		return await this.authorize(input);
+	}
+
+	async authorize(input: AuthorizeInput): Promise<AuthorizationResult> {
+		const snapshot = await this.snapshot();
+		const subject = this.registry.resolve("tool", input.toolName) ?? genericToolDescriptor(input.toolName);
+		if (this.registry.getById(subject.id) === undefined) this.registry.register(subject);
+		let request: AuthorizationRequest | undefined;
+		try {
+			const analysisContext = {
+				workspaceRoot: this.options.workspaceRoot,
+				agentDir: this.options.agentDir,
+				...(input.promptContext.signal !== undefined ? { signal: input.promptContext.signal } : {}),
+			};
+			const intent = await subject.analyze(input.normalizedToolInput, analysisContext);
+			request = {
+				requestId: `perm_${randomUUID()}`,
+				toolCallId: input.toolCallId,
+				subject,
+				inputFingerprint: stableFingerprint({ toolName: input.toolName, input: input.normalizedToolInput, policyGeneration: snapshot.generation, resources: intent.resources }),
+				operations: intent.operations,
+				resources: intent.resources,
+				summary: intent.summary,
+				policyGeneration: snapshot.generation,
+			};
+			if (intent.details !== undefined) request.details = intent.details;
+		} catch (error) {
+			await this.auditFailureForUnknown(input, snapshot, "PERMISSION_ANALYSIS_FAILED");
+			return this.denied("PERMISSION_ANALYSIS_FAILED", error instanceof Error ? error.message : String(error));
+		}
+		if (request === undefined) return this.denied("PERMISSION_INTERNAL_ERROR", "Permission request was not created.");
+
+		const existingLease = this.leases.find(request);
+		if (existingLease !== undefined) {
+			if (input.consumeLease) this.leases.consume(existingLease);
+			const decision = allowDecision("session-grant", "Matched authorization lease.", [existingLease.id]);
+			await this.auditDecision(request, decision, "allowed", existingLease.id);
+			return { allowed: true, lease: existingLease, decision, request };
+		}
+
+		const hard = evaluateHardProtections(request.resources, {
 			workspaceRoot: this.options.workspaceRoot,
-			global: loaded.global,
-			project: loaded.project,
-			mode: this.mode,
-			explain: true,
-		}).evaluate(access, toolName);
-	}
-
-	async explainTool(toolName: string): Promise<PolicyEvaluation> {
-		const loaded = await this.loader.load();
-		this.applyConfiguredMode(loaded.global);
-		return new PolicyResolver({
-			workspaceRoot: this.options.workspaceRoot,
-			global: loaded.global,
-			project: loaded.project,
-			mode: this.mode,
-			explain: true,
-		}).evaluateTool(toolName);
-	}
-
-	async authorizeToolCall(input: AuthorizeToolCallInput): Promise<PermissionAuthorizeResult> {
-		const loaded = await this.loader.load();
-		this.applyConfiguredMode(loaded.global);
-		const fingerprint = stableFingerprint({
-			toolName: input.toolName,
-			normalizedToolInput: input.normalizedToolInput,
-			accesses: [],
-			policyGeneration: loaded.generation,
+			agentDir: this.options.agentDir,
+			homeDir: os.homedir(),
 		});
-		const request: PermissionRequest = {
-			requestId: `perm_${randomUUID()}`,
-			toolCallId: input.toolCallId,
-			toolName: input.toolName,
-			accesses: [],
-			risk: "low",
-			normalizedInputFingerprint: fingerprint,
-			policyGeneration: loaded.generation,
-			normalizedToolInput: input.normalizedToolInput,
-		};
-
-		if (this.deniedFingerprints.has(fingerprint)) {
-			await this.auditDecision(request, "ask", "denied", "user", "PERMISSION_DENIED_BY_USER");
-			return this.denied("PERMISSION_DENIED_BY_USER", "The user denied this operation. Do not retry the identical request.", [], request);
+		if (hard.denied) {
+			const decision = denyDecision("hard-protection", hard.reason ?? "Resource is protected.", hard.ruleId);
+			await this.auditDecision(request, decision, "denied", undefined, "PERMISSION_HARD_DENIED");
+			return this.denied("PERMISSION_HARD_DENIED", `Permission denied for ${input.toolName}: ${hard.reason ?? "protected resource"}.`, request, decision);
 		}
 
-		const evaluation = new PolicyResolver({
-			workspaceRoot: this.options.workspaceRoot,
-			global: loaded.global,
-			project: loaded.project,
-			mode: this.mode,
-		}).evaluateTool(input.toolName);
-
-		if (evaluation.effect === "deny") {
-			await this.auditDecision(request, evaluation.effect, "denied", auditSource(evaluation), "PERMISSION_DENIED");
-			return this.denied("PERMISSION_DENIED", evaluation.reason, [], request);
+		let decision = evaluatePolicy({ snapshot, subject, resources: request.resources, operations: request.operations });
+		if (decision.finalEffect === "deny") {
+			await this.auditDecision(request, decision, "denied", undefined, decision.effect === "policy-error" ? "PERMISSION_POLICY_INVALID" : "PERMISSION_DENIED");
+			return this.denied(decision.effect === "policy-error" ? "PERMISSION_POLICY_INVALID" : "PERMISSION_DENIED", decision.trace.at(-1)?.message ?? "Permission denied.", request, decision);
 		}
-		if (evaluation.effect === "allow") {
-			await this.auditDecision(request, evaluation.effect, "allowed", auditSource(evaluation));
-			return { ok: true, request, evaluation };
+
+		await this.persistentGrants.load();
+		if (decision.finalEffect === "ask") {
+			const persistent = this.persistentGrants.find(request);
+			if (persistent.length > 0) decision = allowDecision("persistent-grant", "Matched persistent grant.", persistent.map((grant) => grant.id));
+		}
+		if (decision.finalEffect === "ask") {
+			const session = this.sessionGrants.find(request);
+			if (session.length > 0) decision = allowDecision("session-grant", "Matched session grant.", session.map((grant) => grant.id));
+		}
+		if (decision.finalEffect === "allow") {
+			const lease = this.leases.add(request);
+			if (input.consumeLease) this.leases.consume(lease);
+			await this.auditDecision(request, decision, "allowed", lease.id);
+			return { allowed: true, lease, decision, request };
 		}
 		if (!input.promptContext.hasUI) {
-			await this.auditDecision(request, evaluation.effect, "denied", "no-ui", "PERMISSION_PROMPT_UNAVAILABLE");
-			return this.denied("PERMISSION_PROMPT_UNAVAILABLE", "Permission prompt is unavailable; ask defaults to deny.", [], request);
+			const noUi = denyDecision("no-ui", "Permission prompt is unavailable; ask defaults to deny.");
+			await this.auditDecision(request, noUi, "denied", undefined, "PERMISSION_PROMPT_UNAVAILABLE");
+			return this.denied("PERMISSION_PROMPT_UNAVAILABLE", "Permission prompt is unavailable; ask defaults to deny.", request, noUi);
 		}
-
-		const decision = await this.coordinator.request(request, evaluation, input.promptContext);
-		if (decision.decision === "deny") {
-			this.deniedFingerprints.add(fingerprint);
-			await this.auditDecision(request, evaluation.effect, "denied", "user", "PERMISSION_DENIED_BY_USER");
-			return this.denied("PERMISSION_DENIED_BY_USER", "The user denied this operation.", [], request);
+		const approval = await this.approval.request(request, decision, input.promptContext);
+		if (!approval.ok) {
+			const code = approval.reason === "timeout" ? "PERMISSION_PROMPT_TIMEOUT" : approval.reason === "cancelled" ? "PERMISSION_PROMPT_CANCELLED" : "PERMISSION_INTERNAL_ERROR";
+			const denied = denyDecision(approval.reason === "timeout" ? "no-ui" : "user", `Permission prompt ${approval.reason}.`);
+			await this.auditDecision(request, denied, "denied", undefined, code);
+			return this.denied(code, `Permission prompt ${approval.reason}.`, request, denied);
 		}
-		await this.auditDecision(request, evaluation.effect, "allowed", "user");
-		return { ok: true, request, evaluation: { ...evaluation, effect: "allow", reason: `User decision: ${decision.decision}.` } };
+		if (approval.decision.decision === "deny") {
+			const denied = denyDecision("user", "User denied this operation.");
+			await this.auditDecision(request, denied, "denied", undefined, "PERMISSION_DENIED");
+			return this.denied("PERMISSION_DENIED", "The user denied this operation. Do not retry the identical request.", request, denied);
+		}
+		if (approval.decision.decision === "allow-session-exact") this.sessionGrants.add(request, "exact");
+		if (approval.decision.decision === "allow-session-subtree") this.sessionGrants.add(request, "subtree");
+		if (approval.decision.decision === "always-allow") await this.persistentGrants.add(request, "subtree");
+		const lease = this.leases.add(request);
+		if (input.consumeLease) this.leases.consume(lease);
+		const userDecision = allowDecision("user", `User decision: ${approval.decision.decision}.`, [lease.id]);
+		await this.auditDecision(request, userDecision, "allowed", lease.id);
+		return { allowed: true, lease, decision: userDecision, request };
 	}
 
-	async authorize(input: AuthorizeInput): Promise<PermissionAuthorizeResult> {
-		if (input.accesses.some((access) => isWriteAction(access.action) && accessTouchesProtectedResource(access, this.options))) {
-			return this.denied("PERMISSION_PROTECTED_RESOURCE", "Protected permission or Pi metadata cannot be modified by edit.", input.accesses);
-		}
-
-		const loaded = await this.loader.load();
-		this.applyConfiguredMode(loaded.global);
-		const fingerprint = stableFingerprint({
-			toolName: input.toolName,
-			normalizedToolInput: input.normalizedToolInput,
-			accesses: accessFingerprintShape(input.accesses),
-			policyGeneration: loaded.generation,
-		});
-		const request: PermissionRequest = {
-			requestId: `perm_${randomUUID()}`,
-			toolCallId: input.toolCallId,
-			toolName: input.toolName,
-			accesses: input.accesses,
-			risk: input.risk ?? riskForAccesses(input.accesses),
-			normalizedInputFingerprint: fingerprint,
-			policyGeneration: loaded.generation,
-			normalizedToolInput: input.normalizedToolInput,
-		};
-
-		if (this.deniedFingerprints.has(fingerprint)) {
-			await this.auditDecision(request, "ask", "denied", "user", "PERMISSION_DENIED_BY_USER");
-			return this.denied("PERMISSION_DENIED_BY_USER", "The user denied this operation. Do not retry the identical request.", input.accesses, request);
-		}
-
-		const resolver = new PolicyResolver({
-			workspaceRoot: this.options.workspaceRoot,
-			global: loaded.global,
-			project: loaded.project,
-			mode: this.mode,
-		});
-		const evaluations = input.accesses.map((access) => resolver.evaluate(access, input.toolName));
-		const aggregate = aggregateEvaluations(evaluations);
-
-		if (aggregate.effect === "deny") {
-			await this.auditDecision(request, aggregate.effect, "denied", auditSource(aggregate), "PERMISSION_DENIED");
-			return this.denied("PERMISSION_DENIED", aggregate.reason, input.accesses, request);
-		}
-
-		const sessionGrant = this.grants.find(input.accesses, input.toolCallId, fingerprint);
-		if (sessionGrant !== undefined && aggregate.effect === "ask") {
-			await this.auditDecision(request, aggregate.effect, "allowed", "session-grant");
-			return { ok: true, request, evaluation: { ...aggregate, effect: "allow", reason: `Matched session grant ${sessionGrant.id}.` } };
-		}
-
-		if (aggregate.effect === "allow") {
-			await this.auditDecision(request, aggregate.effect, "allowed", auditSource(aggregate));
-			return { ok: true, request, evaluation: aggregate };
-		}
-
-		if (!input.promptContext.hasUI) {
-			await this.auditDecision(request, aggregate.effect, "denied", "no-ui", "PERMISSION_PROMPT_UNAVAILABLE");
-			return this.denied("PERMISSION_PROMPT_UNAVAILABLE", "Permission prompt is unavailable; ask defaults to deny.", input.accesses, request);
-		}
-
-		const decision = await this.coordinator.request(request, aggregate, input.promptContext);
-		if (decision.decision === "deny") {
-			this.deniedFingerprints.add(fingerprint);
-			await this.auditDecision(request, aggregate.effect, "denied", "user", "PERMISSION_DENIED_BY_USER");
-			return this.denied("PERMISSION_DENIED_BY_USER", "The user denied this operation.", input.accesses, request);
-		}
-		this.applyUserDecision(decision, request);
-		await this.auditDecision(request, aggregate.effect, "allowed", "user");
-		return { ok: true, request, evaluation: { ...aggregate, effect: "allow", reason: `User decision: ${decision.decision}.` } };
+	async verifyRequestUnchanged(original: AuthorizationRequest, input: { toolName: string; normalizedToolInput: unknown }): Promise<boolean> {
+		const subject = this.registry.resolve("tool", input.toolName);
+		if (subject === undefined) return false;
+		const intent = await subject.analyze(input.normalizedToolInput, { workspaceRoot: this.options.workspaceRoot, agentDir: this.options.agentDir });
+		return resourcesUnchanged(original.resources, intent.resources);
 	}
 
-	async verifyAccessesUnchanged(accesses: PermissionAccess[]): Promise<boolean> {
-		const resolver = this.resourceResolver;
-		for (const access of accesses) {
-			const current = await resolver.resolve(access.inputPath);
-			if (current.canonicalPath !== access.canonicalPath) return false;
-			if (current.exists !== access.exists) return false;
-			if (current.type !== access.targetType) return false;
-			if (access.exists) {
-				if (!identityEquals(access.identity, current.identity)) return false;
-			} else if (!identityEquals(access.canonicalParentIdentity, current.canonicalParentIdentity)) {
-				return false;
-			}
-		}
-		return true;
+	async explain(toolName: string, normalizedToolInput: unknown): Promise<CompiledDecision> {
+		const snapshot = await this.snapshot();
+		const subject = this.registry.resolve("tool", toolName) ?? genericToolDescriptor(toolName);
+		const intent = await subject.analyze(normalizedToolInput, { workspaceRoot: this.options.workspaceRoot, agentDir: this.options.agentDir });
+		return evaluatePolicy({ snapshot, subject, resources: intent.resources, operations: intent.operations });
 	}
 
-	consumeOnce(request: PermissionRequest): void {
-		this.grants.consumeOnce(request.toolCallId, request.normalizedInputFingerprint);
+	cancelAll(): void {
+		this.approval.cancelAll();
+		this.leases.clear();
+		this.sessionGrants.clear();
 	}
 
-	cancelAll(reason: string): void {
-		this.coordinator.cancelAll(reason);
+	async auditTail(limit: number): Promise<string[]> {
+		return await this.audit.tail(limit);
 	}
 
-	private applyConfiguredMode(globalPolicy: PermissionServiceStatus["globalPolicy"]): void {
-		if (this.modeOverridden) return;
-		const configured = globalPolicy.status === "loaded" ? globalPolicy.policy?.mode : undefined;
-		if (configured !== undefined) this.mode = configured;
+	private async snapshot(): Promise<PolicySnapshot> {
+		const snapshot = await this.policies.snapshot();
+		if (this.profileOverride !== undefined) snapshot.profile = this.profileOverride;
+		this.audit.setEnabled(snapshot.auditEnabled);
+		return snapshot;
 	}
 
-	private applyUserDecision(decision: UserPermissionDecision, request: PermissionRequest): void {
-		if (decision.decision === "allow-once") {
-			for (const access of request.accesses) {
-				this.grants.add({
-					actions: [access.action],
-					canonicalPath: access.canonicalPath,
-					scope: "exact",
-					lifetime: "once",
-					toolCallId: request.toolCallId,
-					requestFingerprint: request.normalizedInputFingerprint,
-					rootIdentity: access.identity ?? access.canonicalParentIdentity,
-				});
-			}
-			return;
-		}
-		const lifetime = "session";
-		for (const access of request.accesses) {
-			const directoryScope = access.targetType === "directory" ? access.canonicalPath : path.dirname(access.canonicalPath);
-			const actions = actionGrantSet(access.action);
-			this.grants.add({
-				actions,
-				canonicalPath: decision.decision === "allow-session-subtree" ? directoryScope : access.canonicalPath,
-				scope: decision.decision === "allow-session-subtree" ? "subtree" : "exact",
-				lifetime,
-				toolCallId: request.toolCallId,
-				requestFingerprint: request.normalizedInputFingerprint,
-				...(decision.decision === "allow-session-exact" ? { rootIdentity: access.identity ?? access.canonicalParentIdentity } : {}),
-			});
-		}
-	}
-
-	private denied(
-		code: PermissionErrorCode,
-		message: string,
-		accesses: PermissionAccess[],
-		request?: PermissionRequest,
-	): PermissionAuthorizeResult {
+	private denied(code: PermissionErrorCode, message: string, request?: AuthorizationRequest, decision?: CompiledDecision): AuthorizationResult {
 		this.noteError(`${code}: ${message}`);
 		return {
-			ok: false,
-			code,
-			message,
+			allowed: false,
+			error: { code, message, retry: code === "PERMISSION_DENIED" ? "after-policy-change" : "never" },
 			...(request !== undefined ? { request } : {}),
-			resources: accesses.map((access) => ({ action: access.action, path: access.canonicalPath })),
+			...(decision !== undefined ? { decision } : {}),
 		};
 	}
 
@@ -361,59 +257,101 @@ export class PermissionService {
 	}
 
 	private async auditDecision(
-		request: PermissionRequest,
-		policyEffect: PermissionAuditEntry["policyEffect"],
-		finalDecision: PermissionAuditEntry["finalDecision"],
-		decisionSource: PermissionAuditEntry["decisionSource"],
+		request: AuthorizationRequest,
+		decision: CompiledDecision,
+		finalDecision: "allowed" | "denied",
+		leaseId?: string,
 		errorCode?: PermissionErrorCode,
 	): Promise<void> {
-		const entry: PermissionAuditEntry = {
+		await this.audit.record({
 			timestamp: new Date().toISOString(),
 			requestId: request.requestId,
-			toolCallId: request.toolCallId,
-			toolName: request.toolName,
-			fingerprint: request.normalizedInputFingerprint,
+			subject: {
+				id: request.subject.id,
+				configKey: request.subject.configKey,
+				kind: request.subject.kind,
+				source: `${request.subject.source.type}:${request.subject.source.name}`,
+				...(request.subject.source.identity !== undefined ? { identity: request.subject.source.identity } : {}),
+			},
+			inputFingerprint: request.inputFingerprint,
 			policyGeneration: request.policyGeneration,
-			accesses: request.accesses.map((access) => ({
-				action: access.action,
-				canonicalPath: access.canonicalPath,
-				boundary: access.boundary,
-			})),
-			policyEffect,
+			registryGeneration: this.registry.generation,
+			operations: request.operations,
+			resources: request.resources.map(sanitizeResource),
+			policyEffect: decision.effect === "no-opinion" ? "ask" : decision.effect,
 			finalDecision,
-			decisionSource,
+			decisionSource: auditSource(decision),
+			...(this.options.sessionId !== undefined ? { sessionId: this.options.sessionId } : {}),
+			...(request.toolCallId !== undefined ? { toolCallId: request.toolCallId } : {}),
+			...(decision.ruleId !== undefined ? { ruleId: decision.ruleId } : {}),
+			...(decision.grantIds !== undefined ? { grantIds: decision.grantIds } : {}),
+			...(leaseId !== undefined ? { leaseId } : {}),
 			...(errorCode !== undefined ? { errorCode } : {}),
-		};
-		await this.audit.record(entry);
+		});
 		const auditError = this.audit.getLastError();
 		if (auditError !== undefined) this.noteError(`audit: ${auditError}`);
 	}
+
+	private async auditFailureForUnknown(input: AuthorizeInput, snapshot: PolicySnapshot, errorCode: PermissionErrorCode): Promise<void> {
+		const subject = genericToolDescriptor(input.toolName);
+		const request: AuthorizationRequest = {
+			requestId: `perm_${randomUUID()}`,
+			toolCallId: input.toolCallId,
+			subject,
+			inputFingerprint: stableFingerprint({ toolName: input.toolName, input: input.normalizedToolInput, policyGeneration: snapshot.generation }),
+			operations: [],
+			resources: [],
+			summary: `Analyze ${input.toolName}`,
+			policyGeneration: snapshot.generation,
+		};
+		await this.auditDecision(request, denyDecision("policy-error", "Analysis failed."), "denied", undefined, errorCode);
+	}
 }
 
-function aggregateEvaluations(evaluations: PolicyEvaluation[]): PolicyEvaluation {
-	const deny = evaluations.find((item) => item.effect === "deny");
-	if (deny !== undefined) return deny;
-	const ask = evaluations.find((item) => item.effect === "ask");
-	if (ask !== undefined) return ask;
-	return evaluations[0] ?? { effect: "ask", reason: "Empty permission request.", denyFloor: false };
+function allowDecision(source: CompiledDecision["source"], message: string, grantIds?: string[]): CompiledDecision {
+	return {
+		effect: "allow",
+		finalEffect: "allow",
+		source,
+		trace: [{ source, effect: "allow", message }],
+		...(grantIds !== undefined ? { grantIds } : {}),
+	};
 }
 
-function auditSource(evaluation: PolicyEvaluation): PermissionAuditEntry["decisionSource"] {
-	if (evaluation.matchedRule?.source === "global") return "global-rule";
-	if (evaluation.matchedRule?.source === "project") return "project-rule";
-	if (evaluation.matchedRule?.source === "builtin") return "builtin";
-	if (evaluation.reason.includes("yolo") || evaluation.reason.includes("read-only")) return "mode";
-	return "builtin";
+function denyDecision(source: CompiledDecision["source"], message: string, ruleId?: string): CompiledDecision {
+	const trace = ruleId === undefined ? [{ source, effect: "deny" as const, message }] : [{ source, effect: "deny" as const, message, ruleId }];
+	return {
+		effect: source === "hard-protection" ? "hard-deny" : source === "policy-error" ? "policy-error" : "deny",
+		finalEffect: "deny",
+		source,
+		trace,
+		...(ruleId !== undefined ? { ruleId } : {}),
+	};
 }
 
-function riskForAccesses(accesses: PermissionAccess[]): PermissionRequest["risk"] {
-	if (accesses.some((access) => access.boundary === "sensitive")) return "critical";
-	if (accesses.some((access) => isWriteAction(access.action) && access.boundary !== "workspace")) return "high";
-	if (accesses.some((access) => access.boundary !== "workspace")) return "medium";
-	return "low";
+function auditSource(decision: CompiledDecision): import("./permission-types.js").PermissionAuditEntry["decisionSource"] {
+	if (decision.source === "hard-protection") return "hard-protection";
+	if (decision.source === "policy-error") return "policy-error";
+	if (decision.source === "global-policy") return "global-policy";
+	if (decision.source === "project-policy") return "project-policy";
+	if (decision.source === "persistent-grant") return "persistent-grant";
+	if (decision.source === "session-grant") return "session-grant";
+	if (decision.source === "no-ui") return "no-ui";
+	if (decision.source === "user") return "user";
+	return "profile";
 }
 
-function actionGrantSet(action: PermissionAction): PermissionAction[] {
-	if (action === "fs.list") return ["fs.list", "fs.read"];
-	return [action];
+function stableFingerprint(value: unknown): string {
+	return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+	if (typeof value === "object" && value !== null) {
+		return `{${Object.entries(value)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
+			.join(",")}}`;
+	}
+	return JSON.stringify(value);
 }

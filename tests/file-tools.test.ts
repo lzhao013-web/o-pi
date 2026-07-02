@@ -27,8 +27,8 @@ function expectLsSuccess(result: ToolOutcome<LsSuccess>): LsSuccess {
 	return result;
 }
 
-function yoloPermission() {
-	return { permission: { permissionService: new PermissionService({ workspaceRoot: workspace, mode: "yolo" }) } };
+function standardPermission() {
+	return { permission: { permissionService: new PermissionService({ workspaceRoot: workspace, agentDir: workspace, projectTrusted: false }) } };
 }
 
 describe("ls", () => {
@@ -459,7 +459,7 @@ describe("edit", () => {
 					{ type: "move_file", from: "move.txt", to: "moved.txt", base_version: moveRead.version },
 				],
 			},
-			yoloPermission(),
+			standardPermission(),
 		);
 		expect(result).toMatchObject({
 			status: "applied",

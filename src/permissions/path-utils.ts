@@ -20,8 +20,19 @@ export function maybeWorkspaceRelative(workspaceRoot: string, candidate: string,
 	return toSlashPath(relative);
 }
 
-export function normalizeUserPath(workspaceRoot: string, inputPath: string): string {
-	const expanded = expandHome(inputPath);
+/** 展开用户可见路径变量；未知变量必须报错。 */
+export function expandConfiguredPath(inputPath: string, variables: { workspace: string; agentDir: string }): string {
+	let expanded = expandHome(inputPath);
+	expanded = expanded.replace(/\$\{([^}]+)\}/g, (_match, rawName: string) => {
+		if (rawName === "workspace") return variables.workspace;
+		if (rawName === "agentDir") return variables.agentDir;
+		throw new Error(`Unknown path variable: \${${rawName}}`);
+	});
+	return path.resolve(variables.workspace, expanded);
+}
+
+export function normalizeUserPath(workspaceRoot: string, inputPath: string, agentDir?: string): string {
+	const expanded = agentDir === undefined ? expandHome(inputPath) : expandConfiguredPath(inputPath, { workspace: workspaceRoot, agentDir });
 	return path.resolve(workspaceRoot, expanded);
 }
 
@@ -49,6 +60,7 @@ export function validatePathText(inputPath: string): string | undefined {
 export function identityEquals(left: FileIdentity | undefined, right: FileIdentity | undefined): boolean {
 	if (left === undefined && right === undefined) return true;
 	if (left === undefined || right === undefined) return false;
+	if (left.device === undefined || left.inode === undefined || right.device === undefined || right.inode === undefined) return true;
 	return left.device === right.device && left.inode === right.inode;
 }
 

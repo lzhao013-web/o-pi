@@ -5,7 +5,6 @@ import { defaultIgnoreEngine } from "./ignore/ignore-engine.js";
 import {
 	defaultPermissionService,
 	defaultPromptContext,
-	pathResolveFailure,
 	permissionFailure,
 	type FileToolPermissionRuntime,
 } from "./permission-runtime.js";
@@ -32,7 +31,6 @@ import type {
 	ToolOutcome,
 } from "./types.js";
 import type { IgnoreSnapshot } from "./ignore/ignore-types.js";
-import { accessesForEdit } from "../permissions/access-extractors.js";
 
 interface OriginalState {
 	path: string;
@@ -70,25 +68,17 @@ export async function editWorkspace(cwd: string, params: unknown, runtime: EditR
 
 	const workspaceRoot = await resolveWorkspaceRoot(cwd);
 	const permissionService = runtime.permission?.permissionService ?? defaultPermissionService(workspaceRoot);
-	let accesses;
-	try {
-		accesses = await accessesForEdit(permissionService.resourceResolver, input.operations);
-	} catch (error) {
-		const failure = pathResolveFailure(error);
-		if (failure !== undefined) return failure;
-		throw error;
-	}
 	const authorization = await permissionService.authorize({
 		toolCallId: runtime.permission?.toolCallId ?? "direct-edit",
 		toolName: "edit",
-		accesses,
-		normalizedToolInput: sanitizeEditInput(input),
+		normalizedToolInput: input,
 		promptContext: runtime.permission?.promptContext ?? defaultPromptContext(),
+		consumeLease: true,
 	});
-	if (!authorization.ok) return permissionFailure(authorization);
-	if (!(await permissionService.verifyAccessesUnchanged(accesses))) {
+	if (!authorization.allowed) return permissionFailure({ code: authorization.error.code, message: authorization.error.message, resources: [] });
+	if (!(await permissionService.verifyRequestUnchanged(authorization.request, { toolName: "edit", normalizedToolInput: input }))) {
 		return fail("PERMISSION_CONTEXT_CHANGED", "Permission context changed before editing.", {
-			details: { resources: accesses.map((access) => ({ action: access.action, path: access.canonicalPath })) },
+			details: { resources: authorization.request.resources.map((resource) => (resource.kind === "file" ? resource.canonicalPath : resource.kind)) },
 		});
 	}
 	const ignoreSnapshot = await defaultIgnoreEngine.createSnapshot(workspaceRoot);
@@ -112,8 +102,6 @@ export async function editWorkspace(cwd: string, params: unknown, runtime: EditR
 			details: { affected_paths: stagedStates.map((state) => state.path) },
 		});
 	}
-	permissionService.consumeOnce(authorization.request);
-
 	return {
 		status: "applied",
 		transaction_id: transactionId,

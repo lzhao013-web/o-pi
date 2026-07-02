@@ -2,87 +2,263 @@
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
 	"$id": "https://pi.local/permissions.schema.json",
 	"type": "object",
-	"required": ["version"],
 	"additionalProperties": false,
+	"required": [
+		"version"
+	],
 	"properties": {
-		"$schema": { "type": "string" },
-		"version": { "const": 1 },
-		"mode": {
-			"description": "默认权限运行模式；只建议放在全局策略中。",
-			"enum": ["safe", "read-only", "yolo"]
+		"$schema": {
+			"type": "string"
 		},
-		"tools": {
-			"description": "注册工具名门禁；支持精确名和 * 通配，路径资源仍由 defaults/rules 判断。",
-			"type": "object",
-			"propertyNames": { "type": "string", "minLength": 1 },
-			"additionalProperties": { "$ref": "#/$defs/effect" }
+		"version": {
+			"const": 1
 		},
-		"defaults": {
+		"profile": {
+			"enum": [
+				"cautious",
+				"standard",
+				"read-only",
+				"unrestricted"
+			]
+		},
+		"files": {
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
-				"workspace": { "$ref": "#/$defs/defaults" },
-				"external": { "$ref": "#/$defs/defaults" },
-				"system": { "$ref": "#/$defs/defaults" },
-				"sensitive": { "$ref": "#/$defs/defaults" }
+				"roots": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"additionalProperties": false,
+						"required": [
+							"path",
+							"access"
+						],
+						"properties": {
+							"path": {
+								"type": "string",
+								"minLength": 1
+							},
+							"access": {
+								"enum": [
+									"read-only",
+									"read-write"
+								]
+							}
+						}
+					}
+				},
+				"outsideRoots": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"read": {
+							"enum": [
+								"allow",
+								"ask",
+								"deny"
+							]
+						},
+						"write": {
+							"enum": [
+								"allow",
+								"ask",
+								"deny"
+							]
+						}
+					}
+				},
+				"rules": {
+					"$ref": "#/$defs/fileEffectRules"
+				}
 			}
 		},
-		"rules": {
-			"type": "array",
-			"items": { "$ref": "#/$defs/rule" }
+		"tools": {
+			"$ref": "#/$defs/toolRuleSet"
+		},
+		"mcp": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"default": {
+					"$ref": "#/$defs/effect"
+				},
+				"servers": {
+					"type": "object",
+					"additionalProperties": {
+						"type": "object",
+						"additionalProperties": false,
+						"properties": {
+							"default": {
+								"$ref": "#/$defs/effect"
+							},
+							"tools": {
+								"type": "object",
+								"additionalProperties": {
+									"$ref": "#/$defs/effect"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"skills": {
+			"$ref": "#/$defs/simpleRuleSet"
+		},
+		"agents": {
+			"$ref": "#/$defs/simpleRuleSet"
+		},
+		"audit": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"enabled"
+			],
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				}
+			}
 		}
 	},
 	"$defs": {
-		"effect": { "enum": ["allow", "ask", "deny"] },
-		"mode": { "enum": ["safe", "read-only", "yolo"] },
-		"tool": {
-			"enum": ["ls", "read", "edit", "*"]
+		"effect": {
+			"enum": [
+				"allow",
+				"ask",
+				"deny"
+			]
 		},
-		"defaults": {
+		"fileRule": {
 			"type": "object",
 			"additionalProperties": false,
+			"required": [
+				"paths",
+				"access"
+			],
 			"properties": {
-				"ls": { "$ref": "#/$defs/effect" },
-				"read": { "$ref": "#/$defs/effect" },
-				"edit": { "$ref": "#/$defs/effect" },
-				"*": { "$ref": "#/$defs/effect" }
-			}
-		},
-		"rule": {
-			"type": "object",
-			"required": ["id", "effect", "tools", "resource"],
-			"additionalProperties": false,
-			"properties": {
-				"id": { "type": "string", "minLength": 1 },
-				"description": { "type": "string" },
-				"effect": { "$ref": "#/$defs/effect" },
-				"tools": {
+				"id": {
+					"type": "string",
+					"minLength": 1
+				},
+				"paths": {
 					"type": "array",
 					"minItems": 1,
-					"items": { "$ref": "#/$defs/tool" }
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
 				},
-				"resource": {
-					"oneOf": [
-						{
-							"type": "object",
-							"required": ["type", "path", "scope"],
-							"additionalProperties": false,
-							"properties": {
-								"type": { "const": "path" },
-								"path": { "type": "string", "minLength": 1 },
-								"scope": { "enum": ["exact", "subtree"] }
-							}
+				"access": {
+					"type": "array",
+					"minItems": 1,
+					"items": {
+						"enum": [
+							"read",
+							"write"
+						]
+					}
+				}
+			}
+		},
+		"fileEffectRules": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"deny": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/fileRule"
+					}
+				},
+				"ask": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/fileRule"
+					}
+				},
+				"allow": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/fileRule"
+					}
+				}
+			}
+		},
+		"commandEffectRules": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"deny": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"ask": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"allow": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				}
+			}
+		},
+		"toolConfig": {
+			"oneOf": [
+				{
+					"$ref": "#/$defs/effect"
+				},
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"default": {
+							"$ref": "#/$defs/effect"
 						},
-						{
-							"type": "object",
-							"required": ["type", "boundary"],
-							"additionalProperties": false,
-							"properties": {
-								"type": { "const": "boundary" },
-								"boundary": { "enum": ["workspace", "external", "system", "sensitive"] }
-							}
+						"commands": {
+							"$ref": "#/$defs/commandEffectRules"
 						}
-					]
+					}
+				}
+			]
+		},
+		"toolRuleSet": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"default": {
+					"$ref": "#/$defs/effect"
+				},
+				"items": {
+					"type": "object",
+					"additionalProperties": {
+						"$ref": "#/$defs/toolConfig"
+					}
+				}
+			}
+		},
+		"simpleRuleSet": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"default": {
+					"$ref": "#/$defs/effect"
+				},
+				"items": {
+					"type": "object",
+					"additionalProperties": {
+						"$ref": "#/$defs/effect"
+					}
 				}
 			}
 		}

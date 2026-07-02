@@ -4,13 +4,11 @@ import { defaultIgnoreEngine } from "./ignore/ignore-engine.js";
 import {
 	defaultPermissionService,
 	defaultPromptContext,
-	pathResolveFailure,
 	permissionFailure,
 	type FileToolPermissionRuntime,
 } from "./permission-runtime.js";
 import { isProtectedWorkspacePath, resolveExistingDirectory, resolveWorkspaceRoot } from "./path-security.js";
 import type { LsEntry, LsEntryType, LsParams, LsSuccess, ToolOutcome } from "./types.js";
-import { accessForPath } from "../permissions/access-extractors.js";
 
 const MAX_LS_ENTRIES = 200;
 
@@ -29,24 +27,16 @@ export async function listWorkspaceDirectory(
 ): Promise<ToolOutcome<LsSuccess>> {
 	const workspaceRoot = await resolveWorkspaceRoot(cwd);
 	const permissionService = runtime.permissionService ?? defaultPermissionService(workspaceRoot);
-	let access;
-	try {
-		access = await accessForPath(permissionService.resourceResolver, "fs.list", params.path);
-	} catch (error) {
-		const failure = pathResolveFailure(error);
-		if (failure !== undefined) return failure;
-		throw error;
-	}
 	const authorization = await permissionService.authorize({
 		toolCallId: runtime.toolCallId ?? "direct-ls",
 		toolName: "ls",
-		accesses: [access],
 		normalizedToolInput: params,
 		promptContext: runtime.promptContext ?? defaultPromptContext(),
+		consumeLease: true,
 	});
-	if (!authorization.ok) return permissionFailure(authorization);
-	if (!(await permissionService.verifyAccessesUnchanged([access]))) {
-		return fail("PERMISSION_CONTEXT_CHANGED", "Permission context changed before listing.", { path: access.displayPath });
+	if (!authorization.allowed) return permissionFailure({ code: authorization.error.code, message: authorization.error.message, resources: [] });
+	if (!(await permissionService.verifyRequestUnchanged(authorization.request, { toolName: "ls", normalizedToolInput: params }))) {
+		return fail("PERMISSION_CONTEXT_CHANGED", "Permission context changed before listing.", { path: params.path });
 	}
 	const resolved = await resolveExistingDirectory(workspaceRoot, params.path);
 	if (isFailed(resolved)) return resolved;

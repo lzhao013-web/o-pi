@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { fail } from "./errors.js";
 import type { FailedResult, ResolvedPath, TargetPath, ToolOutcome } from "./types.js";
-import { ResourceResolver, ResourceResolveError } from "../permissions/resource-resolver.js";
+import { FileResolver, FileResolveError } from "../permissions/file-resolver.js";
 import { maybeWorkspaceRelative } from "../permissions/path-utils.js";
 
 /** workspace root 仍取真实路径；路径是否允许访问由权限系统决定。 */
@@ -15,13 +15,15 @@ export async function resolveWorkspaceRoot(cwd: string): Promise<string> {
 export async function resolveExistingDirectory(workspaceRoot: string, inputPath: string): Promise<ToolOutcome<ResolvedPath>> {
 	const resolved = await resolvePermissionPath(workspaceRoot, inputPath);
 	if (isFailed(resolved)) return resolved;
+	const shown = displayPath(workspaceRoot, resolved);
+	if (isProtectedWorkspacePath(shown)) return fail("PERMISSION_DENIED", "Protected workspace metadata cannot be listed.", { path: shown });
 	if (!resolved.exists) return fail("PATH_NOT_FOUND", "Directory does not exist.", { path: displayPath(workspaceRoot, resolved) });
 	const info = await stat(resolved.canonicalPath);
 	if (!info.isDirectory()) return fail("NOT_A_DIRECTORY", "Path is not a directory.", { path: displayPath(workspaceRoot, resolved) });
 	return {
 		inputPath,
 		relativePath: displayPath(workspaceRoot, resolved),
-		absolutePath: resolved.absolutePath,
+		absolutePath: resolved.lexicalAbsolutePath,
 		realPath: resolved.canonicalPath,
 	};
 }
@@ -30,13 +32,15 @@ export async function resolveExistingDirectory(workspaceRoot: string, inputPath:
 export async function resolveExistingFile(workspaceRoot: string, inputPath: string): Promise<ToolOutcome<ResolvedPath>> {
 	const resolved = await resolvePermissionPath(workspaceRoot, inputPath);
 	if (isFailed(resolved)) return resolved;
+	const shown = displayPath(workspaceRoot, resolved);
+	if (isProtectedWorkspacePath(shown)) return fail("PERMISSION_DENIED", "Protected workspace metadata cannot be read.", { path: shown });
 	if (!resolved.exists) return fail("FILE_NOT_FOUND", "File does not exist.", { path: displayPath(workspaceRoot, resolved) });
 	const info = await stat(resolved.canonicalPath);
 	if (!info.isFile()) return fail("NOT_A_FILE", "Path is not a regular file.", { path: displayPath(workspaceRoot, resolved) });
 	return {
 		inputPath,
 		relativePath: displayPath(workspaceRoot, resolved),
-		absolutePath: resolved.absolutePath,
+		absolutePath: resolved.lexicalAbsolutePath,
 		realPath: resolved.canonicalPath,
 	};
 }
@@ -45,7 +49,7 @@ export async function resolveExistingFile(workspaceRoot: string, inputPath: stri
 export async function resolveTargetFile(workspaceRoot: string, inputPath: string): Promise<ToolOutcome<TargetPath>> {
 	const resolved = await resolvePermissionPath(workspaceRoot, inputPath);
 	if (isFailed(resolved)) return resolved;
-	if (resolved.workspaceRelativePath === ".") {
+	if (maybeWorkspaceRelative(workspaceRoot, resolved.canonicalPath, true) === ".") {
 		return fail("INVALID_PATH", "Target must be a file path, not the workspace root.", { path: inputPath });
 	}
 	const parentRealPath = resolved.exists ? await realpath(path.dirname(resolved.canonicalPath)) : resolved.canonicalParentPath;
@@ -55,7 +59,7 @@ export async function resolveTargetFile(workspaceRoot: string, inputPath: string
 	return {
 		inputPath,
 		relativePath: displayPath(workspaceRoot, resolved),
-		absolutePath: resolved.absolutePath,
+		absolutePath: resolved.lexicalAbsolutePath,
 		parentRealPath,
 	};
 }
@@ -76,9 +80,9 @@ export function isProtectedWorkspacePath(relativePath: string): boolean {
 
 async function resolvePermissionPath(workspaceRoot: string, inputPath: string) {
 	try {
-		return await new ResourceResolver({ workspaceRoot }).resolve(inputPath);
+		return await new FileResolver({ workspaceRoot, agentDir: workspaceRoot }).resolve(inputPath, "file.read", "read");
 	} catch (error) {
-		if (error instanceof ResourceResolveError) {
+		if (error instanceof FileResolveError) {
 			return fail(error.code === "PATH_NOT_FOUND" ? "PATH_NOT_FOUND" : "INVALID_PATH", error.message, { path: inputPath });
 		}
 		if (isPermissionError(error)) return fail("PERMISSION_DENIED", "Path cannot be accessed.", { path: inputPath });
@@ -86,8 +90,8 @@ async function resolvePermissionPath(workspaceRoot: string, inputPath: string) {
 	}
 }
 
-function displayPath(workspaceRoot: string, resolved: { absolutePath: string; workspaceRelativePath?: string; canonicalPath: string }): string {
-	return maybeWorkspaceRelative(workspaceRoot, resolved.absolutePath, true) ?? resolved.workspaceRelativePath ?? resolved.canonicalPath;
+function displayPath(workspaceRoot: string, resolved: { lexicalAbsolutePath: string; canonicalPath: string }): string {
+	return maybeWorkspaceRelative(workspaceRoot, resolved.lexicalAbsolutePath, true) ?? maybeWorkspaceRelative(workspaceRoot, resolved.canonicalPath, true) ?? resolved.canonicalPath;
 }
 
 function isFailed<T>(result: T | FailedResult): result is FailedResult {

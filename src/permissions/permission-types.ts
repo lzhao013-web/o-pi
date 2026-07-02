@@ -1,234 +1,376 @@
-/** 文件系统内部动作；策略文件不暴露这些细节。 */
-export type PermissionAction =
-	| "fs.list"
-	| "fs.read"
-	| "fs.create"
-	| "fs.update"
-	| "fs.replace"
-	| "fs.delete"
-	| "fs.move";
-
-/** 权限策略的三态结果。 */
+/** 用户策略可表达的三态效果。 */
 export type PermissionEffect = "allow" | "ask" | "deny";
 
-/** 资源边界由 canonical path 决定，不能由模型声明。 */
-export type ResourceBoundary = "workspace" | "external" | "system" | "sensitive";
+/** 内部求值使用的完整效果；policy-error 与 hard-deny 不可被覆盖。 */
+export type CompiledEffect = PermissionEffect | "no-opinion" | "policy-error" | "hard-deny";
 
-/** 权限运行模式；yolo 只把普通 ask 视为 allow。 */
-export type PermissionMode = "safe" | "read-only" | "yolo";
+/** 会话 profile；unrestricted 只把普通 ask 降为 allow。 */
+export type PermissionProfile = "cautious" | "standard" | "read-only" | "unrestricted";
 
-export type PermissionTargetType = "file" | "directory" | "symlink" | "missing" | "other";
+/** 所有受控对象共享的主体类型。 */
+export type PermissionSubjectKind = "tool" | "mcp-tool" | "skill" | "agent";
 
-/** 用户配置面向工具名，不要求知道内部 fs.* 动作。 */
-export type PermissionToolName = "ls" | "read" | "edit";
+/** 稳定主体 ID，持久授权绑定该 ID 与来源 identity。 */
+export type PermissionSubjectId = string;
 
-export type PermissionErrorCode =
-	| "PERMISSION_DENIED"
-	| "PERMISSION_DENIED_BY_USER"
-	| "PERMISSION_PROMPT_UNAVAILABLE"
-	| "PERMISSION_PROMPT_TIMEOUT"
-	| "PERMISSION_CONTEXT_CHANGED"
-	| "PERMISSION_POLICY_INVALID"
-	| "PERMISSION_POLICY_LOAD_FAILED"
-	| "PERMISSION_POLICY_WRITE_FAILED"
-	| "PERMISSION_PROTECTED_RESOURCE"
-	| "PERMISSION_UNKNOWN_ACTION"
-	| "PERMISSION_UNKNOWN_TOOL"
-	| "PERMISSION_EXTRACTOR_FAILED"
-	| "PERMISSION_INTERNAL_ERROR";
+/** 内部能力模型；用户配置不直接暴露这些操作名。 */
+export type PermissionOperation =
+	| "file.list"
+	| "file.read"
+	| "file.create"
+	| "file.update"
+	| "file.replace"
+	| "file.delete"
+	| "file.move"
+	| "process.execute"
+	| "mcp.invoke"
+	| "skill.load"
+	| "agent.spawn";
 
+export type FileAccess = "read" | "write";
+export type FileRootAccess = "read-only" | "read-write";
+
+/** 文件 identity 在不支持 dev/ino 的平台允许为空，比较时会降级到路径与父目录校验。 */
 export interface FileIdentity {
 	device?: number;
 	inode?: number;
 }
 
-/** 已解析路径，既保留用户写法，也保留真实 canonical 目标。 */
-export interface ResolvedPermissionPath {
+export type FileNodeType = "file" | "directory" | "symlink" | "other";
+
+/** 文件资源解析结果同时保留词法路径与 canonical target。 */
+export interface ResolvedFileResource {
+	kind: "file";
 	inputPath: string;
-	absolutePath: string;
+	lexicalAbsolutePath: string;
 	canonicalPath: string;
-	workspaceRelativePath?: string;
-	boundary: ResourceBoundary;
+	lexicalType: FileNodeType;
+	targetType: Exclude<FileNodeType, "symlink">;
 	exists: boolean;
-	type: PermissionTargetType;
 	viaSymlink: boolean;
 	symlinkChain: string[];
 	identity?: FileIdentity;
 	canonicalParentPath?: string;
 	canonicalParentIdentity?: FileIdentity;
-}
-
-/** 单次工具调用中的一个真实资源访问。 */
-export interface PermissionAccess {
-	action: PermissionAction;
-	inputPath: string;
-	absolutePath: string;
-	canonicalPath: string;
 	displayPath: string;
-	boundary: ResourceBoundary;
-	targetType: PermissionTargetType;
-	exists: boolean;
-	viaSymlink: boolean;
-	sourcePath?: string;
-	destinationPath?: string;
-	identity?: FileIdentity;
-	canonicalParentIdentity?: FileIdentity;
+	access: FileAccess;
+	operation: PermissionOperation;
 }
 
-export interface PermissionRequest {
+export interface CommandResource {
+	kind: "command";
+	command: string;
+}
+
+export interface McpResource {
+	kind: "mcp";
+	server: string;
+	tool: string;
+}
+
+export interface SkillResource {
+	kind: "skill";
+	name: string;
+}
+
+export interface AgentResource {
+	kind: "agent";
+	name: string;
+}
+
+export interface OpaqueResource {
+	kind: "opaque";
+	label: string;
+}
+
+export type PermissionResource = ResolvedFileResource | CommandResource | McpResource | SkillResource | AgentResource | OpaqueResource;
+
+/** 授权主体，来自注册表而不是工具名字符串临时拼接。 */
+export interface PermissionSubject {
+	id: PermissionSubjectId;
+	kind: PermissionSubjectKind;
+	configKey: string;
+	displayName: string;
+	source: {
+		type: "builtin" | "extension" | "mcp" | "skill" | "agent";
+		name: string;
+		identity?: string;
+	};
+}
+
+export interface PermissionAnalysisContext {
+	workspaceRoot: string;
+	agentDir: string;
+	signal?: AbortSignal;
+}
+
+/** descriptor 只描述意图，不能自行作出 allow 决策。 */
+export interface PermissionIntent {
+	operations: PermissionOperation[];
+	resources: PermissionResource[];
+	summary: string;
+	details?: string[];
+}
+
+export interface ApprovalScopeSuggestion {
+	id: string;
+	label: string;
+	scope: "once" | "session-exact" | "session-subtree" | "always";
+}
+
+export interface PermissionSubjectDescriptor<TInput = unknown> extends PermissionSubject {
+	analyze(input: TInput, context: PermissionAnalysisContext): Promise<PermissionIntent>;
+	suggestScopes?(intent: PermissionIntent): ApprovalScopeSuggestion[];
+}
+
+export interface AuthorizationRequest {
 	requestId: string;
-	toolCallId: string;
-	toolName: string;
-	accesses: PermissionAccess[];
-	risk: "low" | "medium" | "high" | "critical";
-	normalizedInputFingerprint: string;
+	toolCallId?: string;
+	subject: PermissionSubject;
+	inputFingerprint: string;
+	operations: PermissionOperation[];
+	resources: PermissionResource[];
+	summary: string;
+	details?: string[];
 	policyGeneration: number;
-	normalizedToolInput?: unknown;
 }
 
-export type PermissionRuleTool = PermissionToolName | "*";
+export type PermissionErrorCode =
+	| "PERMISSION_DENIED"
+	| "PERMISSION_HARD_DENIED"
+	| "PERMISSION_POLICY_INVALID"
+	| "PERMISSION_POLICY_LOAD_FAILED"
+	| "PERMISSION_UNKNOWN_SUBJECT"
+	| "PERMISSION_ANALYSIS_FAILED"
+	| "PERMISSION_PROMPT_UNAVAILABLE"
+	| "PERMISSION_PROMPT_TIMEOUT"
+	| "PERMISSION_PROMPT_CANCELLED"
+	| "PERMISSION_INPUT_CHANGED"
+	| "PERMISSION_RESOURCE_CHANGED"
+	| "PERMISSION_LEASE_MISSING"
+	| "PERMISSION_LEASE_INVALID"
+	| "PERMISSION_LEASE_CONSUMED"
+	| "PERMISSION_SUBJECT_IDENTITY_CHANGED"
+	| "PERMISSION_PERSISTENCE_FAILED"
+	| "PERMISSION_INTERNAL_ERROR";
 
-export interface PermissionBoundaryDefaults {
-	workspace?: Partial<Record<PermissionRuleTool, PermissionEffect>>;
-	external?: Partial<Record<PermissionRuleTool, PermissionEffect>>;
-	system?: Partial<Record<PermissionRuleTool, PermissionEffect>>;
-	sensitive?: Partial<Record<PermissionRuleTool, PermissionEffect>>;
+/** 面向工具和模型的结构化错误。 */
+export interface PermissionError {
+	code: PermissionErrorCode;
+	message: string;
+	retry?: "never" | "after-policy-change";
 }
 
-export type PermissionResourceSelector =
-	| { type: "path"; path: string; scope: "exact" | "subtree" }
-	| { type: "boundary"; boundary: ResourceBoundary };
-
-export interface PermissionRule {
+/** 一次性执行凭证；审批和执行之间用它固定输入、资源和 generation。 */
+export interface AuthorizationLease {
 	id: string;
-	description?: string;
-	effect: PermissionEffect;
-	resource: PermissionResourceSelector;
-	tools: PermissionRuleTool[];
-}
-
-export interface PermissionPolicyFile {
-	version: 1;
-	/** 全局策略中的默认运行模式；项目策略中的该字段不改变会话模式。 */
-	mode?: PermissionMode;
-	/** 顶层工具门禁；只按注册工具名生效，路径资源仍由 defaults/rules 判断。 */
-	tools?: Record<string, PermissionEffect>;
-	defaults?: PermissionBoundaryDefaults;
-	rules?: PermissionRule[];
-}
-
-export interface LoadedPermissionPolicy {
-	source: "global" | "project";
-	path: string;
-	status: "missing" | "loaded" | "invalid" | "load_failed" | "untrusted";
-	policy?: PermissionPolicyFile;
-	error?: string;
-}
-
-export interface PolicyTraceEntry {
-	effect: PermissionEffect;
-	source: "builtin" | "global" | "project" | "session" | "default" | "mode";
-	ruleId?: string;
-	sourcePath?: string;
-	reason: string;
-}
-
-export interface PolicyEvaluation {
-	effect: PermissionEffect;
-	matchedRule?: {
-		id: string;
-		source: "builtin" | "global" | "project" | "session";
-		sourcePath?: string;
-		index?: number;
-	};
-	trace?: PolicyTraceEntry[];
-	reason: string;
-	denyFloor: boolean;
-}
-
-export interface SessionGrant {
-	id: string;
-	actions: PermissionAction[];
-	resource: {
-		canonicalPath: string;
-		scope: "exact" | "subtree";
-	};
-	lifetime: "once" | "session";
+	requestId: string;
+	toolCallId?: string;
+	subjectId: string;
+	subjectIdentity?: string;
+	inputFingerprint: string;
+	resourceFingerprints: string[];
+	policyGeneration: number;
 	createdAt: number;
-	origin: {
-		toolCallId: string;
-		requestFingerprint: string;
-	};
-	rootIdentity?: FileIdentity;
+	consumed: boolean;
 }
+
+export interface DecisionTraceEntry {
+	source:
+		| "hard-protection"
+		| "policy-error"
+		| "profile"
+		| "global-policy"
+		| "project-policy"
+		| "persistent-grant"
+		| "session-grant"
+		| "user"
+		| "no-ui";
+	effect: CompiledEffect;
+	message: string;
+	ruleId?: string;
+}
+
+export interface CompiledDecision {
+	effect: CompiledEffect;
+	finalEffect: "allow" | "ask" | "deny";
+	source: DecisionTraceEntry["source"];
+	trace: DecisionTraceEntry[];
+	ruleId?: string;
+	grantIds?: string[];
+}
+
+export type AuthorizationResult =
+	| { allowed: true; lease: AuthorizationLease; decision: CompiledDecision; request: AuthorizationRequest }
+	| { allowed: false; error: PermissionError; decision?: CompiledDecision; request?: AuthorizationRequest };
 
 export interface UserPermissionDecision {
-	decision: "allow-once" | "allow-session-exact" | "allow-session-subtree" | "deny";
+	decision: "allow-once" | "allow-session-exact" | "allow-session-subtree" | "always-allow" | "deny";
 }
 
 export interface PermissionPromptContext {
 	hasUI: boolean;
 	timeoutMs: number;
-	prompt(request: PermissionRequest, evaluation: PolicyEvaluation): Promise<UserPermissionDecision>;
+	signal?: AbortSignal;
+	prompt(request: AuthorizationRequest, decision: CompiledDecision): Promise<UserPermissionDecision>;
+}
+
+export interface FileRootGrant {
+	canonicalPath: string;
+	access: FileRootAccess;
+	source: "profile" | "global-config" | "session" | "persistent";
+}
+
+export interface PolicyDiagnostic {
+	file: string;
+	pointer: string;
+	line: number;
+	column: number;
+	message: string;
+}
+
+export interface LoadedPolicy {
+	source: "global" | "project";
+	path: string;
+	status: "missing" | "loaded" | "invalid" | "load_failed" | "untrusted";
+	diagnostics: PolicyDiagnostic[];
+	config?: PermissionConfig;
+}
+
+export interface PolicySnapshot {
+	generation: number;
+	valid: boolean;
+	global: LoadedPolicy;
+	project: LoadedPolicy;
+	profile: PermissionProfile;
+	roots: FileRootGrant[];
+	globalConfig?: PermissionConfig;
+	projectConfig?: PermissionConfig;
+	diagnostics: PolicyDiagnostic[];
+	auditEnabled: boolean;
+}
+
+export interface PermissionServiceStatus {
+	profile: PermissionProfile;
+	globalPolicy: LoadedPolicy;
+	projectPolicy: LoadedPolicy;
+	projectTrusted: boolean;
+	policyGeneration: number;
+	registryGeneration: number;
+	sessionGrantCount: number;
+	persistentGrantCount: number;
+	maintenance: boolean;
+	auditEnabled: boolean;
+	recentErrors: string[];
 }
 
 export interface PermissionAuditEntry {
 	timestamp: string;
 	sessionId?: string;
 	requestId: string;
-	toolCallId: string;
-	toolName: string;
-	fingerprint: string;
+	toolCallId?: string;
+	subject: {
+		id: string;
+		configKey: string;
+		kind: string;
+		source: string;
+		identity?: string;
+	};
+	inputFingerprint: string;
 	policyGeneration: number;
-	accesses: Array<{
-		action: PermissionAction;
-		canonicalPath: string;
-		boundary: ResourceBoundary;
-	}>;
-	policyEffect: PermissionEffect;
+	registryGeneration: number;
+	operations: string[];
+	resources: SanitizedAuditResource[];
+	policyEffect: "allow" | "ask" | "deny" | "hard-deny" | "policy-error";
 	finalDecision: "allowed" | "denied";
 	decisionSource:
-		| "builtin"
-		| "global-rule"
-		| "project-rule"
+		| "profile"
+		| "global-policy"
+		| "project-policy"
+		| "persistent-grant"
 		| "session-grant"
 		| "user"
-		| "mode"
+		| "hard-protection"
+		| "policy-error"
 		| "no-ui"
-		| "error";
-	matchedRuleId?: string;
-	errorCode?: PermissionErrorCode;
+		| "timeout"
+		| "cancelled"
+		| "runtime-error";
+	ruleId?: string;
+	grantIds?: string[];
+	leaseId?: string;
+	errorCode?: string;
 }
 
-export interface PermissionServiceStatus {
-	mode: PermissionMode;
-	globalPolicy: LoadedPermissionPolicy;
-	projectPolicy: LoadedPermissionPolicy;
-	projectTrusted: boolean;
-	policyGeneration: number;
-	sessionGrantCount: number;
-	recentErrors: string[];
-	auditEnabled: boolean;
+export type SanitizedAuditResource =
+	| { kind: "file"; access: FileAccess; operation: PermissionOperation; path: string; exists: boolean; viaSymlink: boolean }
+	| { kind: "command"; commandPattern: string }
+	| { kind: "mcp"; server: string; tool: string }
+	| { kind: "skill"; name: string }
+	| { kind: "agent"; name: string }
+	| { kind: "opaque"; label: string };
+
+export interface PermissionConfig {
+	$schema?: string;
+	version: 1;
+	profile?: PermissionProfile;
+	files?: {
+		roots?: Array<{ path: string; access: FileRootAccess }>;
+		outsideRoots?: Partial<Record<FileAccess, PermissionEffect>>;
+		rules?: EffectRules<FileRule>;
+	};
+	tools?: SubjectRuleSet<ToolSubjectConfig>;
+	mcp?: {
+		default?: PermissionEffect;
+		servers?: Record<string, { default?: PermissionEffect; tools?: Record<string, PermissionEffect> }>;
+	};
+	skills?: SubjectRuleSet<PermissionEffect>;
+	agents?: SubjectRuleSet<PermissionEffect>;
+	audit?: { enabled: boolean };
 }
 
-export const permissionActions: readonly PermissionAction[] = [
-	"fs.list",
-	"fs.read",
-	"fs.create",
-	"fs.update",
-	"fs.replace",
-	"fs.delete",
-	"fs.move",
+export interface EffectRules<T> {
+	deny?: T[];
+	ask?: T[];
+	allow?: T[];
+}
+
+export interface FileRule {
+	id?: string;
+	paths: string[];
+	access: FileAccess[];
+}
+
+export type ToolSubjectConfig =
+	| PermissionEffect
+	| {
+			default?: PermissionEffect;
+			commands?: EffectRules<string>;
+	  };
+
+export interface SubjectRuleSet<T> {
+	default?: PermissionEffect;
+	items?: Record<string, T>;
+}
+
+export const permissionProfiles: readonly PermissionProfile[] = ["cautious", "standard", "read-only", "unrestricted"] as const;
+export const permissionEffects: readonly PermissionEffect[] = ["allow", "ask", "deny"] as const;
+export const fileAccesses: readonly FileAccess[] = ["read", "write"] as const;
+export const fileRootAccesses: readonly FileRootAccess[] = ["read-only", "read-write"] as const;
+export const writeOperations: readonly PermissionOperation[] = [
+	"file.create",
+	"file.update",
+	"file.replace",
+	"file.delete",
+	"file.move",
 ] as const;
 
-export const permissionToolNames: readonly PermissionToolName[] = ["ls", "read", "edit"] as const;
+export function isWriteOperation(operation: PermissionOperation): boolean {
+	return (writeOperations as readonly string[]).includes(operation);
+}
 
-export const permissionEffects: readonly PermissionEffect[] = ["allow", "ask", "deny"] as const;
-
-export const permissionModes: readonly PermissionMode[] = ["safe", "read-only", "yolo"] as const;
-
-export const resourceBoundaries: readonly ResourceBoundary[] = ["workspace", "external", "system", "sensitive"] as const;
-
-export function isWriteAction(action: PermissionAction): boolean {
-	return action !== "fs.list" && action !== "fs.read";
+export function effectRank(effect: PermissionEffect): number {
+	if (effect === "deny") return 3;
+	if (effect === "ask") return 2;
+	return 1;
 }

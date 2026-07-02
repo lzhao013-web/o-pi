@@ -3,14 +3,12 @@ import { defaultIgnoreEngine } from "./ignore/ignore-engine.js";
 import {
 	defaultPermissionService,
 	defaultPromptContext,
-	pathResolveFailure,
 	permissionFailure,
 	type FileToolPermissionRuntime,
 } from "./permission-runtime.js";
 import { resolveExistingFile, resolveWorkspaceRoot } from "./path-security.js";
 import { readTextFile, sliceTextByLineRange } from "./text-file.js";
 import type { ReadParams, ReadSuccess, ToolOutcome } from "./types.js";
-import { accessForPath } from "../permissions/access-extractors.js";
 
 /** read 按权限读取 UTF-8 文本、行范围、版本和换行元数据，不写入任何文件。 */
 export async function readWorkspaceFile(
@@ -22,24 +20,16 @@ export async function readWorkspaceFile(
 	const rangeError = validateRangeSyntax(params, params.path);
 	if (rangeError) return rangeError;
 	const permissionService = runtime.permissionService ?? defaultPermissionService(workspaceRoot);
-	let access;
-	try {
-		access = await accessForPath(permissionService.resourceResolver, "fs.read", params.path);
-	} catch (error) {
-		const failure = pathResolveFailure(error);
-		if (failure !== undefined) return failure;
-		throw error;
-	}
 	const authorization = await permissionService.authorize({
 		toolCallId: runtime.toolCallId ?? "direct-read",
 		toolName: "read",
-		accesses: [access],
 		normalizedToolInput: params,
 		promptContext: runtime.promptContext ?? defaultPromptContext(),
+		consumeLease: true,
 	});
-	if (!authorization.ok) return permissionFailure(authorization);
-	if (!(await permissionService.verifyAccessesUnchanged([access]))) {
-		return fail("PERMISSION_CONTEXT_CHANGED", "Permission context changed before reading.", { path: access.displayPath });
+	if (!authorization.allowed) return permissionFailure({ code: authorization.error.code, message: authorization.error.message, resources: [] });
+	if (!(await permissionService.verifyRequestUnchanged(authorization.request, { toolName: "read", normalizedToolInput: params }))) {
+		return fail("PERMISSION_CONTEXT_CHANGED", "Permission context changed before reading.", { path: params.path });
 	}
 	const resolved = await resolveExistingFile(workspaceRoot, params.path);
 	if (isFailed(resolved)) return resolved;

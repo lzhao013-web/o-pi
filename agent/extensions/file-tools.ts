@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { editWorkspace } from "../../src/file-tools/edit-tool.js";
 import { listWorkspaceDirectory } from "../../src/file-tools/ls-tool.js";
 import { readWorkspaceFile } from "../../src/file-tools/read-tool.js";
@@ -6,106 +7,31 @@ import type { EditParams, LsParams, ReadParams } from "../../src/file-tools/type
 import { promptContextFromUi, type PermissionCommandContext } from "../../src/permissions/permission-commands.js";
 import { getPermissionServiceRegistry } from "../../src/pi-runtime/permission-service-registry.js";
 
-const lsParameters = {
-	type: "object",
-	properties: {
-		path: { type: "string", description: "Directory path. Workspace paths run directly; external absolute paths may ask." },
-	},
-	required: ["path"],
-	additionalProperties: false,
-} as const;
+const lsParameters = Type.Object({ path: Type.String({ description: "Directory path." }) });
+const readParameters = Type.Object({
+	path: Type.String({ description: "File path." }),
+	start_line: Type.Optional(Type.Number({ description: "Optional 1-based inclusive start line." })),
+	end_line: Type.Optional(Type.Number({ description: "Optional 1-based inclusive end line." })),
+});
+const editParameters = Type.Object({
+	operations: Type.Array(
+		Type.Union([
+			Type.Object({ type: Type.Literal("create_file"), path: Type.String(), content: Type.String() }),
+			Type.Object({ type: Type.Literal("update_file"), path: Type.String(), base_version: Type.String(), diff: Type.String() }),
+			Type.Object({ type: Type.Literal("replace_file"), path: Type.String(), base_version: Type.String(), content: Type.String() }),
+			Type.Object({ type: Type.Literal("delete_file"), path: Type.String(), base_version: Type.String() }),
+			Type.Object({ type: Type.Literal("move_file"), from: Type.String(), to: Type.String(), base_version: Type.String() }),
+		]),
+		{ minItems: 1, description: "Structured file operations applied as one transaction." },
+	),
+});
 
-const readParameters = {
-	type: "object",
-	properties: {
-		path: { type: "string", description: "File path. Workspace paths run directly; external absolute paths may ask." },
-		start_line: { type: "number", description: "Optional 1-based inclusive start line." },
-		end_line: { type: "number", description: "Optional 1-based inclusive end line." },
-	},
-	required: ["path"],
-	additionalProperties: false,
-} as const;
-
-const editParameters = {
-	type: "object",
-	properties: {
-		operations: {
-			type: "array",
-			minItems: 1,
-			description: "Structured file operations applied as one transaction.",
-			items: {
-				oneOf: [
-					{
-						type: "object",
-						properties: {
-							type: { const: "create_file" },
-							path: { type: "string", description: "New file path. External absolute paths may ask." },
-							content: { type: "string", description: "Complete file content to create." },
-						},
-						required: ["type", "path", "content"],
-						additionalProperties: false,
-					},
-					{
-						type: "object",
-						properties: {
-							type: { const: "update_file" },
-							path: { type: "string", description: "Existing file path. External absolute paths may ask." },
-							base_version: { type: "string", description: "Version returned by read for this file." },
-							diff: {
-								type: "string",
-								description:
-									"Single-file Codex-style context diff. Use @@ hunks, space context, - removals, + additions. No file headers or paths.",
-							},
-						},
-						required: ["type", "path", "base_version", "diff"],
-						additionalProperties: false,
-					},
-					{
-						type: "object",
-						properties: {
-							type: { const: "replace_file" },
-							path: { type: "string", description: "Existing file path. External absolute paths may ask." },
-							base_version: { type: "string", description: "Version returned by read for this file." },
-							content: { type: "string", description: "Complete replacement file content." },
-						},
-						required: ["type", "path", "base_version", "content"],
-						additionalProperties: false,
-					},
-					{
-						type: "object",
-						properties: {
-							type: { const: "delete_file" },
-							path: { type: "string", description: "Existing file path. External absolute paths may ask." },
-							base_version: { type: "string", description: "Version returned by read for this file." },
-						},
-						required: ["type", "path", "base_version"],
-						additionalProperties: false,
-					},
-					{
-						type: "object",
-						properties: {
-							type: { const: "move_file" },
-							from: { type: "string", description: "Existing source file path. External absolute paths may ask." },
-							to: { type: "string", description: "New target file path. External absolute paths may ask." },
-							base_version: { type: "string", description: "Version returned by read for the source file." },
-						},
-						required: ["type", "from", "to", "base_version"],
-						additionalProperties: false,
-					},
-				],
-			},
-		},
-	},
-	required: ["operations"],
-	additionalProperties: false,
-} as const;
-
-/** 注册覆盖版 ls/read/edit；工具启用状态由 active-tools.ts 独立扩展处理。 */
+/** 注册覆盖版 ls/read/edit；权限由 tool_call 门禁与执行阶段 lease 共同保证。 */
 export default function fileTools(pi: ExtensionAPI): void {
 	const registry = getPermissionServiceRegistry();
 	const serviceFor = (ctx: PermissionCommandContext) => registry.serviceFor(ctx);
 
-	pi.registerTool<LsParams>({
+	pi.registerTool({
 		name: "ls",
 		label: "ls",
 		description: "List the direct children of a directory. The result is non-recursive and does not include file contents.",
@@ -114,7 +40,7 @@ export default function fileTools(pi: ExtensionAPI): void {
 		parameters: lsParameters,
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			const service = await serviceFor(ctx);
-			const result = await listWorkspaceDirectory(ctx.cwd, params, {
+			const result = await listWorkspaceDirectory(ctx.cwd, params as LsParams, {
 				permissionService: service,
 				toolCallId,
 				promptContext: promptContextFromUi(ctx, 120000),
@@ -126,7 +52,7 @@ export default function fileTools(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerTool<ReadParams>({
+	pi.registerTool({
 		name: "read",
 		label: "read",
 		description:
@@ -139,7 +65,7 @@ export default function fileTools(pi: ExtensionAPI): void {
 		parameters: readParameters,
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			const service = await serviceFor(ctx);
-			const result = await readWorkspaceFile(ctx.cwd, params, {
+			const result = await readWorkspaceFile(ctx.cwd, params as ReadParams, {
 				permissionService: service,
 				toolCallId,
 				promptContext: promptContextFromUi(ctx, 120000),
@@ -151,7 +77,7 @@ export default function fileTools(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerTool<EditParams>({
+	pi.registerTool({
 		name: "edit",
 		label: "edit",
 		description:
@@ -164,7 +90,7 @@ export default function fileTools(pi: ExtensionAPI): void {
 		parameters: editParameters,
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			const service = await serviceFor(ctx);
-			const result = await editWorkspace(ctx.cwd, params, {
+			const result = await editWorkspace(ctx.cwd, params as EditParams, {
 				permission: {
 					permissionService: service,
 					toolCallId,
