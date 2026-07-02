@@ -6,7 +6,7 @@
 
 用户不负责 TypeScript 开发。你必须主动完成分析、设计、实现、重构、验证和文档更新，不得把代码修改工作转交给用户。
 
-本项目将被用于 `pi` 的配置目录
+本项目将被用于 `pi` 的配置目录, 本文件夹即会作为 `~/.pi`
 
 ## 首要原则
 
@@ -41,11 +41,11 @@
 始终选择满足需求的最简单官方机制：
 
 * 项目长期开发规范：`AGENTS.md`
-* 追加默认系统提示词：`.pi/APPEND_SYSTEM.md`
-* 完全替换系统提示词：`.pi/SYSTEM.md`
-* 固定任务模板：`.pi/prompts/`
-* 按需知识或复杂工作流：`.pi/skills/`
-* 工具、命令、事件钩子或运行时行为：`.pi/extensions/`
+* 追加默认系统提示词：`~/.pi/agent/APPEND_SYSTEM.md`
+* 完全替换系统提示词：`~/.pi/agent/SYSTEM.md`
+* 固定任务模板：`~/.pi/agent/prompts/`
+* 按需知识或复杂工作流：`~/.pi/agent/skills/`
+* 工具、命令、事件钩子或运行时行为：`~/.pi/agent/extensions/`
 
 Markdown 配置能够解决的问题，不得使用 TypeScript 扩展实现。
 
