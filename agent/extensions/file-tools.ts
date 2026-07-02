@@ -1,7 +1,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { editWorkspace } from "../../src/file-tools/edit-tool.js";
+import { listWorkspaceDirectory } from "../../src/file-tools/ls-tool.js";
 import { readWorkspaceFile } from "../../src/file-tools/read-tool.js";
-import type { EditParams, ReadParams } from "../../src/file-tools/types.js";
+import type { EditParams, LsParams, ReadParams } from "../../src/file-tools/types.js";
+
+const lsParameters = {
+	type: "object",
+	properties: {
+		path: { type: "string", description: "A path relative to the workspace root. The path must refer to a directory." },
+	},
+	required: ["path"],
+	additionalProperties: false,
+} as const;
 
 const readParameters = {
 	type: "object",
@@ -88,8 +98,24 @@ const editParameters = {
 	additionalProperties: false,
 } as const;
 
-/** 注册覆盖版 read/edit；工具启用状态由 active-tools.ts 独立扩展处理。 */
+/** 注册覆盖版 ls/read/edit；工具启用状态由 active-tools.ts 独立扩展处理。 */
 export default function fileTools(pi: ExtensionAPI): void {
+	pi.registerTool<LsParams>({
+		name: "ls",
+		label: "ls",
+		description: "List the direct children of a directory. The result is non-recursive and does not include file contents.",
+		promptSnippet: "List direct children of a workspace directory",
+		promptGuidelines: ["Use ls to discover directory contents before choosing files to read."],
+		parameters: lsParameters,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await listWorkspaceDirectory(ctx.cwd, params);
+			return {
+				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+				details: result,
+			};
+		},
+	});
+
 	pi.registerTool<ReadParams>({
 		name: "read",
 		label: "read",
