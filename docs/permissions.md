@@ -4,8 +4,9 @@
 
 ## 模型
 
-策略文件有两层：
+策略文件核心字段：
 
+* `mode`：全局默认权限模式，支持 `safe`、`read-only`、`yolo`；会话内可用 `/permissions mode` 临时覆盖。
 * 顶层 `tools`：按注册工具名控制 `tool_call` 是否可执行，支持精确名和 `*` 通配。
 * `defaults/rules`：只控制 `ls/read/edit` 的路径访问；内部会转换成文件动作，用于审计、风险判断和执行前重验证。
 
@@ -39,6 +40,7 @@ schema：`agent/permissions.schema.json`。
 {
 	"$schema": "./permissions.schema.json",
 	"version": 1,
+	"mode": "safe",
 	"tools": {
 		"bash": "deny"
 	},
@@ -87,6 +89,8 @@ schema：`agent/permissions.schema.json`。
 `yolo`：普通 ask 视为 allow，但不能覆盖 hard deny、全局 deny、项目 deny、sensitive、自我保护或 OS 错误。
 
 ## 命令
+
+`agent/extensions/permissions.ts` 独立注册权限命令；文件工具扩展只注册 `ls/read/edit`。
 
 ```text
 /permissions
