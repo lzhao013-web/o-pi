@@ -1,11 +1,9 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { editWorkspace } from "../../src/file-tools/edit-tool.js";
 import { listWorkspaceDirectory } from "../../src/file-tools/ls-tool.js";
 import { readWorkspaceFile } from "../../src/file-tools/read-tool.js";
 import type { EditParams, LsParams, ReadParams } from "../../src/file-tools/types.js";
-import { promptContextFromUi, type SecurityCommandContext } from "../../src/security/config/commands.js";
-import { getSecurityServiceRegistry } from "../../src/pi-runtime/security-service-registry.js";
 
 const lsParameters = Type.Object({ path: Type.String({ description: "Directory path." }) });
 const readParameters = Type.Object({
@@ -26,15 +24,8 @@ const editParameters = Type.Object({
 	),
 });
 
-/** 注册覆盖版 ls/read/edit；权限由 tool_call 门禁与执行阶段 lease 共同保证。 */
+/** 注册覆盖版 ls/read/edit；工具自身只负责 workspace 内文件访问。 */
 export default function fileTools(pi: ExtensionAPI): void {
-	const registry = getSecurityServiceRegistry();
-	const serviceFor = async (ctx: SecurityCommandContext) => {
-		const service = await registry.serviceFor(ctx);
-		await service.syncRegisteredTools(pi.getAllTools());
-		return service;
-	};
-
 	pi.registerTool({
 		name: "ls",
 		label: "ls",
@@ -42,13 +33,8 @@ export default function fileTools(pi: ExtensionAPI): void {
 		promptSnippet: "List direct children of a workspace directory",
 		promptGuidelines: ["Use ls to discover directory contents before choosing files to read."],
 		parameters: lsParameters,
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			const service = await serviceFor(ctx);
-			const result = await listWorkspaceDirectory(ctx.cwd, params as LsParams, {
-				securityService: service,
-				toolCallId,
-				promptContext: promptContextFromUi(ctx, 120000),
-			});
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await listWorkspaceDirectory(ctx.cwd, params as LsParams);
 			return {
 				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 				details: result,
@@ -67,13 +53,8 @@ export default function fileTools(pi: ExtensionAPI): void {
 			"If edit returns STALE_BASE_VERSION or DIFF_CONTEXT_*, call read again and generate a new operation.",
 		],
 		parameters: readParameters,
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			const service = await serviceFor(ctx);
-			const result = await readWorkspaceFile(ctx.cwd, params as ReadParams, {
-				securityService: service,
-				toolCallId,
-				promptContext: promptContextFromUi(ctx, 120000),
-			});
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await readWorkspaceFile(ctx.cwd, params as ReadParams);
 			return {
 				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 				details: result,
@@ -92,15 +73,8 @@ export default function fileTools(pi: ExtensionAPI): void {
 			"Use create_file only for new files and replace_file only for existing files.",
 		],
 		parameters: editParameters,
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			const service = await serviceFor(ctx);
-			const result = await editWorkspace(ctx.cwd, params as EditParams, {
-				permission: {
-					securityService: service,
-					toolCallId,
-					promptContext: promptContextFromUi(ctx, 120000),
-				},
-			});
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await editWorkspace(ctx.cwd, params as EditParams);
 			return {
 				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 				details: result,

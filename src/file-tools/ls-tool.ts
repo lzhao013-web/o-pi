@@ -1,13 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { fail, isFailed } from "./errors.js";
 import { defaultIgnoreEngine } from "./ignore/ignore-engine.js";
-import {
-	defaultSecurityService,
-	defaultPromptContext,
-	permissionFailure,
-	type FileToolPermissionRuntime,
-} from "./permission-runtime.js";
-import { isProtectedWorkspacePath, resolveExistingDirectory, resolveWorkspaceRoot } from "./path-security.js";
+import { isWorkspaceMetadataPath, resolveExistingDirectory, resolveWorkspaceRoot } from "./path-resolver.js";
 import type { LsEntry, LsEntryType, LsParams, LsSuccess, ToolOutcome } from "./types.js";
 
 const MAX_LS_ENTRIES = 200;
@@ -20,21 +14,8 @@ const TYPE_RANK: Record<LsEntryType, number> = {
 };
 
 /** ls 只列出目录直属成员；不递归、不读取文件内容、不修改 workspace。 */
-export async function listWorkspaceDirectory(
-	cwd: string,
-	params: LsParams,
-	runtime: FileToolPermissionRuntime = {},
-): Promise<ToolOutcome<LsSuccess>> {
+export async function listWorkspaceDirectory(cwd: string, params: LsParams): Promise<ToolOutcome<LsSuccess>> {
 	const workspaceRoot = await resolveWorkspaceRoot(cwd);
-	const securityService = runtime.securityService ?? defaultSecurityService(workspaceRoot);
-	const authorization = await securityService.authorizeToolExecution({
-		toolName: "ls",
-		params,
-		toolCallId: runtime.toolCallId ?? "direct-ls",
-		promptContext: runtime.promptContext ?? defaultPromptContext(),
-		...(runtime.principal !== undefined ? { principal: runtime.principal } : {}),
-	});
-	if (!authorization.ok) return permissionFailure({ code: authorization.code, message: authorization.message, resources: [] });
 	const resolved = await resolveExistingDirectory(workspaceRoot, params.path);
 	if (isFailed(resolved)) return resolved;
 	const ignoreSnapshot = await defaultIgnoreEngine.createSnapshot(workspaceRoot);
@@ -43,8 +24,8 @@ export async function listWorkspaceDirectory(
 	try {
 		rawEntries = await readdir(resolved.realPath, { withFileTypes: true });
 	} catch (error) {
-		if (isPermissionError(error)) {
-			return fail("PERMISSION_DENIED", "Directory cannot be listed.", { path: resolved.relativePath });
+		if (isAccessDenied(error)) {
+			return fail("ACCESS_DENIED", "Directory cannot be listed.", { path: resolved.relativePath });
 		}
 		return fail("PATH_NOT_FOUND", "Directory does not exist.", { path: resolved.relativePath });
 	}
@@ -54,7 +35,7 @@ export async function listWorkspaceDirectory(
 	for (const entry of rawEntries) {
 		const entryPath = childRelativePath(resolved.relativePath, entry.name);
 		const workspaceEntry = isWorkspaceRelative(entryPath);
-		if (workspaceEntry && isProtectedWorkspacePath(entryPath)) {
+		if (workspaceEntry && isWorkspaceMetadataPath(entryPath)) {
 			blockedEntries += 1;
 			continue;
 		}
@@ -132,6 +113,6 @@ function shortIgnoreSource(sourceType: string): string {
 	return sourceType;
 }
 
-function isPermissionError(error: unknown): boolean {
+function isAccessDenied(error: unknown): boolean {
 	return typeof error === "object" && error !== null && "code" in error && (error.code === "EACCES" || error.code === "EPERM");
 }

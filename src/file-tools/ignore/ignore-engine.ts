@@ -1,7 +1,7 @@
 import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import ignoreFactory from "ignore";
-import { isProtectedWorkspacePath } from "../path-security.js";
+import { isWorkspaceMetadataPath } from "../path-resolver.js";
 import { resolveIgnoreConfig } from "./ignore-config.js";
 import { loadGitTrackedFiles } from "./git-tracked-files.js";
 import type {
@@ -250,7 +250,7 @@ async function collectNestedRuleFiles(
 	files: RuleFile[],
 	diagnostics: IgnoreDiagnostic[],
 ): Promise<void> {
-	if (relativeDirectory !== "." && isProtectedWorkspacePath(relativeDirectory)) return;
+	if (relativeDirectory !== "." && isWorkspaceMetadataPath(relativeDirectory)) return;
 	const absoluteDirectory = path.join(root, relativeDirectory === "." ? "" : relativeDirectory);
 	let entries;
 	try {
@@ -272,7 +272,7 @@ async function collectNestedRuleFiles(
 			continue;
 		}
 		if (!entry.isDirectory()) continue;
-		if (isProtectedWorkspacePath(childRelative)) continue;
+		if (isWorkspaceMetadataPath(childRelative)) continue;
 		if (childRelative !== "." && shouldSkipRuleDiscovery(childRelative)) continue;
 		const allowPiNested = config.piignore.nested || relativeDirectory === ".";
 		const allowGitNested = config.gitignore.nested || relativeDirectory === ".";

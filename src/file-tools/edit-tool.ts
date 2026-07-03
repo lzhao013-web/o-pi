@@ -2,13 +2,7 @@ import { stat, unlink } from "node:fs/promises";
 import { fail, isFailed } from "./errors.js";
 import { parseContextDiff } from "./diff-parser.js";
 import { defaultIgnoreEngine } from "./ignore/ignore-engine.js";
-import {
-	defaultSecurityService,
-	defaultPromptContext,
-	permissionFailure,
-	type FileToolPermissionRuntime,
-} from "./permission-runtime.js";
-import { fileExists, resolveExistingFile, resolveTargetFile, resolveWorkspaceRoot } from "./path-security.js";
+import { fileExists, resolveExistingFile, resolveTargetFile, resolveWorkspaceRoot } from "./path-resolver.js";
 import {
 	buildTextBytes,
 	decodeTextFile,
@@ -56,7 +50,6 @@ interface StagedState {
 
 export interface EditRuntime {
 	writeFileAtomic?: (targetPath: string, bytes: Buffer, mode?: number) => Promise<void>;
-	permission?: FileToolPermissionRuntime;
 }
 
 /** edit 是唯一写入口：校验结构化 operations、全量暂存，再按逻辑事务提交。 */
@@ -67,15 +60,6 @@ export async function editWorkspace(cwd: string, params: unknown, runtime: EditR
 	if (lexicalConflict) return lexicalConflict;
 
 	const workspaceRoot = await resolveWorkspaceRoot(cwd);
-	const securityService = runtime.permission?.securityService ?? defaultSecurityService(workspaceRoot);
-	const authorization = await securityService.authorizeToolExecution({
-		toolName: "edit",
-		params: input,
-		toolCallId: runtime.permission?.toolCallId ?? "direct-edit",
-		promptContext: runtime.permission?.promptContext ?? defaultPromptContext(),
-		...(runtime.permission?.principal !== undefined ? { principal: runtime.permission.principal } : {}),
-	});
-	if (!authorization.ok) return permissionFailure({ code: authorization.code, message: authorization.message, resources: [] });
 	const ignoreSnapshot = await defaultIgnoreEngine.createSnapshot(workspaceRoot);
 	const staged = await stageOperations(workspaceRoot, input.operations, ignoreSnapshot);
 	if (isFailed(staged)) return staged;
@@ -403,36 +387,6 @@ function noteSoftIgnore(ignoreSnapshot: IgnoreSnapshot, relativePath: string): v
 
 function isWorkspaceRelative(value: string): boolean {
 	return value === "." || (!value.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(value));
-}
-
-function sanitizeEditInput(input: EditParams): unknown {
-	return {
-		operations: input.operations.map((operation) => {
-			if (operation.type === "create_file") {
-				return { type: operation.type, path: operation.path, content_hash: sha256Version(Buffer.from(operation.content, "utf8")) };
-			}
-			if (operation.type === "replace_file") {
-				return {
-					type: operation.type,
-					path: operation.path,
-					base_version: operation.base_version,
-					content_hash: sha256Version(Buffer.from(operation.content, "utf8")),
-				};
-			}
-			if (operation.type === "update_file") {
-				return {
-					type: operation.type,
-					path: operation.path,
-					base_version: operation.base_version,
-					diff_hash: sha256Version(Buffer.from(operation.diff, "utf8")),
-				};
-			}
-			if (operation.type === "delete_file") {
-				return { type: operation.type, path: operation.path, base_version: operation.base_version };
-			}
-			return { type: operation.type, from: operation.from, to: operation.to, base_version: operation.base_version };
-		}),
-	};
 }
 
 async function readExistingWithVersion(

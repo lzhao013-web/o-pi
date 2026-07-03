@@ -1,33 +1,14 @@
 import { fail, isFailed } from "./errors.js";
 import { defaultIgnoreEngine } from "./ignore/ignore-engine.js";
-import {
-	defaultSecurityService,
-	defaultPromptContext,
-	permissionFailure,
-	type FileToolPermissionRuntime,
-} from "./permission-runtime.js";
-import { resolveExistingFile, resolveWorkspaceRoot } from "./path-security.js";
+import { resolveExistingFile, resolveWorkspaceRoot } from "./path-resolver.js";
 import { readTextFile, sliceTextByLineRange } from "./text-file.js";
 import type { ReadParams, ReadSuccess, ToolOutcome } from "./types.js";
 
-/** read 按权限读取 UTF-8 文本、行范围、版本和换行元数据，不写入任何文件。 */
-export async function readWorkspaceFile(
-	cwd: string,
-	params: ReadParams,
-	runtime: FileToolPermissionRuntime = {},
-): Promise<ToolOutcome<ReadSuccess>> {
+/** read 读取 UTF-8 文本、行范围、版本和换行元数据，不写入任何文件。 */
+export async function readWorkspaceFile(cwd: string, params: ReadParams): Promise<ToolOutcome<ReadSuccess>> {
 	const workspaceRoot = await resolveWorkspaceRoot(cwd);
 	const rangeError = validateRangeSyntax(params, params.path);
 	if (rangeError) return rangeError;
-	const securityService = runtime.securityService ?? defaultSecurityService(workspaceRoot);
-	const authorization = await securityService.authorizeToolExecution({
-		toolName: "read",
-		params,
-		toolCallId: runtime.toolCallId ?? "direct-read",
-		promptContext: runtime.promptContext ?? defaultPromptContext(),
-		...(runtime.principal !== undefined ? { principal: runtime.principal } : {}),
-	});
-	if (!authorization.ok) return permissionFailure({ code: authorization.code, message: authorization.message, resources: [] });
 	const resolved = await resolveExistingFile(workspaceRoot, params.path);
 	if (isFailed(resolved)) return resolved;
 	const ignoreSnapshot = await defaultIgnoreEngine.createSnapshot(workspaceRoot);
