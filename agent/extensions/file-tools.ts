@@ -1,11 +1,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { editWorkspace } from "../../src/file-tools/edit-tool.js";
+import { findWorkspaceFiles } from "../../src/file-tools/find-tool.js";
 import { listWorkspaceDirectory } from "../../src/file-tools/ls-tool.js";
 import { readWorkspaceFile } from "../../src/file-tools/read-tool.js";
-import type { EditParams, LsParams, ReadParams } from "../../src/file-tools/types.js";
+import type { EditParams, FindParams, LsParams, ReadParams } from "../../src/file-tools/types.js";
 
 const lsParameters = Type.Object({ path: Type.String({ description: "Directory path." }) });
+const findParameters = Type.Object({
+	pattern: Type.String({ description: "Glob relative to path. Use ** for recursive search." }),
+	path: Type.Optional(Type.String({ description: "Workspace-relative directory to search. Defaults to ." })),
+});
 const readParameters = Type.Object({
 	path: Type.String({ description: "File path." }),
 	start_line: Type.Optional(Type.Number({ description: "Optional 1-based inclusive start line." })),
@@ -24,7 +29,7 @@ const editParameters = Type.Object({
 	),
 });
 
-/** 注册覆盖版 ls/read/edit；路径权限由 Pi 进程和操作系统决定。 */
+/** 注册覆盖版 ls/find/read/edit；路径权限由 Pi 进程和操作系统决定。 */
 export default function fileTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ls",
@@ -38,6 +43,28 @@ export default function fileTools(pi: ExtensionAPI): void {
 			return {
 				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 				details: result,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "find",
+		label: "find",
+		description: "Recursively find regular files under a workspace-relative directory by glob path pattern. Does not read file contents.",
+		promptSnippet: "Find files by recursive glob path pattern",
+		promptGuidelines: ["Use find when you know a filename or path pattern but not the exact file path.", "Use read after find to inspect matching files."],
+		parameters: findParameters,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const result = await findWorkspaceFiles(ctx.cwd, params as FindParams, signal);
+			if ("status" in result) {
+				return {
+					content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+					details: result,
+				};
+			}
+			return {
+				content: [{ type: "text", text: result.content }],
+				details: result.details,
 			};
 		},
 	});

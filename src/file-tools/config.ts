@@ -20,6 +20,11 @@ export interface FileToolsConfig {
 		ls_entries: number;
 		read_lines: number;
 		read_bytes: number;
+		find_output_token_budget: number;
+		find_flat_result_limit: number;
+		find_grouped_result_limit: number;
+		find_max_matches_scanned: number;
+		find_max_exact_paths: number;
 	};
 	ignore: {
 		piignore: boolean;
@@ -49,6 +54,11 @@ const defaultConfig: FileToolsConfig = {
 		ls_entries: DEFAULT_MAX_LS_ENTRIES,
 		read_lines: DEFAULT_MAX_READ_LINES,
 		read_bytes: DEFAULT_MAX_READ_BYTES,
+		find_output_token_budget: 800,
+		find_flat_result_limit: 5,
+		find_grouped_result_limit: 40,
+		find_max_matches_scanned: 100_000,
+		find_max_exact_paths: 200,
 	},
 	ignore: {
 		piignore: true,
@@ -133,6 +143,11 @@ function mergeConfig(raw: RawFileToolsConfig): FileToolsConfig {
 			ls_entries: raw.limits?.ls_entries ?? defaultConfig.limits.ls_entries,
 			read_lines: raw.limits?.read_lines ?? defaultConfig.limits.read_lines,
 			read_bytes: raw.limits?.read_bytes ?? defaultConfig.limits.read_bytes,
+			find_output_token_budget: raw.limits?.find_output_token_budget ?? defaultConfig.limits.find_output_token_budget,
+			find_flat_result_limit: raw.limits?.find_flat_result_limit ?? defaultConfig.limits.find_flat_result_limit,
+			find_grouped_result_limit: raw.limits?.find_grouped_result_limit ?? defaultConfig.limits.find_grouped_result_limit,
+			find_max_matches_scanned: raw.limits?.find_max_matches_scanned ?? defaultConfig.limits.find_max_matches_scanned,
+			find_max_exact_paths: raw.limits?.find_max_exact_paths ?? defaultConfig.limits.find_max_exact_paths,
 		},
 		ignore: {
 			piignore: raw.ignore?.piignore ?? defaultConfig.ignore.piignore,

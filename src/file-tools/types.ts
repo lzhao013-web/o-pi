@@ -20,6 +20,7 @@ export type FileToolErrorCode =
 	| "ENCODING_UNSUPPORTED"
 	| "BINARY_FILE_UNSUPPORTED"
 	| "OUTPUT_LIMIT_EXCEEDED"
+	| "OPERATION_ABORTED"
 	| "TRANSACTION_VALIDATION_FAILED"
 	| "TRANSACTION_COMMIT_FAILED"
 	| "TRANSACTION_ROLLBACK_FAILED";
@@ -66,6 +67,12 @@ export interface LsParams {
 	path: string;
 }
 
+/** find 参数：path 是 workspace-relative 搜索根，pattern 是相对该根的 glob。 */
+export interface FindParams {
+	pattern: string;
+	path?: string;
+}
+
 export type LsEntryType = "directory" | "file" | "symlink" | "other";
 
 export interface LsEntry {
@@ -100,6 +107,24 @@ export interface ReadSuccess {
 	bom: boolean;
 	ignored?: boolean;
 	ignore_source?: string;
+}
+
+/** find 的内部结构化详情；不会完整序列化到模型可见正文。 */
+export interface FindDetails {
+	total: number;
+	exactPaths: string[];
+	collapsedGroups: Array<{
+		path: string;
+		count: number;
+	}>;
+	ignoredCount: number;
+	truncated: boolean;
+}
+
+/** find 成功结果：content 是模型可见紧凑文本，details 供 UI/内部逻辑使用。 */
+export interface FindSuccess {
+	content: string;
+	details: FindDetails;
 }
 
 export type EditOperationType = "create_file" | "update_file" | "replace_file" | "delete_file" | "move_file";

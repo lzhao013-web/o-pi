@@ -1,8 +1,9 @@
 # 文件工具设计
 
-本项目只向 Pi agent 暴露三个文件工具：
+本项目只向 Pi agent 暴露四个文件工具：
 
 * `ls`：发现某个目录下有什么。
+* `find`：在目录下按 glob 递归查找文件。
 * `read`：读取已知 UTF-8 文件内容和版本。
 * `edit`：唯一写入口，通过结构化 `operations` 修改文件系统状态。
 
@@ -10,18 +11,20 @@
 
 ```text
 使用 ls 浏览目录；
+使用 find 按路径模式查找文件；
 使用 read 读取明确的文件；
 使用 edit 修改文件；
 不要使用 ls 读取文件；
+不要使用 find 搜索文件内容；
 不要使用 read 列出目录；
 如果目录结果过大，请列出更具体的子目录。
 ```
 
-新增独立 `ls` 是为了把目录发现从文件读取中拆出，避免 `read` 自动降级成目录列表，也避免把目录浏览混入 shell、glob、grep 或 tree 行为。
+新增独立 `ls` / `find` 是为了把目录浏览、路径模式查找和文件读取拆开，避免 `read` 自动降级成目录列表，也避免把文件发现混入 shell、grep 或 tree 行为。
 
 扩展入口与实现分离：
 
-* `agent/extensions/file-tools.ts`：注册 `ls` / `read` / `edit`，定义工具 schema 和提示词元数据。
+* `agent/extensions/file-tools.ts`：注册 `ls` / `find` / `read` / `edit`，定义工具 schema 和提示词元数据。
 * `agent/extensions/block-builtin-tools.ts`：屏蔽 Pi 内置工具，保留扩展和 SDK 工具。
 * `agent/configs/file-tools.jsonc`：文件工具配置。
 * `agent/schemas/file-tools.schema.json`：配置 schema。
@@ -42,7 +45,7 @@ ignore：路径是否应从自动发现、遍历、搜索或索引中排除。
 状态行为：
 
 * 普通路径：`ls` 返回，`read` 允许，`edit` 允许，未来搜索/索引包含。
-* soft ignored：`ls` 返回并标记，显式 `read` 允许，`edit` 允许，未来搜索/索引默认跳过。
+* soft ignored：`ls` 返回并标记，显式 `read` 允许，`edit` 允许，`find` 默认跳过。
 * cwd 外路径：允许访问；不套用当前 cwd 的 ignore 规则。
 * blocked path：父目录 `ls` 隐藏，直接 `ls` / `read` / `edit` 拒绝。
 
@@ -59,7 +62,12 @@ ignore：路径是否应从自动发现、遍历、搜索或索引中排除。
 	"limits": {
 		"ls_entries": 200,
 		"read_lines": 2000,
-		"read_bytes": 51200
+		"read_bytes": 51200,
+		"find_output_token_budget": 800,
+		"find_flat_result_limit": 5,
+		"find_grouped_result_limit": 40,
+		"find_max_matches_scanned": 100000,
+		"find_max_exact_paths": 200
 	},
 	"ignore": {
 		"piignore": true,
@@ -77,6 +85,11 @@ ignore：路径是否应从自动发现、遍历、搜索或索引中排除。
 * `limits.ls_entries`：`ls` 单次最多返回条目数。
 * `limits.read_lines`：`read` 单次最多返回行数。
 * `limits.read_bytes`：`read` 单次最多返回 UTF-8 字节数。
+* `limits.find_output_token_budget`：`find` 模型可见输出预算，使用字符数近似 token。
+* `limits.find_flat_result_limit`：`find` 平铺输出的最大结果数；默认 5。
+* `limits.find_grouped_result_limit`：`find` 按目录完整分组输出的最大结果数；默认 40，超过后进入折叠压缩。
+* `limits.find_max_matches_scanned`：`find` 单次最多收集的匹配文件数，达到后标记 `truncated`。
+* `limits.find_max_exact_paths`：`find` 最多展开的精确路径数，其余结果折叠为目录组。
 * `ignore.piignore`：是否读取 `.piignore`。
 * `ignore.gitignore`：是否读取 `.gitignore`。
 * `ignore.git_tracked_files_bypass`：Git tracked 文件是否绕过 `.gitignore`。
@@ -281,6 +294,56 @@ symlink：
 
 `read(directory)` 返回 `NOT_A_FILE`，不会自动列目录。
 
+## find
+
+`find` 只按路径 glob 查找普通文件，不读取内容、不返回目录、不修改文件。
+
+参数：
+
+```json
+{
+	"path": "src",
+	"pattern": "**/*.{ts,tsx}"
+}
+```
+
+字段：
+
+* `path`：workspace-relative 搜索根目录，默认 `.`；不能是绝对路径或越过 workspace。
+* `pattern`：相对于 `path` 的 glob；`**` 表示递归；空字符串非法。
+
+成功结果是紧凑文本：
+
+```text
+3 files
+src/a.ts
+src/components/button.tsx
+src/index.ts
+```
+
+大量结果按公共目录前缀压缩：
+
+```text
+90 files; 9 exact, 81 summarized
+
+a/
+  file-00.ts
+  file-01.ts
+  file-02.ts
+
+a/** (27)
+b/** (27)
+c/** (27)
+```
+
+行为：
+
+* 结果路径始终相对 workspace root，统一使用 `/`。
+* 只返回普通文件；文件 symlink 不返回，目录 symlink 不进入。
+* 目录遍历使用 ignore `traverse` intent；文件匹配使用 `search` intent。
+* `blocked_path` 命中时拒绝或跳过；`.git/` 默认不可查。
+* 输出预算、最大扫描数和精确路径数由 `agent/configs/file-tools.jsonc` 的 `limits` 控制，不暴露为工具参数。
+
 ## edit
 
 `edit` 只接受结构化 `operations`，不接受字符串 patch DSL，不提供独立的写入、替换、删除、移动工具。
@@ -350,6 +413,7 @@ soft ignore 不阻止 `edit`。`edit` 只依据文件系统访问结果、文件
 
 ```text
 ls
+find
 read
 edit
 ```

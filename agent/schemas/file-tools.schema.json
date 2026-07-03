@@ -49,6 +49,36 @@
 					"minimum": 1024,
 					"maximum": 10485760,
 					"default": 51200
+				},
+				"find_output_token_budget": {
+					"type": "integer",
+					"minimum": 100,
+					"maximum": 10000,
+					"default": 800
+				},
+				"find_flat_result_limit": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 10000,
+					"default": 5
+				},
+				"find_grouped_result_limit": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 10000,
+					"default": 40
+				},
+				"find_max_matches_scanned": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 1000000,
+					"default": 100000
+				},
+				"find_max_exact_paths": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 10000,
+					"default": 200
 				}
 			}
 		},
