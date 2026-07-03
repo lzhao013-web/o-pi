@@ -23,7 +23,8 @@ export type FileToolErrorCode =
 	| "OPERATION_ABORTED"
 	| "TRANSACTION_VALIDATION_FAILED"
 	| "TRANSACTION_COMMIT_FAILED"
-	| "TRANSACTION_ROLLBACK_FAILED";
+	| "TRANSACTION_ROLLBACK_FAILED"
+	| "INVALID_REGEX";
 
 /** 机器可读错误；message 只用于帮助模型和人类理解。 */
 export interface FileToolError {
@@ -71,6 +72,64 @@ export interface LsParams {
 export interface FindParams {
 	pattern: string;
 	path?: string;
+}
+
+export type GrepMode = "content" | "files" | "count";
+
+export interface GrepParams {
+	path: string;
+	query: string;
+	/** grep 默认返回匹配行；files/count 用于先判断分布。 */
+	mode?: GrepMode;
+	/** 默认字面量搜索，避免调用方为常见标识符手动转义正则。 */
+	regex?: boolean;
+	/** 仅进一步缩小候选文件范围；ignore 和 workspace 边界仍由工具统一处理。 */
+	glob?: string;
+	ignore_case?: boolean;
+	/** 对称上下文行数，配置和实现共同限制到很小范围。 */
+	context?: number;
+	/** 最大返回匹配行数；总计数仍尽量精确统计。 */
+	limit?: number;
+}
+
+export interface GrepLineMatch {
+	line: number;
+	occurrences: number;
+	text: string;
+	text_truncated?: boolean;
+	context_before?: Array<{ line: number; text: string; text_truncated?: boolean }>;
+	context_after?: Array<{ line: number; text: string; text_truncated?: boolean }>;
+}
+
+export interface GrepFileMatches {
+	path: string;
+	total_matching_lines: number;
+	total_occurrences: number;
+	lines: GrepLineMatch[];
+	omitted_lines?: number;
+}
+
+export interface GrepSkippedFiles {
+	binary?: number;
+	invalid_utf8?: number;
+	access_denied?: number;
+	too_large?: number;
+}
+
+export interface GrepSuccess {
+	path: string;
+	query: string;
+	mode: GrepMode;
+	total_files: number;
+	total_matching_lines: number;
+	total_occurrences: number;
+	returned_files: number;
+	returned_lines: number;
+	scan_complete: boolean;
+	output_truncated: boolean;
+	files?: GrepFileMatches[];
+	skipped_files?: GrepSkippedFiles;
+	continuation_hint?: string;
 }
 
 export type LsEntryType = "directory" | "file" | "symlink" | "other";

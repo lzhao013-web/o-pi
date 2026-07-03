@@ -1,9 +1,10 @@
 # 文件工具设计
 
-本项目只向 Pi agent 暴露四个文件工具：
+本项目只向 Pi agent 暴露五个文件工具：
 
 * `ls`：发现某个目录下有什么。
 * `find`：在目录下按 glob 递归查找文件。
+* `grep`：在 UTF-8 workspace 文件中搜索文本。
 * `read`：读取已知 UTF-8 文件内容和版本。
 * `edit`：唯一写入口，通过结构化 `operations` 修改文件系统状态。
 
@@ -12,19 +13,21 @@
 ```text
 使用 ls 浏览目录；
 使用 find 按路径模式查找文件；
+使用 grep 按内容定位匹配行；
 使用 read 读取明确的文件；
 使用 edit 修改文件；
 不要使用 ls 读取文件；
 不要使用 find 搜索文件内容；
+不要使用 grep 查找文件路径或返回完整文件；
 不要使用 read 列出目录；
 如果目录结果过大，请列出更具体的子目录。
 ```
 
-新增独立 `ls` / `find` 是为了把目录浏览、路径模式查找和文件读取拆开，避免 `read` 自动降级成目录列表，也避免把文件发现混入 shell、grep 或 tree 行为。
+新增独立 `ls` / `find` / `grep` 是为了把目录浏览、路径模式查找、内容搜索和文件读取拆开，避免 `read` 自动降级成目录列表，也避免把文件发现或内容搜索混入 shell 行为。
 
 扩展入口与实现分离：
 
-* `agent/extensions/file-tools.ts`：注册 `ls` / `find` / `read` / `edit`，定义工具 schema 和提示词元数据。
+* `agent/extensions/file-tools.ts`：注册 `ls` / `find` / `grep` / `read` / `edit`，定义工具 schema 和提示词元数据。
 * `agent/extensions/block-builtin-tools.ts`：屏蔽 Pi 内置工具，保留扩展和 SDK 工具。
 * `agent/configs/file-tools.jsonc`：文件工具配置。
 * `agent/schemas/file-tools.schema.json`：配置 schema。
@@ -67,7 +70,14 @@ ignore：路径是否应从自动发现、遍历、搜索或索引中排除。
 		"find_flat_result_limit": 5,
 		"find_grouped_result_limit": 40,
 		"find_max_matches_scanned": 100000,
-		"find_max_exact_paths": 200
+		"find_max_exact_paths": 200,
+		"grep_matching_lines": 40,
+		"grep_max_matching_lines": 200,
+		"grep_model_output_chars": 8000,
+		"grep_snippet_chars": 240,
+		"grep_context_lines": 3,
+		"grep_max_file_bytes": 1048576,
+		"grep_max_files_scanned": 100000
 	},
 	"ignore": {
 		"piignore": true,
@@ -90,6 +100,13 @@ ignore：路径是否应从自动发现、遍历、搜索或索引中排除。
 * `limits.find_grouped_result_limit`：`find` 按目录完整分组输出的最大结果数；默认 40，超过后进入折叠压缩。
 * `limits.find_max_matches_scanned`：`find` 单次最多收集的匹配文件数，达到后标记 `truncated`。
 * `limits.find_max_exact_paths`：`find` 最多展开的精确路径数，其余结果折叠为目录组。
+* `limits.grep_matching_lines`：`grep` 默认返回的匹配行数。
+* `limits.grep_max_matching_lines`：`grep limit` 可请求的最大匹配行数。
+* `limits.grep_model_output_chars`：`grep` 模型可见文本硬上限。
+* `limits.grep_snippet_chars`：`grep` 单行片段最大字符数，超长行围绕匹配内容裁剪。
+* `limits.grep_context_lines`：`grep context` 最大对称上下文行数，默认 3。
+* `limits.grep_max_file_bytes`：`grep` 单个候选文件最大读取字节数，超出则跳过或显式报错。
+* `limits.grep_max_files_scanned`：`grep` 单次最多扫描候选文件数，达到后 `scan_complete: false`。
 * `ignore.piignore`：是否读取 `.piignore`。
 * `ignore.gitignore`：是否读取 `.gitignore`。
 * `ignore.git_tracked_files_bypass`：Git tracked 文件是否绕过 `.gitignore`。
@@ -344,6 +361,78 @@ c/** (27)
 * `blocked_path` 命中时拒绝或跳过；`.git/` 默认不可查。
 * 输出预算、最大扫描数和精确路径数由 `agent/configs/file-tools.jsonc` 的 `limits` 控制，不暴露为工具参数。
 
+## grep
+
+`grep` 只在 workspace 内的 UTF-8 普通文本文件中搜索内容，不查找路径、不返回完整文件、不修改文件。
+
+参数：
+
+```json
+{
+	"path": "src",
+	"query": "createSnapshot(",
+	"mode": "content",
+	"regex": false,
+	"glob": "**/*.ts",
+	"ignore_case": false,
+	"context": 0,
+	"limit": 40
+}
+```
+
+字段：
+
+* `path`：workspace 内的目录或普通文件；目录递归搜索，文件只搜索该文件。
+* `query`：搜索文本。默认按字面量匹配，只有 `regex: true` 时才按正则解释。
+* `mode`：`content` 返回匹配行；`files` 只返回匹配文件和计数；`count` 只返回总计数。默认 `content`。
+* `glob`：相对 `path` 的 glob，只进一步缩小候选文件范围；ignore、symlink 和 workspace 边界仍由工具统一处理。
+* `ignore_case`：默认大小写敏感。
+* `context`：对称上下文行数，范围 0-3，默认 0；重叠或相邻上下文区间会合并。
+* `limit`：`content` 模式最多返回的匹配行数，范围 1-200，默认 40。
+
+`content` 输出按文件聚合，文件路径只出现一次，同一行多个 occurrence 用 `×N` 标记：
+
+```text
+23 lines / 31 occurrences in 6 files; showing 12 lines
+
+src/a.ts [8 lines, 10 occurrences]
+12: export function createSnapshot(root: string) {
+19×2: return createSnapshot(createSnapshot(root))
+... 6 matching lines omitted
+```
+
+`files` 输出只展示分布：
+
+```text
+31 occurrences / 23 lines / 6 files
+src/a.ts  8 lines / 10 occurrences
+src/b.ts  3 lines / 3 occurrences
+```
+
+`count` 输出不包含路径和源码：
+
+```text
+31 occurrences / 23 lines / 6 files
+```
+
+行为：
+
+* 普通 dotfile 可搜索；`.git/` 等 `blocked_path` 不可搜索。
+* 目录遍历使用 ignore `traverse` intent；文件搜索使用 `search` intent。
+* ignored 文件不搜索；可 prune 的 ignored 目录不进入；存在反向 include 可能性的目录按 ignore engine 语义继续遍历。
+* 递归时不跟随文件或目录 symlink；显式 `path` 解析到 workspace 外时拒绝。
+* 二进制、非法 UTF-8、超大文件和局部权限失败在递归搜索中计入 `skipped_files`；显式搜索单个文件时返回对应错误。
+* 采样按文件轮转分配：每个匹配文件先返回一条，再返回第二条，避免高频文件占满输出。
+* 超长行围绕首个匹配位置裁剪，保证片段包含匹配内容。
+
+完整性：
+
+* `scan_complete: true` 且 `output_truncated: false`：扫描和输出都完整。
+* `scan_complete: true` 且 `output_truncated: true`：扫描完成，总计数精确，但模型可见输出被压缩。
+* `scan_complete: false`：扫描未完成，总计数是下界；模型可见输出使用 `>=`。
+
+无效正则、路径错误、权限错误、取消和搜索后端错误不会伪装成零匹配。
+
 ## edit
 
 `edit` 只接受结构化 `operations`，不接受字符串 patch DSL，不提供独立的写入、替换、删除、移动工具。
@@ -414,6 +503,7 @@ soft ignore 不阻止 `edit`。`edit` 只依据文件系统访问结果、文件
 ```text
 ls
 find
+grep
 read
 edit
 ```
