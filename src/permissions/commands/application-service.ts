@@ -131,7 +131,8 @@ export async function grantView(runtime: PermissionService, id: string) {
 export async function policyValidateView(runtime: PermissionService, scope: "global" | "project" | "all") {
 	const snapshot = await runtime.getPolicySnapshot();
 	const diagnostics = snapshot.diagnostics.filter((item) => scope === "all" || (scope === "global" ? item.file === snapshot.global.path : item.file === snapshot.project.path));
-	return { scope, valid: diagnostics.length === 0, diagnostics };
+	const warnings = snapshot.warnings.filter((item) => scope === "all" || (scope === "global" ? item.file === snapshot.global.path : item.file === snapshot.project.path));
+	return { scope, valid: diagnostics.length === 0, diagnostics, warnings };
 }
 
 /** 构造语义诊断 DTO；默认只报告，不自动修复。 */
@@ -139,6 +140,7 @@ export async function policyDoctorView(runtime: PermissionService) {
 	const snapshot = await runtime.getPolicySnapshot();
 	const findings = [
 		...snapshot.diagnostics.map(diagnosticFinding),
+		...snapshot.warnings.map(warningFinding),
 		...(snapshot.profile === "unrestricted"
 			? [{
 					code: "P201",
@@ -255,6 +257,19 @@ function diagnosticFinding(diagnostic: PolicyDiagnostic) {
 		sourcePath: diagnostic.file,
 		jsonPointer: diagnostic.pointer,
 		remediation: rootCanonicalize ? "Use an existing directory path for this root." : "Edit the policy and validate again.",
+	};
+}
+
+function warningFinding(diagnostic: PolicyDiagnostic) {
+	const rootCanonicalize = diagnostic.message.startsWith("Cannot canonicalize root ");
+	return {
+		code: rootCanonicalize ? "P404" : "P002",
+		severity: "warning" as const,
+		title: rootCanonicalize ? "File root is inactive" : "Policy warning",
+		message: diagnostic.message,
+		sourcePath: diagnostic.file,
+		jsonPointer: diagnostic.pointer,
+		remediation: rootCanonicalize ? "Create the directory or remove this root." : "Review the policy warning.",
 	};
 }
 

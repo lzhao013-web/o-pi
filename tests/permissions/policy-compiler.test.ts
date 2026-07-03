@@ -36,6 +36,29 @@ describe("policy compiler", () => {
 		await expect(policyDoctorView(service)).resolves.toMatchObject({ findings: expect.arrayContaining([expect.objectContaining({ code: "P404" })]) });
 	});
 
+	it("不存在的 root 只产生 warning，不阻断其他权限求值", async () => {
+		const globalPath = path.join(env.agentDir, "permissions.jsonc");
+		await writeFile(globalPath, JSON.stringify({
+			version: 1,
+			files: {
+				roots: [
+					{ path: "${workspace}", access: "read-write" },
+					{ path: "~/datasets", access: "read-only" },
+				],
+			},
+		}));
+		const service = new PermissionService({ workspaceRoot: env.workspace, agentDir: env.agentDir, projectTrusted: false, globalPolicyPath: globalPath });
+
+		const snapshot = await service.getPolicySnapshot();
+		expect(snapshot.valid).toBe(true);
+		expect(snapshot.roots).toHaveLength(1);
+		expect(snapshot.warnings).toHaveLength(1);
+
+		const result = await service.authorizeSubjectCall({ kind: "tool", configKey: "read", input: { path: "." }, executionId: "read", promptContext: { hasUI: false, timeoutMs: 1, prompt: async () => ({ decision: "deny" }) } });
+		expect(result).toMatchObject({ allowed: true });
+		await expect(policyDoctorView(service)).resolves.toMatchObject({ findings: expect.arrayContaining([expect.objectContaining({ code: "P404", severity: "warning" })]) });
+	});
+
 	it("policy doctor 报告重复、覆盖和权限相反的重叠 root", async () => {
 		const secret = path.join(env.workspace, "secret");
 		await mkdir(secret);

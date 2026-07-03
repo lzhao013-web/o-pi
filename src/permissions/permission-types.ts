@@ -249,6 +249,8 @@ export interface PolicySnapshot {
 	globalConfig?: PermissionConfig;
 	projectConfig?: PermissionConfig;
 	diagnostics: PolicyDiagnostic[];
+	/** 非致命策略问题；不会阻断授权，但需要在 doctor/validate 中提示用户。 */
+	warnings: PolicyDiagnostic[];
 	auditEnabled: boolean;
 }
 

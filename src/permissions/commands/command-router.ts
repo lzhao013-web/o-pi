@@ -370,8 +370,9 @@ function renderGrants(view: Awaited<ReturnType<typeof grantsView>>): string {
 }
 
 function renderValidate(view: Awaited<ReturnType<typeof policyValidateView>>): string {
-	if (view.valid) return `Policy ${view.scope}: valid`;
-	return renderLines([`Policy ${view.scope}: invalid`, "", renderDiagnostics(view.diagnostics)]);
+	if (view.valid && view.warnings.length === 0) return `Policy ${view.scope}: valid`;
+	if (view.valid) return renderLines([`Policy ${view.scope}: valid with warnings`, "", renderDiagnostics(view.warnings)]);
+	return renderLines([`Policy ${view.scope}: invalid`, "", renderDiagnostics(view.diagnostics), view.warnings.length > 0 ? "" : undefined, renderDiagnostics(view.warnings)]);
 }
 
 function renderDoctor(findings: Awaited<ReturnType<typeof policyDoctorView>>["findings"]): string {

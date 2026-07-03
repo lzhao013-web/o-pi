@@ -199,14 +199,17 @@ export class PolicyStore {
 		const valid = diagnostics.length === 0 && global.status !== "invalid" && global.status !== "load_failed" && projectFinal.status !== "invalid" && projectFinal.status !== "load_failed";
 		const profile = global.config?.profile ?? "standard";
 		let roots: FileRootGrant[] = [];
+		let warnings: PolicyDiagnostic[] = [];
 		if (valid) {
 			try {
-				roots = await compileRoots(this.options.workspaceRoot, this.options.agentDir, global.config);
+				const compiled = await compileRoots(this.options.workspaceRoot, this.options.agentDir, global.config, this.globalPath());
+				roots = compiled.roots;
+				warnings = compiled.warnings;
 			} catch (error) {
 				diagnostics.push(diagnostic(this.globalPath(), "", 1, 1, error instanceof Error ? error.message : String(error)));
 			}
 		}
-		const signature = JSON.stringify({ global, projectFinal, roots, valid });
+		const signature = JSON.stringify({ global, projectFinal, roots, warnings, valid });
 		if (signature !== this.lastSignature) {
 			this.generation += 1;
 			this.lastSignature = signature;
@@ -219,6 +222,7 @@ export class PolicyStore {
 			profile,
 			roots,
 			diagnostics,
+			warnings,
 			auditEnabled: global.config?.audit?.enabled ?? true,
 		};
 		if (global.config !== undefined) snapshot.globalConfig = global.config;
@@ -404,10 +408,13 @@ export function formatDiagnostics(diagnostics: PolicyDiagnostic[]): string {
 	return diagnostics.map((item) => `${item.file}${item.pointer}:${item.line}:${item.column} ${item.message}`).join("; ");
 }
 
-async function compileRoots(workspaceRoot: string, agentDir: string, config: PermissionConfig | undefined): Promise<FileRootGrant[]> {
+async function compileRoots(workspaceRoot: string, agentDir: string, config: PermissionConfig | undefined, policyPath: string): Promise<{ roots: FileRootGrant[]; warnings: PolicyDiagnostic[] }> {
 	const roots = config?.files?.roots ?? [{ path: "${workspace}", access: "read-write" as const }];
 	const compiled: FileRootGrant[] = [];
-	for (const root of roots) {
+	const warnings: PolicyDiagnostic[] = [];
+	for (let index = 0; index < roots.length; index += 1) {
+		const root = roots[index];
+		if (root === undefined) continue;
 		try {
 			const canonicalPath = await realpath(expandConfiguredPath(root.path, { workspace: workspaceRoot, agentDir }));
 			const info = await stat(canonicalPath);
@@ -418,10 +425,13 @@ async function compileRoots(workspaceRoot: string, agentDir: string, config: Per
 				source: "global-config",
 			});
 		} catch (error) {
-			throw new Error(`Cannot canonicalize root "${root.path}": ${errorMessage(error)}`);
+			const message = `Cannot canonicalize root "${root.path}": ${errorMessage(error)}`;
+			// 未知变量说明配置语义无法确定，必须 fail closed；不存在或非目录 root 可安全忽略。
+			if (isUnknownPathVariableError(error)) throw new Error(message);
+			warnings.push(diagnostic(policyPath, `/files/roots/${index}/path`, 1, 1, message));
 		}
 	}
-	return compiled;
+	return { roots: compiled, warnings };
 }
 
 function profileBaseline(
@@ -645,4 +655,8 @@ function diagnostic(file: string, pointer: string, line: number, column: number,
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function isUnknownPathVariableError(error: unknown): boolean {
+	return error instanceof Error && error.message.startsWith("Unknown path variable:");
 }
