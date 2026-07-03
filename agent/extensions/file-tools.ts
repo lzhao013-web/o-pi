@@ -46,7 +46,7 @@ const editParameters = Type.Object({
 			Type.Object({ type: Type.Literal("delete_file"), path: Type.String() }),
 			Type.Object({ type: Type.Literal("move_file"), from: Type.String(), to: Type.String() }),
 		]),
-		{ minItems: 1, description: "Structured file operations applied as one transaction." },
+		{ minItems: 1, description: "Structured file operations applied as one transaction. Diff must start with @@ hunk header." },
 	),
 });
 
@@ -130,7 +130,6 @@ export default function fileTools(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Use read before editing an existing file; edit verifies the last read automatically.",
 			"If edit returns READ_REQUIRED, STALE_READ, or DIFF_CONTEXT_*, call read again and generate a new operation.",
-			"Do not read configured blocked paths.",
 		],
 		parameters: readParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -152,7 +151,6 @@ export default function fileTools(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Use edit as the only file modification tool; it accepts only an operations array.",
 			"Use create_file only for new files and replace_file only for existing files.",
-			"Do not edit configured blocked paths.",
 		],
 		parameters: editParameters,
 		// 与 Pi 内置 edit 保持同一展示约定：details.diff 交给 renderDiff 渲染。
