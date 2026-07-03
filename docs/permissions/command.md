@@ -8,9 +8,6 @@
 
 - Overview — 概览
 - Tools — 工具权限
-- MCP — MCP 工具权限
-- Skills — Skill 权限
-- Agents — Agent 权限
 - File roots — 文件根目录
 - Grants — 授权管理
 - Audit — 审计
@@ -63,10 +60,10 @@
 ### 目录查询
 
 ```
-/permissions catalog [tools|mcp|skills|agents|filter] [--json]
+/permissions catalog [tools|filter] [--json]
 ```
 
-列出已注册的权限主体分类。可指定类别筛选。
+列出当前已接入授权执行链的注册工具主体。可指定 `tools` 或文本筛选。
 
 ### 决策模拟
 
@@ -80,6 +77,18 @@
 - `[request...]`: 请求参数（如文件路径、命令内容）
 
 > `explain` **只模拟决策**，不弹审批、不创建 lease、不创建 grant、不写真实执行审计。不会实际执行任何操作。
+
+### 审批框信息
+
+需要询问用户时，审批框会展示：
+
+- 工具名、真实注册来源和来源 identity
+- 请求的命令或文件操作，包含 read/write、input path、lexical path、canonical path、存在性和目标类型
+- 多资源请求中的每个资源
+- 触发 ask 的原因和完整策略 trace
+- 符号链接解析链
+- `Allow subtree for session` 实际覆盖的 canonical 目录
+- `Always allow` 是否会创建持久 grant
 
 ### 设置全局规则
 
@@ -118,7 +127,7 @@
   - `--global`: 写入全局策略
 - `remove`: 按 ID 移除 root
 
-> **root 决定文件资源边界**。`read-only` root 允许读，写仍会 ask 或 deny；`read-write` root 允许普通读写，但不覆盖 hard protection。
+> **root 决定文件资源边界**。重叠 root 使用最长 canonical path；同长度时 `read-only` 优先。`read-write` 不覆盖 hard protection。
 
 ### 授权管理
 
@@ -139,7 +148,7 @@
   - `--suspended`: 已挂起 grant
   - `--all`: 全部
 
-> **grant 不是 policy rule**。grant 来自用户审批，绑定主体、输入/资源 identity 和 generation；policy 是持久配置。session grant 随会话清除，persistent grant 保存在状态文件中。
+> **grant 不是 policy rule**。grant 来自用户审批，绑定主体和结构化资源 scope；policy 是持久配置。session grant 随会话清除，persistent grant 保存在状态文件中。只有能生成安全持久 scope 的请求才显示 Always allow。
 
 ### 权限倾向管理
 
@@ -165,9 +174,9 @@
 | `cautious` | 保守模式，未配置时倾向询问 |
 | `standard` | 标准模式，平衡效率与安全 |
 | `read-only` | 只读模式 |
-| `unrestricted` | 将普通 ask 变为 allow（不覆盖 hard-deny、policy-error、显式 deny、项目 deny、身份失效或路径解析错误） |
+| `unrestricted` | 仅在没有显式规则时提供低限制默认值 |
 
-> **unrestricted 风险高**：它把普通 ask 变为 allow，但不覆盖 hard-deny、policy-error、显式 deny、项目 deny、身份失效或路径解析错误。
+> **unrestricted 风险高**：它只影响 profile 默认值，不覆盖 hard-deny、policy-error、显式规则、项目策略、身份失效或路径解析错误。
 
 ### 策略管理
 
@@ -245,10 +254,11 @@
 | 概念 | 说明 |
 |---|---|
 | `reset` ≠ `ask` | `reset` 删除显式规则，回退到合成结果 |
-| allow ≠ 最终 allow | 文件 root、项目策略、hard protection 等下游规则仍可拒绝 |
-| grant ≠ policy rule | grant 来自用户审批（绑定 identity 和 generation）；policy 是持久配置 |
+| allow ≠ 最终 allow | 同层 `deny > ask > allow`，项目策略和 hard protection 仍可限制 |
+| grant ≠ policy rule | grant 来自用户审批（绑定主体和资源 scope）；policy 是持久配置 |
 | session profile ≠ global profile | `--session` 仅影响当前 runtime；`--global` 持久化到策略文件 |
 | root 决定文件边界 | `read-only` 允许读不保证写；`read-write` 不覆盖 hard protection |
+| 重叠 root 可预测 | 最长 canonical path 生效；同长度取更严格权限 |
 | explain 只模拟 | 不弹审批、不创建 lease/grant、不写审计日志 |
 | maintenance 非 unrestricted | maintenance 仅允许修复工具权限控制面，核心数据仍受保护 |
-| unrestricted 有边界 | 不覆盖 hard-deny、policy-error、显式 deny、项目 deny、身份失效、路径解析错误 |
+| unrestricted 有边界 | 只提供默认值，不覆盖 hard-deny、policy-error、显式规则、项目策略、身份失效、路径解析错误 |

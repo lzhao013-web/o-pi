@@ -65,11 +65,11 @@
 
 | 值 | 含义 |
 |---|---|
-| `"allow"` | 允许调用（但仍可能被文件 root、项目策略、hard protection 等下游规则拒绝） |
+| `"allow"` | 允许调用（但仍受更严格的显式规则、项目策略和 hard protection 限制） |
 | `"ask"` | 每次调用前询问用户 |
 | `"deny"` | 拒绝调用 |
 
-> 主体 `allow` 不代表最终一定 allow。文件 root、项目策略、hard protection、身份失效、策略错误仍可导致 ask、deny 或 hard-deny。
+> 同一决策层按 `deny > ask > allow` 合成。主体 `allow` 不会覆盖文件、命令、项目策略或 hard protection 中更严格的结论。
 
 ## 顶层字段
 
@@ -94,7 +94,7 @@
 | `"cautious"` | 保守模式，未配置时倾向询问 |
 | `"standard"` | 标准模式，平衡效率与安全 |
 | `"read-only"` | 只读模式，写操作倾向拒绝 |
-| `"unrestricted"` | 低限制模式，将普通 ask 变为 allow（不覆盖 hard-deny、显式 deny、策略错误等） |
+| `"unrestricted"` | 低限制模式，仅影响没有显式规则时的默认值 |
 
 ## `files`
 
@@ -103,7 +103,7 @@
 ### `files.roots`
 
 - **类型**: `array`
-- **说明**: 定义文件根目录及其访问级别。工具在 root 内操作时按根级别执行；超出 root 的操作受 `outsideRoots` 约束。
+- **说明**: 定义文件根目录及其访问级别。root 加载时会 canonicalize，目标必须是已存在目录；超出 root 的操作受 `outsideRoots` 约束。
 - **元素结构**:
 
 ```jsonc
@@ -117,6 +117,14 @@
 |------|------|------|
 | `path` | `string` | 路径，支持 `${workspace}` 变量 |
 | `access` | `"read-only"` \| `"read-write"` | `read-only` 允许读，写操作仍会 ask 或 deny；`read-write` 允许普通读写，但不覆盖 hard protection |
+
+重叠 root 匹配规则：
+
+1. 匹配所有 root。
+2. 选择 canonical path 最长的 root。
+3. 长度相同时选择更严格的权限：`read-only` 优先于 `read-write`。
+
+`policy doctor` 会报告重复 root、被完全覆盖的 root、权限不同的重叠 root，以及无法 canonicalize 的 root。
 
 ### `files.outsideRoots`
 
@@ -181,11 +189,19 @@
 | `commands.ask` | `string[]` | 匹配的命令需要询问用户 |
 | `commands.deny` | `string[]` | 匹配的命令直接拒绝 |
 
-命令匹配优先级：**deny > allow > ask > default**。
+命令匹配优先级：**deny > ask > allow > default**。
+
+## 决策合成顺序
+
+1. 不可覆盖约束：hard protection、`read-only` 写限制、项目策略限制。
+2. 全局显式策略：工具规则、命令规则、文件规则、root/outsideRoots。
+3. Profile 默认值：仅在前两层没有结论时使用。
+
+同一层始终按 `deny > ask > allow` 合成。
 
 ## `mcp`
 
-控制 MCP 工具的调用权限。
+MCP 工具策略模型字段。当前尚未接入完整 MCP 注册与授权执行链，`/permissions` 不会把这些配置展示为已受控主体。
 
 ### `mcp.default`
 
@@ -216,7 +232,7 @@
 
 ## `skills`
 
-控制 Skill 的调用权限。
+Skill 策略模型字段。当前尚未接入完整 Skill 注册与授权执行链，`/permissions` 不会把这些配置展示为已受控主体。
 
 ### `skills.default`
 
@@ -231,7 +247,7 @@
 
 ## `agents`
 
-控制 Agent 的调用权限。
+Agent 策略模型字段。当前尚未接入完整 Agent 注册与授权执行链，`/permissions` 不会把这些配置展示为已受控主体。
 
 ### `agents.default`
 
