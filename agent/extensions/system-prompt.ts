@@ -81,8 +81,6 @@ function formatTools(selectedTools: string[], toolSnippets: BuildSystemPromptOpt
 	return visibleTools.length > 0
 		? [
 				...visibleTools.map((name) => `- ${name}: ${toolSnippets?.[name]}`),
-				"",
-				"In addition to the tools above, you may have access to other custom tools depending on the project.",
 			].join("\n")
 		: "(none)";
 }
