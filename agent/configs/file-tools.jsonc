@@ -21,7 +21,7 @@
 		"grep_max_matching_lines": 200,
 		"grep_model_output_chars": 8000,
 		"grep_snippet_chars": 240,
-		"grep_context_lines": 3,
+		"grep_context_lines": 8,
 		"grep_max_file_bytes": 1048576,
 		"grep_max_files_scanned": 100000
 	},

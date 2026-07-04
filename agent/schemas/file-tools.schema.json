@@ -107,8 +107,8 @@
 				"grep_context_lines": {
 					"type": "integer",
 					"minimum": 0,
-					"maximum": 3,
-					"default": 3
+					"maximum": 32,
+					"default": 8
 				},
 				"grep_max_file_bytes": {
 					"type": "integer",

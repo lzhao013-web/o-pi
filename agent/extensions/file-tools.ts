@@ -67,7 +67,7 @@ const grepParameters = Type.Object(
 		regex: Type.Optional(Type.Boolean({ description: "Use query as regex; defaults to false." })),
 		glob: Type.Optional(Type.String({ description: "Relative file glob filter." })),
 		ignore_case: Type.Optional(Type.Boolean({ description: "Case-insensitive search." })),
-		context: Type.Optional(Type.Integer({ minimum: 0, maximum: 3, description: "Context lines; defaults to 0." })),
+		context: Type.Optional(Type.Integer({ minimum: 0, description: "Context lines; defaults to 0." })),
 		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "Returned matching lines; defaults to 40." })),
 	},
 	{ additionalProperties: false },

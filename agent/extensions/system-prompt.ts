@@ -101,7 +101,7 @@ function collectPromptSections(options: BuildSystemPromptOptions, extraSections:
 
 function formatDefaultPrompt(sections: PromptSections): string {
 	return joinSections([
-		`<role>You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.</role>`,
+		`<role>You are an expert coding assistant operating inside pi, a coding agent harness. You ALWAYS respond in user's language.</role>`,
 		...formatSharedPromptSections(sections),
 	]);
 }
