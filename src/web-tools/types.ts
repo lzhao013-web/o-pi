@@ -123,8 +123,10 @@ export interface WebFetchSuccessDetails {
 		start: number;
 		end: number;
 		total: number;
+		has_more: boolean;
 		next_offset?: number;
 	};
+	next?: string;
 	authenticated: boolean;
 	redirect_count: number;
 	snapshot: SnapshotStatus;

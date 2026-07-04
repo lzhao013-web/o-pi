@@ -37,6 +37,7 @@ describe("bash output view", () => {
 		const result = view(text, { limits });
 		expect(result.details.output_state).toBe("truncated");
 		expect(result.details.full_output_path).toBe("/tmp/o-pi/bash/s/t.log");
+		expect(result.content).toContain("full=/tmp/o-pi/bash/s/t.log");
 		expect(result.content).toContain("line 0");
 		expect(result.content).toContain("line 79");
 		expect(result.content).toMatch(/\[\.\.\. \d+ lines omitted \.\.\.\]/);
@@ -65,9 +66,18 @@ describe("bash output view", () => {
 		const compacted = view("Retrying\nRetrying\nRetrying\nok\n");
 		expect(compacted.details.output_state).toBe("compacted");
 		expect(compacted.content).toContain("[same line repeated 2 more times]");
+		expect(compacted.content).not.toContain("full=/tmp/o-pi/bash/s/t.log");
 
 		const separate = view("Retrying\nother\nRetrying\n");
 		expect(separate.content).not.toContain("same line repeated");
+	});
+
+	it("完整失败输出保留日志但不提示读取完整日志", () => {
+		const result = view("bad\n", { status: "exited", exitCode: 1 });
+		expect(result.keepLog).toBe(true);
+		expect(result.details.full_output_path).toBe("/tmp/o-pi/bash/s/t.log");
+		expect(result.details.output_state).toBe("complete");
+		expect(result.content).not.toContain("full=/tmp/o-pi/bash/s/t.log");
 	});
 
 	it("回车进度只展示最终状态", () => {
@@ -128,4 +138,3 @@ describe("bash output view", () => {
 		}
 	});
 });
-

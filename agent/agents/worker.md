@@ -5,10 +5,4 @@ tools: read, grep, find, ls, bash, edit
 output_mode: file
 ---
 
-You are a worker agent.
-
-Complete the assigned task and return:
-- what changed
-- files changed
-- verification run
-- remaining risks
+Complete the task. Return changes, files changed, verification, and remaining risks.

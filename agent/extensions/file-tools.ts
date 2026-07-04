@@ -51,26 +51,35 @@ type WriteCallComponent = Text & {
 	cache: WriteHighlightCache | undefined;
 };
 
-const lsParameters = Type.Object({ path: Type.String({ description: "Directory path." }) });
-const findParameters = Type.Object({
-	pattern: Type.String({ description: "Glob relative to path. Use ** for recursive search." }),
-	path: Type.Optional(Type.String({ description: "Workspace-relative directory to search. Defaults to ." })),
-});
-const grepParameters = Type.Object({
-	path: Type.String({ description: "Workspace file or directory to search." }),
-	query: Type.String({ description: "Literal text by default; regex only when regex is true." }),
-	mode: Type.Optional(Type.Union([Type.Literal("content"), Type.Literal("files"), Type.Literal("count")], { description: "content, files, or count. Defaults to content." })),
-	regex: Type.Optional(Type.Boolean({ description: "Treat query as a regular expression. Defaults to false." })),
-	glob: Type.Optional(Type.String({ description: "Relative glob that narrows searched files." })),
-	ignore_case: Type.Optional(Type.Boolean({ description: "Case-insensitive search. Defaults to false." })),
-	context: Type.Optional(Type.Number({ description: "Symmetric context lines, 0-3. Defaults to 0." })),
-	limit: Type.Optional(Type.Number({ description: "Returned matching lines, 1-200. Defaults to 40." })),
-});
-const readParameters = Type.Object({
-	path: Type.String({ description: "File path." }),
-	start_line: Type.Optional(Type.Number({ description: "Optional 1-based inclusive start line." })),
-	end_line: Type.Optional(Type.Number({ description: "Optional 1-based inclusive end line." })),
-});
+const lsParameters = Type.Object({ path: Type.String({ description: "Directory path." }) }, { additionalProperties: false });
+const findParameters = Type.Object(
+	{
+		pattern: Type.String({ description: "Path glob relative to path; ** recurses." }),
+		path: Type.Optional(Type.String({ description: "Search root; defaults to workspace." })),
+	},
+	{ additionalProperties: false },
+);
+const grepParameters = Type.Object(
+	{
+		path: Type.String({ description: "File or directory to search." }),
+		query: Type.String({ description: "Literal text unless regex is true." }),
+		mode: Type.Optional(Type.Union([Type.Literal("content"), Type.Literal("files"), Type.Literal("count")], { description: "Result mode; defaults to content." })),
+		regex: Type.Optional(Type.Boolean({ description: "Use query as regex; defaults to false." })),
+		glob: Type.Optional(Type.String({ description: "Relative file glob filter." })),
+		ignore_case: Type.Optional(Type.Boolean({ description: "Case-insensitive search." })),
+		context: Type.Optional(Type.Integer({ minimum: 0, maximum: 3, description: "Context lines; defaults to 0." })),
+		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "Returned matching lines; defaults to 40." })),
+	},
+	{ additionalProperties: false },
+);
+const readParameters = Type.Object(
+	{
+		path: Type.String({ description: "File path." }),
+		start_line: Type.Optional(Type.Integer({ minimum: 1, description: "1-based inclusive start line." })),
+		end_line: Type.Optional(Type.Integer({ minimum: 1, description: "1-based inclusive end line." })),
+	},
+	{ additionalProperties: false },
+);
 const writeParameters = Type.Object(
 	{
 		path: Type.String({ description: "File path to create or overwrite." }),
@@ -81,18 +90,22 @@ const writeParameters = Type.Object(
 const editParameters = Type.Object({
 	path: Type.String({ description: "Existing file path." }),
 	edits: Type.Array(
-		Type.Object({
-			old: Type.String({
-				description: "Exact non-empty text that appears once in the original file.",
-			}),
-			new: Type.String({ description: "Replacement text." }),
-		}),
+		Type.Object(
+			{
+				old: Type.String({
+					minLength: 1,
+					description: "Exact text that appears once in the original file.",
+				}),
+				new: Type.String({ description: "Replacement text." }),
+			},
+			{ additionalProperties: false },
+		),
 		{
 			minItems: 1,
-			description: "One or more non-overlapping replacements, all matched against the original file.",
+			description: "Non-overlapping replacements matched against the original file.",
 		},
 	),
-});
+}, { additionalProperties: false });
 
 /** 注册覆盖版 ls/find/read/write/edit；路径权限由 Pi 进程和操作系统决定。 */
 export default function fileTools(pi: ExtensionAPI): void {
@@ -101,9 +114,8 @@ export default function fileTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ls",
 		label: "ls",
-		description: "List the direct children of a directory. The result is non-recursive and does not include file contents.",
-		promptSnippet: "List direct children of a directory",
-		promptGuidelines: ["Use ls to discover directory contents before choosing files to read.", "Configured blocked paths are hidden."],
+		description: "List direct entries of one directory; no recursion or file contents.",
+		promptSnippet: "list one directory",
 		parameters: lsParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await listWorkspaceDirectory(ctx.cwd, params as LsParams);
@@ -123,9 +135,8 @@ export default function fileTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "find",
 		label: "find",
-		description: "Recursively find regular files under a workspace-relative directory by glob path pattern. Does not read file contents.",
-		promptSnippet: "Find files by recursive glob path pattern",
-		promptGuidelines: ["Use find when you know a filename or path pattern but not the exact file path.", "Use read after find to inspect matching files."],
+		description: "Find workspace files by recursive path glob; does not search file contents.",
+		promptSnippet: "locate files by path",
 		parameters: findParameters,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const result = await findWorkspaceFiles(ctx.cwd, params as FindParams, signal);
@@ -145,10 +156,8 @@ export default function fileTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "grep",
 		label: "grep",
-		description:
-			"Search literal text or regular expressions in UTF-8 workspace files. Returns compact matching locations, file summaries, or counts without reading entire files.",
-		promptSnippet: "Search text in workspace files without returning whole files",
-		promptGuidelines: ["Use grep to locate text. Use find to locate files by path and read to inspect surrounding content."],
+		description: "Search literal text or regex in workspace files; return matching lines, paths, or counts.",
+		promptSnippet: "locate text in files",
 		parameters: grepParameters,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const result = await grepWorkspaceFiles(ctx.cwd, params as GrepParams, signal);
@@ -173,13 +182,8 @@ export default function fileTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "read",
 		label: "read",
-		description:
-			"Read one UTF-8 file without side effects. Returns content, line range, encoding, newline and truncation metadata.",
-		promptSnippet: "Read a UTF-8 file and remember its version for later edits",
-		promptGuidelines: [
-			"Use read before editing an existing file; edit verifies the last read automatically.",
-			"If edit returns READ_REQUIRED, STALE_READ, or OLD_TEXT_*, call read again and generate new replacements.",
-		],
+		description: "Read one UTF-8 file or line range and record its version for edit.",
+		promptSnippet: "read file content",
 		parameters: readParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const versionCache = versionCacheFor(ctx, versionCaches);
@@ -194,9 +198,9 @@ export default function fileTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "write",
 		label: "write",
-		description: "Create or overwrite one UTF-8 file and create parent directories.",
-		promptSnippet: "Create or overwrite files",
-		promptGuidelines: ["Use write only for new files or complete rewrites."],
+		description: "Create or replace one file in a whole.",
+		promptSnippet: "create or replace one file in a whole",
+		promptGuidelines: ["Use write to create or replace a whole file."],
 		parameters: writeParameters,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const result = await writeWorkspaceFile(ctx.cwd, params as WriteParams, signal);
@@ -251,12 +255,11 @@ export default function fileTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "edit",
 		label: "edit",
-		description: "Edit one existing UTF-8 file using exact text replacement. The file must be read first.",
-		promptSnippet: "Make precise replacements in one file",
+		description: "Partially update one file using exact replacements; existing source files must be read first.",
+		promptSnippet: "make exact replacements of one file",
 		promptGuidelines: [
-			"Each edits[].old must be exact, non-empty, unique in the original file, and non-overlapping.",
-			"Use one edit call with multiple edits[] entries for separate changes in the same file.",
-			"Merge nearby or overlapping changes into one replacement.",
+			"Read existing source files with read before editing them with edit.",
+			"Use edit for direct file modifications to one existing file.",
 		],
 		parameters: editParameters,
 		// 与 Pi 内置 edit 保持同一展示约定：details.diff 交给 renderDiff 渲染。

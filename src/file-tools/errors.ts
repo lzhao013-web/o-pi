@@ -5,6 +5,7 @@ export function fail(
 	code: FileToolErrorCode,
 	message: string,
 	options: {
+		next?: string;
 		path?: string;
 		edit_index?: number;
 		expected?: string;
@@ -13,6 +14,7 @@ export function fail(
 	} = {},
 ): FailedResult {
 	const error: FileToolError = { code, message };
+	if (options.next !== undefined) error.next = options.next;
 	if (options.path !== undefined) error.path = options.path;
 	if (options.edit_index !== undefined) error.edit_index = options.edit_index;
 	if (options.expected !== undefined) error.expected = options.expected;

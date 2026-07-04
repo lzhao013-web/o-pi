@@ -70,11 +70,17 @@ describe("webfetch tool", () => {
 		expect(first.content).toContain("<webfetch_result");
 		if (first.details.status !== "success") throw new Error("failed");
 		expect(first.details.range.next_offset).toBeDefined();
+		expect(first.details.range.has_more).toBe(true);
+		expect(first.details.next).toContain("offset");
+		expect(first.content).toContain('has_more="true"');
+		expect(first.content).toContain("<next>");
 		const nextOffset = first.details.range.next_offset;
 		if (nextOffset === undefined) throw new Error("missing next_offset");
 
 		const second = await executeWebFetch({ url: "https://example.com/page", offset: nextOffset, limit: 1000 }, rt);
 		expect(second.details).toMatchObject({ status: "success", snapshot: "hit" });
+		if (second.details.status !== "success") throw new Error("failed");
+		expect(second.details.range.has_more).toBe(false);
 		expect(calls).toBe(1);
 	});
 

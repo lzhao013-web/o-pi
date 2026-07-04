@@ -135,11 +135,11 @@ async function runAndNotify(
 	chain?: SubagentTask[],
 ): Promise<void> {
 	const result = await executeSubagent(
-		{
-			...(single !== undefined ? { agent: single.agent, task: single.task } : {}),
-			...(tasks !== undefined ? { tasks } : {}),
-			...(chain !== undefined ? { chain } : {}),
-		},
+		single !== undefined
+			? { mode: "single", agent: single.agent, task: single.task }
+			: tasks !== undefined
+				? { mode: "parallel", tasks }
+				: { mode: "chain", tasks: chain ?? [] },
 		{
 			cwd: ctx.cwd,
 			hasUI: ctx.hasUI,

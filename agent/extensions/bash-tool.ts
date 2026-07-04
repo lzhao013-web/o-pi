@@ -13,7 +13,7 @@ import {
 const bashParameters = Type.Object({
 	command: Type.String({ description: "Shell command to execute exactly as provided." }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds. Defaults to config." })),
-});
+}, { additionalProperties: false });
 
 /** 注册覆盖版 bash；执行后端用 Pi 本地 shell，输出管理由本项目控制。 */
 export default function bashTool(pi: ExtensionAPI): void {
@@ -22,12 +22,11 @@ export default function bashTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "bash",
 		label: "bash",
-		description:
-			"Execute shell commands in the current working directory. Prefer read/grep/find/edit for file work. If output is reduced, read the full log path instead of rerunning.",
-		promptSnippet: "Execute shell commands with recoverable bounded output",
+		description: "Run shell commands or external programs; use dedicated tools for direct file listing, search, reading, and edits.",
+		promptSnippet: "run shell commands or external programs",
 		promptGuidelines: [
-			"Use bash for commands that require a shell; use read, grep, find, ls, and edit for file operations.",
-			"When bash output is truncated or compacted, inspect full_output_path instead of rerunning the command.",
+			"When a dedicated tool and bash can both perform an operation, use the dedicated tool unless shell execution itself is the task.",
+			"Use bash for tests, builds, formatters, compilers, generators, git, and other external programs; files changed by those programs remain bash output.",
 		],
 		parameters: bashParameters,
 		executionMode: "sequential",

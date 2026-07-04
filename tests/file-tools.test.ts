@@ -520,7 +520,7 @@ describe("edit", () => {
 		await writeFile(path.join(workspace, "a.txt"), "old\n");
 		expect(await editWorkspace(workspace, { path: "a.txt", edits: [{ old: "old", new: "new" }] })).toMatchObject({
 			status: "failed",
-			error: { code: "READ_REQUIRED", path: "a.txt" },
+			error: { code: "READ_REQUIRED", path: "a.txt", next: "Read the file, then create a new edit operation." },
 		});
 		expect(await readFile(path.join(workspace, "a.txt"), "utf8")).toBe("old\n");
 	});
@@ -594,7 +594,10 @@ describe("edit", () => {
 		if (!("version" in before)) throw new Error("read failed");
 		await writeFile(path.join(workspace, "a.txt"), "external\n");
 		const result = await editWorkspace(workspace, { path: "a.txt", edits: [{ old: "old", new: "new" }] });
-		expect(result).toMatchObject({ status: "failed", error: { code: "STALE_READ", path: "a.txt" } });
+		expect(result).toMatchObject({
+			status: "failed",
+			error: { code: "STALE_READ", path: "a.txt", next: "Read the file again, then create a new edit operation." },
+		});
 		expect(await readFile(path.join(workspace, "a.txt"), "utf8")).toBe("external\n");
 	});
 

@@ -123,8 +123,10 @@ export async function executeWebFetch(params: WebFetchParams, runtime: ExecuteWe
 			start: sliced.start,
 			end: sliced.end,
 			total: conversion.text.length,
+			has_more: sliced.nextOffset !== undefined,
 			...(sliced.nextOffset !== undefined ? { next_offset: sliced.nextOffset } : {}),
 		},
+		...(sliced.nextOffset !== undefined ? { next: `Call webfetch with the same url and mode, offset ${sliced.nextOffset}.` } : {}),
 		authenticated: http.authenticated,
 		redirect_count: http.redirectCount,
 		snapshot: snapshotStatus,
@@ -201,19 +203,21 @@ function safeBoundary(text: string, index: number): number {
 	return code >= 0xdc00 && code <= 0xdfff ? index + 1 : index;
 }
 
-function successContent(details: { requested_url: string; http_status: number; format: string; range: { start: number; end: number; total: number; next_offset?: number }; authenticated: boolean }, text: string): string {
+function successContent(details: { requested_url: string; http_status: number; format: string; range: { start: number; end: number; total: number; has_more: boolean; next_offset?: number }; next?: string; authenticated: boolean }, text: string): string {
 	const attrs = [
 		`url="${escapeXml(details.requested_url)}"`,
 		`status="${details.http_status}"`,
 		`format="${escapeXml(details.format)}"`,
 		`range="${details.range.start}-${details.range.end}/${details.range.total}"`,
+		`has_more="${details.range.has_more ? "true" : "false"}"`,
 		details.range.next_offset !== undefined ? `next_offset="${details.range.next_offset}"` : undefined,
 		details.authenticated ? `auth="cookie"` : undefined,
 		`trust="untrusted"`,
 	]
 		.filter((item): item is string => item !== undefined)
 		.join(" ");
-	return `<webfetch_result ${attrs}>\n${text}\n</webfetch_result>`;
+	const next = details.next !== undefined ? `\n<next>${escapeXml(details.next)}</next>` : "";
+	return `<webfetch_result ${attrs}>\n${text}${next}\n</webfetch_result>`;
 }
 
 function failureContent(details: WebFetchFailureDetails): string {

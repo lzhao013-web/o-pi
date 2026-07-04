@@ -36,15 +36,15 @@ export async function executeSubagent(params: SubagentToolParams, context: Execu
 	const detailsBase = (results: SubagentRunResult[]): SubagentDetails => ({ mode, runId, results, warnings: discovery.warnings });
 
 	try {
-		if (mode === "single") {
+		if (params.mode === "single") {
 			const task = { agent: requireText(params.agent, "agent"), task: requireText(params.task, "task"), ...(params.cwd !== undefined ? { cwd: params.cwd } : {}) };
 			const result = await executeOne(task, 0, mode, runId, params, context, config, discovery.agents);
 			const persisted = await persistResult(result, { cwd: result.cwd, runId, index: 0, outputMode: effectiveOutputMode(result, params, config), maxInlineOutputChars: config.maxInlineOutputChars });
 			const content = resultToContent(persisted, effectiveOutputMode(persisted, params, config), config);
 			return { content: [{ type: "text", text: content }], details: detailsBase([persisted]) };
 		}
-		if (mode === "parallel") {
-			const tasks = params.tasks ?? [];
+		if (params.mode === "parallel") {
+			const tasks = params.tasks;
 			if (tasks.length > config.maxParallelTasks) {
 				throw new SubagentExecutionError(`Too many parallel tasks (${tasks.length}). Max is ${config.maxParallelTasks}.`);
 			}
@@ -59,7 +59,7 @@ export async function executeSubagent(params: SubagentToolParams, context: Execu
 			const text = [`Parallel: ${success}/${results.length} succeeded`, "", ...results.map((result) => `### ${result.agent}\n\n${resultToContent(result, effectiveOutputMode(result, params, config), config)}`)].join("\n");
 			return { content: [{ type: "text", text }], details: detailsBase(results) };
 		}
-		const chain = params.chain ?? [];
+		const chain = params.tasks;
 		const results: SubagentRunResult[] = [];
 		let previous = "";
 		for (let i = 0; i < chain.length; i++) {
@@ -91,17 +91,10 @@ export async function executeSubagent(params: SubagentToolParams, context: Execu
 }
 
 export function resolveMode(params: SubagentToolParams): SubagentMode {
-	const hasSingle = params.agent !== undefined || params.task !== undefined;
-	const hasParallel = (params.tasks?.length ?? 0) > 0;
-	const hasChain = (params.chain?.length ?? 0) > 0;
-	const count = Number(hasSingle) + Number(hasParallel) + Number(hasChain);
-	if (count !== 1) throw new SubagentExecutionError("Provide exactly one mode: agent+task, tasks, or chain.");
-	if (hasSingle) {
-		if (params.agent === undefined || params.task === undefined) throw new SubagentExecutionError("Single mode requires agent and task.");
-		return "single";
-	}
-	if (hasParallel) return "parallel";
-	return "chain";
+	if (params.mode === "single") return "single";
+	if (params.mode === "parallel") return "parallel";
+	if (params.mode === "chain") return "chain";
+	throw new SubagentExecutionError("mode must be single, parallel, or chain.");
 }
 
 async function executeOne(

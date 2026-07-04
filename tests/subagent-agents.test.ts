@@ -53,13 +53,12 @@ describe("subagent agent discovery", () => {
 		expect(prompt).toBe("<subagents>\n- scout: Scout\n</subagents>");
 	});
 
-	it("子 Agent 提示把正文放入 subagent_context", async () => {
+	it("子 Agent 提示只包裹 agent 名称、描述和正文", async () => {
 		await writeFile(path.join(dir, "agent", "agents", "scout.md"), agentMarkdown("scout", "Scout", "read"));
 		const agent = discoverAgents(dir, defaultSubagentConfig()).agents[0];
 		expect(agent).toBeDefined();
 		const prompt = formatSubagentSystemPrompt(agent!);
-		expect(prompt).toContain('<subagent_context name="scout">');
-		expect(prompt).toContain("<subagent_instructions>\nbody\n</subagent_instructions>");
+		expect(prompt).toBe('<subagent name="scout" description="Scout">\nbody\n</subagent>');
 		expect(prompt).not.toContain("<available_subagents>");
 	});
 

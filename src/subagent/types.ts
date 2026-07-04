@@ -66,15 +66,29 @@ export interface SubagentTask {
 	cwd?: string;
 }
 
-export interface SubagentToolParams {
-	agent?: string;
-	task?: string;
-	tasks?: SubagentTask[];
-	chain?: SubagentTask[];
-	cwd?: string;
-	model?: string;
-	outputMode?: OutputMode;
-}
+export type SubagentToolParams =
+	| {
+			mode: "single";
+			agent: string;
+			task: string;
+			cwd?: string;
+			model?: string;
+			outputMode?: OutputMode;
+	  }
+	| {
+			mode: "parallel";
+			tasks: SubagentTask[];
+			cwd?: string;
+			model?: string;
+			outputMode?: OutputMode;
+	  }
+	| {
+			mode: "chain";
+			tasks: SubagentTask[];
+			cwd?: string;
+			model?: string;
+			outputMode?: OutputMode;
+	  };
 
 export interface SubagentRunResult {
 	runId: string;

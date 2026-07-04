@@ -109,6 +109,7 @@ export function countLogicalLines(text: string): number {
 
 function formatHeader(details: BashToolDetails): string {
 	const duration = (details.duration_ms / 1000).toFixed(2);
+	const outputTruncated = details.output_state === "truncated" || details.output_state === "capture_truncated";
 	const linePart =
 		details.output_state === "complete"
 			? `lines=${details.total_lines}`
@@ -117,7 +118,7 @@ function formatHeader(details: BashToolDetails): string {
 		details.output_state === "complete"
 			? `bytes=${details.total_bytes}`
 			: `bytes=${details.returned_bytes}/${details.total_bytes}`;
-	const fullPart = details.full_output_path ? ` full=${details.full_output_path}` : "";
+	const fullPart = outputTruncated && details.full_output_path ? ` full=${details.full_output_path}` : "";
 	if (details.status === "timed_out") {
 		return `[timeout duration=${duration}s output=${details.output_state} ${linePart} ${bytePart}${fullPart}]`;
 	}

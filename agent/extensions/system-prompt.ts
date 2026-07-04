@@ -4,89 +4,40 @@ import { discoverAgents } from "../../src/subagent/agents.js";
 import { loadSubagentConfig } from "../../src/subagent/config.js";
 import type { AgentDefinition } from "../../src/subagent/types.js";
 
-const DEFAULT_TOOLS = ["ls", "read", "find", "grep", "edit", "websearch", "webfetch", "bash"];
 const SYSTEM_COMMAND_DESCRIPTION = "Show the current synthesized system prompt.";
+const VIEWER_BODY_ROWS_RATIO = 0.75;
+const VIEWER_NON_BODY_ROWS = 5;
 
-/** 构建 system prompt；保留 Pi 默认信息来源，但不输出 skill 元数据。 */
+type PromptSections = {
+	/** Pi 传入的 appendSystemPrompt 会作为独立段落插入，避免和自定义 prompt 混写后边界不清。 */
+	appendSystemPrompt: string | undefined;
+	/** 工具策略来自 Pi 的 promptGuidelines，并追加本扩展固定的最小工具选择规则。 */
+	toolPolicy: string;
+	/** 仅列出当前启用且带 prompt snippet 的工具，保持和 Pi 工具可见性一致。 */
+	availableTools: string;
+	/** AGENTS.md 等项目上下文由 Pi 预加载，本扩展只负责重新包成 XML 风格。 */
+	projectContext: string | undefined;
+	/** 运行时临时段落，例如主 Agent 可见的 subagent 索引。 */
+	extraSections: string[];
+	/** 当前日期按 Pi 默认 prompt 语义保留，但统一放到最后的 context 区。 */
+	date: string;
+	/** Windows 路径转为正斜杠，降低模型把反斜杠当转义符的概率。 */
+	cwd: string;
+};
+
+/** 构建 system prompt；保留 Pi 默认信息来源，但用更短的 XML section 替代默认长文本并移除 skill 元数据。 */
 export function buildSystemPrompt(options: BuildSystemPromptOptions, extraSections: string[] = []): string {
-	const now = new Date();
-	const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-	const cwd = options.cwd.replace(/\\/g, "/");
-	const contextFiles = options.contextFiles ?? [];
-	const appendSystemPrompt = options.appendSystemPrompt ? normalizeLineEndings(options.appendSystemPrompt).trim() : undefined;
-
+	const sections = collectPromptSections(options, extraSections);
 	if (options.customPrompt) {
-		return formatCustomPrompt(normalizeLineEndings(options.customPrompt), appendSystemPrompt, formatProjectContext(contextFiles), extraSections, date, cwd);
+		return formatCustomPrompt(normalizeLineEndings(options.customPrompt), sections);
 	}
-
-	const tools = options.selectedTools ?? DEFAULT_TOOLS;
-	return formatDefaultPrompt(
-		formatTools(tools, options.toolSnippets),
-		formatToolGuidelines(tools, options.promptGuidelines),
-		appendSystemPrompt,
-		formatProjectContext(contextFiles),
-		extraSections,
-		date,
-		cwd,
-	);
+	return formatDefaultPrompt(sections);
 }
 
-function formatDefaultPrompt(
-	tools: string,
-	toolGuidelines: string,
-	appendSystemPrompt: string | undefined,
-	projectContext: string | undefined,
-	extraSections: string[],
-	date: string,
-	cwd: string,
-): string {
-	return joinSections([
-		`<role>You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.</role>`,
-		/** 工具定义 */
-		`<tools>
-${tools}
-</tools>`,
-		/** 工具使用规范 */
-		`<tool_guidelines>
-${toolGuidelines}
-</tool_guidelines>`,
-		appendSystemPrompt
-			? `<append_system_prompt>
-${appendSystemPrompt}
-</append_system_prompt>`
-			: undefined,
-		projectContext,
-		...extraSections,
-		formatContext(date, cwd),
-	]);
-}
-
-function formatCustomPrompt(
-	customPrompt: string,
-	appendSystemPrompt: string | undefined,
-	projectContext: string | undefined,
-	extraSections: string[],
-	date: string,
-	cwd: string,
-): string {
-	return joinSections([
-		`<custom_prompt>
-${customPrompt}
-</custom_prompt>`,
-		appendSystemPrompt
-			? `<append_system_prompt>
-${appendSystemPrompt}
-</append_system_prompt>`
-			: undefined,
-		projectContext,
-		...extraSections,
-		formatContext(date, cwd),
-	]);
-}
-
-/** 主 Agent 可见的精简 subagent 索引；只暴露选择所需信息。 */
+/** 主 Agent 可见的精简 subagent 索引；只暴露选择所需信息，避免把子 Agent 系统提示泄露给主 Agent。 */
 export function formatAvailableSubagentsPrompt(agents: AgentDefinition[]): string {
 	if (agents.length === 0) return "";
+
 	const lines = ["<subagents>"];
 	for (const agent of agents) {
 		lines.push(`- ${agent.name}: ${agent.description}`);
@@ -95,52 +46,121 @@ export function formatAvailableSubagentsPrompt(agents: AgentDefinition[]): strin
 	return lines.join("\n");
 }
 
-/** 子 Agent 专属追加提示；正文被放入 XML 标签以明确当前运行身份。 */
+/** 子 Agent 专属追加提示；正文放入 XML 标签以明确当前运行身份并隔离任意用户内容。 */
 export function formatSubagentSystemPrompt(agent: AgentDefinition): string {
 	return [
-		`<subagent_context name="${escapeXml(agent.name)}">`,
-		`description: ${agent.description}`,
-		"role: isolated subagent",
-		"Use only the tools made available in this child process.",
-		"",
-		"<subagent_instructions>",
+		`<subagent name="${escapeXml(agent.name)}" description="${escapeXml(agent.description)}">`,
 		normalizeLineEndings(agent.systemPrompt),
-		"</subagent_instructions>",
-		"</subagent_context>",
+		"</subagent>",
 	].join("\n");
 }
 
-function formatTools(selectedTools: string[], toolSnippets: BuildSystemPromptOptions["toolSnippets"]): string {
-	const visibleTools = selectedTools.filter((name) => toolSnippets?.[name]);
-	return visibleTools.length > 0
-		? [
-				...visibleTools.map((name) => `- ${name}: ${toolSnippets?.[name]}`),
-			].join("\n")
-		: "(none)";
+/** 注册 /system 命令，用只读浮层查看当前 system prompt；内容不会写入会话历史。 */
+export function registerSystemCommand(pi: Pick<ExtensionAPI, "registerCommand"> & Partial<Pick<ExtensionAPI, "getActiveTools">>): void {
+	pi.registerCommand("system", {
+		description: SYSTEM_COMMAND_DESCRIPTION,
+		async handler(_args, ctx) {
+			if (ctx.mode !== "tui") return;
+
+			// 命令上下文的 getSystemPromptOptions() 是 Pi 0.80.3 暴露的结构化基础输入；
+			// 它不包含当前命令渲染出的 prompt，因此这里必须复用本扩展的构建函数。
+			const systemPromptOptions = ctx.getSystemPromptOptions();
+			const activeTools = pi.getActiveTools?.() ?? getToolsFromPromptOptions(systemPromptOptions);
+			const prompt = await buildRuntimeSystemPrompt(systemPromptOptions, ctx.cwd, activeTools);
+			await ctx.ui.custom<void>(
+				(tui, theme, _keybindings, done) => new SystemPromptViewer(prompt, theme, () => tui.terminal.rows, done),
+			);
+		},
+	});
 }
 
-function formatToolGuidelines(selectedTools: string[], promptGuidelines: BuildSystemPromptOptions["promptGuidelines"]): string {
-	const guidelines: string[] = [];
-	const seen = new Set<string>();
-	const add = (guideline: string) => {
-		const normalized = guideline.trim();
-		if (!normalized || seen.has(normalized)) return;
-		seen.add(normalized);
-		guidelines.push(normalized);
+/** 在每轮开始前接管 system prompt 构建，改为 XML 风格并移除 Pi 默认的 skill 列表。 */
+export default function systemPrompt(pi: ExtensionAPI): void {
+	registerSystemCommand(pi);
+
+	// before_agent_start 返回 systemPrompt 表示完整替换；Pi 会把它作为本轮 provider 请求的最终系统提示词。
+	pi.on("before_agent_start", async (event, ctx) => ({
+		systemPrompt: await buildRuntimeSystemPrompt(event.systemPromptOptions, ctx.cwd, pi.getActiveTools()),
+	}));
+}
+
+function collectPromptSections(options: BuildSystemPromptOptions, extraSections: string[]): PromptSections {
+	const contextFiles = options.contextFiles ?? [];
+	const selectedTools = getToolsFromPromptOptions(options);
+
+	return {
+		appendSystemPrompt: formatAppendSystemPrompt(options.appendSystemPrompt),
+		toolPolicy: formatToolPolicy(options.promptGuidelines),
+		availableTools: formatAvailableTools(selectedTools, options.toolSnippets),
+		projectContext: formatProjectContext(contextFiles),
+		extraSections,
+		date: formatLocalDate(new Date()),
+		cwd: options.cwd.replace(/\\/g, "/"),
 	};
+}
 
-	if (selectedTools.includes("bash") && !selectedTools.includes("grep") && !selectedTools.includes("find") && !selectedTools.includes("ls")) {
-		add("Use bash for file operations like ls, rg, find");
-	}
-	for (const guideline of promptGuidelines ?? []) add(guideline);
-	add("Be concise in your responses");
-	add("Show file paths clearly when working with files");
+function formatDefaultPrompt(sections: PromptSections): string {
+	return joinSections([
+		`<role>You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.</role>`,
+		...formatSharedPromptSections(sections),
+	]);
+}
 
-	return guidelines.map((guideline) => `- ${guideline}`).join("\n");
+function formatCustomPrompt(customPrompt: string, sections: PromptSections): string {
+	return joinSections([
+		`<custom_prompt>
+${customPrompt}
+</custom_prompt>`,
+		...formatSharedPromptSections(sections),
+	]);
+}
+
+function formatSharedPromptSections(sections: PromptSections): Array<string | undefined> {
+	return [
+		sections.toolPolicy,
+		sections.availableTools,
+		sections.appendSystemPrompt,
+		sections.projectContext,
+		...sections.extraSections,
+		formatRuntimeContext(sections.date, sections.cwd),
+	];
+}
+
+function formatAppendSystemPrompt(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const trimmed = normalizeLineEndings(value).trim();
+	if (trimmed.length === 0) return undefined;
+	return `<append_system_prompt>
+${trimmed}
+</append_system_prompt>`;
+}
+
+function formatToolPolicy(promptGuidelines: BuildSystemPromptOptions["promptGuidelines"]): string {
+	const rules = unique([
+		"Use the narrowest active tool that directly matches the operation.",
+		...normalizeGuidelines(promptGuidelines),
+	]);
+
+	return `<tool_policy>
+${rules.map((rule) => `- ${rule}`).join("\n")}
+</tool_policy>`;
+}
+
+function normalizeGuidelines(promptGuidelines: BuildSystemPromptOptions["promptGuidelines"]): string[] {
+	return (promptGuidelines ?? []).map((guideline) => guideline.trim()).filter((guideline) => guideline.length > 0);
+}
+
+function formatAvailableTools(selectedTools: string[], toolSnippets: BuildSystemPromptOptions["toolSnippets"]): string {
+	const activeToolsWithSnippets = unique(selectedTools).filter((name) => toolSnippets?.[name]);
+	const lines = activeToolsWithSnippets.map((name) => `- ${name}: ${toolSnippets?.[name]}`);
+	return `<available_tools>
+${lines.length > 0 ? lines.join("\n") : "- (none)"}
+</available_tools>`;
 }
 
 function formatProjectContext(contextFiles: NonNullable<BuildSystemPromptOptions["contextFiles"]>): string | undefined {
 	if (contextFiles.length === 0) return undefined;
+
 	const files = contextFiles
 		.map(
 			({ path, content }) => `<project_instructions path="${escapeXml(path)}">
@@ -148,18 +168,28 @@ ${normalizeLineEndings(content)}
 </project_instructions>`,
 		)
 		.join("\n\n");
-	return `<project_context>
-Project-specific instructions and guidelines:
 
+	return `<project_context>
 ${files}
 </project_context>`;
 }
 
-function formatContext(date: string, cwd: string): string {
+function formatRuntimeContext(date: string, cwd: string): string {
 	return `<context>
 <time>${date}</time>
 <workspace>${escapeXml(cwd)}</workspace>
 </context>`;
+}
+
+function formatLocalDate(date: Date): string {
+	const year = date.getFullYear();
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+	return `${year}-${month}-${day}`;
+}
+
+function unique(values: string[]): string[] {
+	return values.filter((value, index) => values.indexOf(value) === index);
 }
 
 function escapeXml(value: string): string {
@@ -178,8 +208,9 @@ function normalizeLineEndings(value: string): string {
 	return value.replace(/\r\n?/g, "\n");
 }
 
-/** 只读滚动查看 system prompt；仅存在于 custom UI 生命周期，不写入会话历史。 */
+/** 只读滚动查看 system prompt；该组件只在 custom UI 生命周期内存在，不会修改模型上下文。 */
 export class SystemPromptViewer implements Component {
+	private readonly content: string;
 	private scrollTop = 0;
 
 	constructor(
@@ -191,14 +222,13 @@ export class SystemPromptViewer implements Component {
 		this.content = normalizeLineEndings(content);
 	}
 
-	private readonly content: string;
-
 	handleInput(data: string): void {
 		const pageSize = this.getBodyHeight();
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter) || matchesKey(data, "q")) {
+		if (this.isCloseKey(data)) {
 			this.done();
 			return;
 		}
+
 		if (matchesKey(data, Key.up)) this.scrollBy(-1);
 		else if (matchesKey(data, Key.down)) this.scrollBy(1);
 		else if (matchesKey(data, Key.pageUp)) this.scrollBy(-pageSize);
@@ -210,36 +240,52 @@ export class SystemPromptViewer implements Component {
 	render(width: number): string[] {
 		if (width < 1) return [];
 
-		const innerWidth = width;
-		const bodyWidth = Math.max(1, innerWidth);
-		const bodyLines = this.formatBody(bodyWidth);
 		const bodyHeight = this.getBodyHeight();
-		const maxScrollTop = Math.max(0, bodyLines.length - bodyHeight);
-		this.scrollTop = Math.min(Math.max(0, this.scrollTop), maxScrollTop);
-
-		const visibleBody = bodyLines.slice(this.scrollTop, this.scrollTop + bodyHeight);
-		while (visibleBody.length < bodyHeight) visibleBody.push("");
-
-		const rawLineCount = this.content.split("\n").length;
-		const title = this.theme.bold(`System prompt (${this.content.length} chars, ${rawLineCount} lines)`);
-		const position = bodyLines.length > bodyHeight ? ` ${this.scrollTop + 1}-${Math.min(bodyLines.length, this.scrollTop + bodyHeight)}/${bodyLines.length}` : "";
+		const bodyLines = this.formatBody(width);
+		this.clampScroll(bodyLines.length, bodyHeight);
 
 		return [
-			this.line(this.theme.fg("accent", title) + this.theme.fg("dim", position), innerWidth),
-			this.line(this.theme.fg("dim", "Read-only view. Up/Down/Page/Home/End scroll, Esc/q/Enter closes."), innerWidth),
-			this.line("", innerWidth),
-			...visibleBody.map((line) => this.line(line, innerWidth)),
+			this.formatHeader(width, bodyLines.length, bodyHeight),
+			this.fitLine(this.theme.fg("dim", "Read-only view. Up/Down/Page/Home/End scroll, Esc/q/Enter closes."), width),
+			this.fitLine("", width),
+			...this.formatVisibleBody(bodyLines, bodyHeight).map((line) => this.fitLine(line, width)),
 		];
 	}
 
 	invalidate(): void {}
 
+	private isCloseKey(data: string): boolean {
+		return matchesKey(data, Key.escape) || matchesKey(data, Key.enter) || matchesKey(data, "q");
+	}
+
 	private scrollBy(delta: number): void {
 		this.scrollTop = Math.max(0, this.scrollTop + delta);
 	}
 
+	private clampScroll(totalLines: number, bodyHeight: number): void {
+		const maxScrollTop = Math.max(0, totalLines - bodyHeight);
+		this.scrollTop = Math.min(Math.max(0, this.scrollTop), maxScrollTop);
+	}
+
 	private getBodyHeight(): number {
-		return Math.max(1, Math.floor(this.getRows() * 0.75) - 5);
+		// custom UI 没有单独的视口高度参数；用终端行数估算，给标题和提示预留固定行。
+		return Math.max(1, Math.floor(this.getRows() * VIEWER_BODY_ROWS_RATIO) - VIEWER_NON_BODY_ROWS);
+	}
+
+	private formatHeader(width: number, bodyLineCount: number, bodyHeight: number): string {
+		const rawLineCount = this.content.split("\n").length;
+		const title = this.theme.bold(`System prompt (${this.content.length} chars, ${rawLineCount} lines)`);
+		const position =
+			bodyLineCount > bodyHeight
+				? ` ${this.scrollTop + 1}-${Math.min(bodyLineCount, this.scrollTop + bodyHeight)}/${bodyLineCount}`
+				: "";
+		return this.fitLine(this.theme.fg("accent", title) + this.theme.fg("dim", position), width);
+	}
+
+	private formatVisibleBody(bodyLines: string[], bodyHeight: number): string[] {
+		const visibleBody = bodyLines.slice(this.scrollTop, this.scrollTop + bodyHeight);
+		while (visibleBody.length < bodyHeight) visibleBody.push("");
+		return visibleBody;
 	}
 
 	private formatBody(width: number): string[] {
@@ -249,6 +295,7 @@ export class SystemPromptViewer implements Component {
 		const formatted: string[] = [];
 
 		lines.forEach((line, index) => {
+			// 每一行单独按终端列宽折行；后续折行保留空行号，让用户能区分原始行与视觉折行。
 			const wrapped = wrapByColumns(line.length > 0 ? line : " ", textWidth);
 			const firstPrefix = `${String(index + 1).padStart(numberWidth, " ")} | `;
 			const nextPrefix = `${" ".repeat(numberWidth)} | `;
@@ -261,7 +308,7 @@ export class SystemPromptViewer implements Component {
 		return formatted;
 	}
 
-	private line(content: string, width: number): string {
+	private fitLine(content: string, width: number): string {
 		return padToWidth(truncateToWidth(content, width, ""), width);
 	}
 }
@@ -271,6 +318,7 @@ function wrapByColumns(text: string, width: number): string[] {
 	let current = "";
 	let currentWidth = 0;
 
+	// Intl.Segmenter 按字素簇切分，避免把中文、emoji 或组合字符截到不可显示的中间状态。
 	for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)) {
 		const segmentWidth = visibleWidth(segment);
 		if (current && currentWidth + segmentWidth > width) {
@@ -293,38 +341,18 @@ function padToWidth(text: string, width: number): string {
 	return text + " ".repeat(Math.max(0, width - visible));
 }
 
-/** 注册 /system 命令，用只读浮层查看当前 system prompt，不进入历史上下文。 */
-export function registerSystemCommand(pi: Pick<ExtensionAPI, "registerCommand"> & Partial<Pick<ExtensionAPI, "getActiveTools">>): void {
-	pi.registerCommand("system", {
-		description: SYSTEM_COMMAND_DESCRIPTION,
-		async handler(_args, ctx) {
-			if (ctx.mode !== "tui") return;
-			const prompt = await buildRuntimeSystemPrompt(ctx.getSystemPromptOptions(), ctx.cwd, getActiveTools(pi));
-			await ctx.ui.custom<void>(
-				(tui, theme, _keybindings, done) => new SystemPromptViewer(prompt, theme, () => tui.terminal.rows, done),
-			);
-		},
-	});
-}
-
-/** 在每轮开始前接管 system prompt 构建，改为 XML 风格并移除 skill 列表。 */
-export default function systemPrompt(pi: ExtensionAPI): void {
-	registerSystemCommand(pi);
-	pi.on("before_agent_start", async (event, ctx) => ({
-		systemPrompt: await buildRuntimeSystemPrompt(event.systemPromptOptions, ctx.cwd, getActiveTools(pi)),
-	}));
-}
-
-function getActiveTools(pi: Partial<Pick<ExtensionAPI, "getActiveTools">>): string[] {
-	return pi.getActiveTools?.() ?? DEFAULT_TOOLS;
+function getToolsFromPromptOptions(options: BuildSystemPromptOptions): string[] {
+	// 真实扩展路径会由 pi.getActiveTools() 写入 selectedTools；这里的 fallback 只服务于纯函数测试或外部直接调用。
+	return options.selectedTools ?? Object.keys(options.toolSnippets ?? {});
 }
 
 async function buildRuntimeSystemPrompt(options: BuildSystemPromptOptions, cwd: string, activeTools: string[]): Promise<string> {
-	return buildSystemPrompt(options, await getMainAgentExtraSystemPrompt(cwd, activeTools));
+	return buildSystemPrompt({ ...options, selectedTools: activeTools }, await getMainAgentExtraSystemPrompt(cwd));
 }
 
-async function getMainAgentExtraSystemPrompt(cwd: string, activeTools: string[]): Promise<string[]> {
+async function getMainAgentExtraSystemPrompt(cwd: string): Promise<string[]> {
 	if (process.env.PI_SUBAGENT_CHILD === "1") return [];
+
 	const config = await loadSubagentConfig(cwd);
 	const discovery = discoverAgents(cwd, config);
 	const subagents = formatAvailableSubagentsPrompt(discovery.agents);

@@ -1,0 +1,41 @@
+import { Ajv, type AnySchema } from "ajv";
+import { describe, expect, it } from "vitest";
+import fileTools from "../agent/extensions/file-tools.js";
+
+function registeredTools(): Map<string, { parameters: unknown }> {
+	const tools = new Map<string, { parameters: unknown }>();
+	fileTools({
+		registerTool(tool: { name: string; parameters: unknown }) {
+			tools.set(tool.name, tool);
+		},
+	} as never);
+	return tools;
+}
+
+function validates(schema: AnySchema, value: unknown): boolean {
+	const ajv = new Ajv({ strict: false });
+	return ajv.compile(schema)(value) === true;
+}
+
+describe("file tool schemas", () => {
+	it("使用整数范围、数组长度、必填字段和未知字段限制", () => {
+		const tools = registeredTools();
+		const grep = tools.get("grep")?.parameters as AnySchema | undefined;
+		const read = tools.get("read")?.parameters as AnySchema | undefined;
+		const edit = tools.get("edit")?.parameters as AnySchema | undefined;
+		if (grep === undefined || read === undefined || edit === undefined) throw new Error("missing tool schema");
+
+		expect(validates(grep, { path: ".", query: "x", context: 1, limit: 20 })).toBe(true);
+		expect(validates(grep, { path: ".", query: "x", context: 1.5 })).toBe(false);
+		expect(validates(grep, { path: ".", query: "x", limit: 0 })).toBe(false);
+		expect(validates(grep, { path: ".", query: "x", extra: true })).toBe(false);
+
+		expect(validates(read, { path: "a.ts", start_line: 1, end_line: 2 })).toBe(true);
+		expect(validates(read, { path: "a.ts", start_line: 1.5 })).toBe(false);
+
+		expect(validates(edit, { path: "a.ts", edits: [{ old: "x", new: "y" }] })).toBe(true);
+		expect(validates(edit, { path: "a.ts", edits: [] })).toBe(false);
+		expect(validates(edit, { path: "a.ts", edits: [{ old: "", new: "y" }] })).toBe(false);
+		expect(validates(edit, { path: "a.ts", edits: [{ old: "x", new: "y", extra: true }] })).toBe(false);
+	});
+});

@@ -6,8 +6,8 @@ const COLLAPSED_EVENTS = 9;
 
 export function renderSubagentCall(args: unknown, theme: Pick<Theme, "fg" | "bold">): Text {
 	const record = isRecord(args) ? args : {};
-	const mode = Array.isArray(record["chain"]) ? "chain" : Array.isArray(record["tasks"]) ? "parallel" : "single";
-	const label = mode === "single" ? String(record["agent"] ?? "...") : `${mode} (${Array.isArray(record[mode === "chain" ? "chain" : "tasks"]) ? (record[mode === "chain" ? "chain" : "tasks"] as unknown[]).length : 0})`;
+	const mode = record["mode"] === "parallel" || record["mode"] === "chain" ? record["mode"] : "single";
+	const label = mode === "single" ? String(record["agent"] ?? "...") : `${mode} (${Array.isArray(record["tasks"]) ? (record["tasks"] as unknown[]).length : 0})`;
 	return new Text(`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", label)}`, 0, 0);
 }
 

@@ -25,6 +25,7 @@ export type FileToolErrorCode =
 export interface FileToolError {
 	code: FileToolErrorCode;
 	message: string;
+	next?: string;
 	path?: string;
 	edit_index?: number;
 	expected?: string;

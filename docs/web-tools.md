@@ -71,7 +71,7 @@ webfetch({
 
 - `readable`：HTML 清理后转 Markdown；JSON、XML、纯文本保持原文。
 - `source`：返回解码后的响应源码文本。
-- `offset`/`limit`：对首次转换后的内存 snapshot 切片；继续读取长页面时用上次返回的 `next_offset`。
+- `offset`/`limit`：对首次转换后的内存 snapshot 切片；长页面结果返回 `range.has_more`、`range.next_offset` 和 `next`，继续读取时使用上次返回的 offset。
 
 `webfetch` 不搜索、不执行 JavaScript、不点击链接、不提交表单、不访问本机或私网。
 

@@ -160,7 +160,10 @@ async function readExistingWithVersion(
 ): Promise<ToolOutcome<TextFile>> {
 	if (expected === undefined) {
 		if (readPolicy === "cached") {
-			return fail("READ_REQUIRED", "Read the file before editing it.", { path: relativePath });
+			return fail("READ_REQUIRED", "Read the file before editing it.", {
+				path: relativePath,
+				next: "Read the file, then create a new edit operation.",
+			});
 		}
 		return readTextFile(absolutePath, relativePath);
 	}
@@ -169,6 +172,7 @@ async function readExistingWithVersion(
 	if (expected !== file.version) {
 		return fail("STALE_READ", "The file changed after it was read. Read the file again before editing.", {
 			path: relativePath,
+			next: "Read the file again, then create a new edit operation.",
 			expected,
 			actual: file.version,
 		});

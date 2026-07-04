@@ -13,17 +13,41 @@ const taskItem = Type.Object({
 	agent: Type.String({ minLength: 1, description: "Agent name." }),
 	task: Type.String({ minLength: 1, description: "Task text." }),
 	cwd: Type.Optional(Type.String({ description: "Workspace-relative working directory." })),
-});
+}, { additionalProperties: false });
 
-const subagentParams = Type.Object({
-	agent: Type.Optional(Type.String({ description: "Agent name for single mode." })),
-	task: Type.Optional(Type.String({ description: "Task for single mode." })),
-	tasks: Type.Optional(Type.Array(taskItem, { description: "Parallel tasks." })),
-	chain: Type.Optional(Type.Array(taskItem, { description: "Sequential tasks. Use {previous} for prior result." })),
+const commonSubagentFields = {
 	cwd: Type.Optional(Type.String({ description: "Workspace-relative working directory." })),
 	model: Type.Optional(Type.String({ description: "Model for this call only." })),
-	outputMode: Type.Optional(StringEnum(["inline", "file"] as const, { description: "Return short inline text or file reference." })),
-});
+	outputMode: Type.Optional(StringEnum(["inline", "file"] as const, { description: "inline for short results; file for long or parallel results." })),
+};
+
+const subagentParams = Type.Union([
+	Type.Object(
+		{
+			mode: Type.Literal("single", { description: "Run one agent task." }),
+			agent: Type.String({ minLength: 1, description: "Agent name." }),
+			task: Type.String({ minLength: 1, description: "Task text." }),
+			...commonSubagentFields,
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{
+			mode: Type.Literal("parallel", { description: "Run independent tasks concurrently." }),
+			tasks: Type.Array(taskItem, { minItems: 1, description: "Parallel tasks." }),
+			...commonSubagentFields,
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{
+			mode: Type.Literal("chain", { description: "Run tasks sequentially; task may use {previous}." }),
+			tasks: Type.Array(taskItem, { minItems: 1, description: "Sequential tasks." }),
+			...commonSubagentFields,
+		},
+		{ additionalProperties: false },
+	),
+]);
 
 /** 注册轻量 subagent 工具和确定性命令；核心逻辑在 src/subagent。 */
 export default function subagentExtension(pi: ExtensionAPI): void {
@@ -31,12 +55,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "subagent",
 		label: "subagent",
-		description: "Run isolated Pi subagents in single, parallel, or chain mode. Provide exactly one mode.",
-		promptSnippet: "Delegate a bounded task to a named isolated subagent",
-		promptGuidelines: [
-			"Pass explicit task text; do not ask subagents to loosen permissions.",
-			"Use file output for long results or parallel work.",
-		],
+		description: "Delegate bounded work to isolated agents when specialization, isolation, or parallelism is useful.",
+		promptSnippet: "delegate bounded isolated work",
 		parameters: subagentParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const modelIds = ctx.modelRegistry.getAll().map((model) => model.id);
