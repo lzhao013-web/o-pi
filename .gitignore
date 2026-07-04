@@ -2,6 +2,7 @@ agent/auth.json
 agent/settings.json
 agent/permission-state
 agent/sessions
+agent/cookies.txt
 
 package-lock.json
 
@@ -53,6 +54,7 @@ web_modules/
 
 # TypeScript cache
 *.tsbuildinfo
+.tmp-smoke/
 
 # Optional npm cache directory
 .npm
