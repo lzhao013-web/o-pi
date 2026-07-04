@@ -10,16 +10,24 @@
 	"devDependencies": {
 		"@types/node": "latest",
 		"@types/picomatch": "latest",
+		"@types/turndown": "latest",
 		"typescript": "latest",
 		"vitest": "latest"
 	},
 	"dependencies": {
+		"@earendil-works/pi-ai": "latest",
 		"@earendil-works/pi-coding-agent": "latest",
 		"@earendil-works/pi-tui": "latest",
 		"ajv": "latest",
 		"ignore": "latest",
+		"ipaddr.js": "latest",
 		"jsonc-parser": "latest",
+		"linkedom": "latest",
 		"picomatch": "latest",
-		"typebox": "latest"
+		"tough-cookie": "latest",
+		"turndown": "latest",
+		"turndown-plugin-gfm": "latest",
+		"typebox": "latest",
+		"undici": "latest"
 	}
 }

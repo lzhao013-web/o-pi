@@ -5,3 +5,4 @@ Orion's Pi Agent.
 ## 文档
 
 * [文件工具设计](docs/fs-tools.md)
+* [Web 工具](docs/web-tools.md)
