@@ -15,13 +15,13 @@ describe("websearch renderer", () => {
 		expect(text).not.toContain("\u001b");
 	});
 
-	it("折叠只显示三条并显示剩余数量", () => {
+	it("折叠只显示 2 行卡片，不直接显示搜索结果列表", () => {
 		const rendered = formatWebSearchResult(successDetails(5), {}, theme);
+		expect(rendered.split("\n")).toHaveLength(2);
 		expect(rendered).toContain("5 results");
-		expect(rendered).toContain("1. Title 1");
-		expect(rendered).toContain("3. Title 3");
+		expect(rendered).not.toContain("1. Title 1");
 		expect(rendered).not.toContain("4. Title 4");
-		expect(rendered).toContain("... 2 more");
+		expect(rendered).toContain("cache miss");
 	});
 
 	it("展开显示完整结果、摘要、URL 和 metadata", () => {

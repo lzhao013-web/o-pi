@@ -1,0 +1,114 @@
+{
+	"$schema": "https://json-schema.org/draft-07/schema",
+	"$id": "tui.schema.json",
+	"title": "o-pi TUI config",
+	"type": "object",
+	"additionalProperties": false,
+	"required": ["version"],
+	"properties": {
+		"$schema": { "type": "string" },
+		"version": { "const": 1 },
+		"enabled": { "type": "boolean", "default": true },
+		"preset": { "enum": ["compact", "minimal"], "default": "compact" },
+		"icons": { "enum": ["unicode", "ascii", "nerd", "auto"], "default": "unicode" },
+		"chrome": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"title": { "type": "boolean", "default": true },
+				"header": { "type": "boolean", "default": false },
+				"footer": { "type": "boolean", "default": true },
+				"working_indicator": { "enum": ["dot", "spinner", "off"], "default": "dot" }
+			}
+		},
+		"footer": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"max_lines": { "const": 2 },
+				"segments": {
+					"type": "array",
+					"items": { "enum": ["cwd", "git", "model", "ctx", "tokens", "cost", "status"] },
+					"default": ["cwd", "git", "model", "ctx", "tokens", "cost", "status"]
+				},
+				"narrow_segments": {
+					"type": "array",
+					"items": { "enum": ["cwd", "git", "model", "ctx", "tokens", "cost", "status"] },
+					"default": ["cwd", "git", "model", "ctx", "tokens", "cost", "status"]
+				},
+				"style": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"workspace_color": { "$ref": "#/$defs/themeColor" },
+						"git_color": { "$ref": "#/$defs/themeColor" },
+						"git_icon": { "type": "string", "minLength": 1, "maxLength": 8, "default": "⑂" }
+					}
+				}
+			}
+		},
+		"tools": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"expanded_default": { "type": "boolean", "default": false },
+				"show_timing": { "type": "boolean", "default": true },
+				"show_provider": { "type": "boolean", "default": false },
+				"max_target_chars": { "type": "integer", "minimum": 16, "maximum": 240, "default": 72 },
+				"max_summary_chars": { "type": "integer", "minimum": 16, "maximum": 240, "default": 96 },
+				"collapsed_lines": { "const": 2, "default": 2 }
+			}
+		}
+	},
+	"$defs": {
+		"themeColor": {
+			"enum": [
+				"accent",
+				"border",
+				"borderAccent",
+				"borderMuted",
+				"success",
+				"error",
+				"warning",
+				"muted",
+				"dim",
+				"text",
+				"thinkingText",
+				"userMessageText",
+				"customMessageText",
+				"customMessageLabel",
+				"toolTitle",
+				"toolOutput",
+				"mdHeading",
+				"mdLink",
+				"mdLinkUrl",
+				"mdCode",
+				"mdCodeBlock",
+				"mdCodeBlockBorder",
+				"mdQuote",
+				"mdQuoteBorder",
+				"mdHr",
+				"mdListBullet",
+				"toolDiffAdded",
+				"toolDiffRemoved",
+				"toolDiffContext",
+				"syntaxComment",
+				"syntaxKeyword",
+				"syntaxFunction",
+				"syntaxVariable",
+				"syntaxString",
+				"syntaxNumber",
+				"syntaxType",
+				"syntaxOperator",
+				"syntaxPunctuation",
+				"thinkingOff",
+				"thinkingMinimal",
+				"thinkingLow",
+				"thinkingMedium",
+				"thinkingHigh",
+				"thinkingXhigh",
+				"bashMode"
+			]
+		}
+	}
+}

@@ -17,6 +17,8 @@ import { formatCompactLsResult, listWorkspaceDirectory } from "../../src/file-to
 import { ReadVersionCache } from "../../src/file-tools/read-cache.js";
 import { readWorkspaceFile } from "../../src/file-tools/read-tool.js";
 import { writeWorkspaceFile } from "../../src/file-tools/write-tool.js";
+import { formatToolCard } from "../../src/tui/tool-card.js";
+import { formatBytes, formatChars, joinParts } from "../../src/tui/text.js";
 import type {
 	EditParams,
 	EditPreviewSuccess,
@@ -28,6 +30,8 @@ import type {
 	LsParams,
 	LsSuccess,
 	ReadParams,
+	ReadSuccess,
+	WriteSuccess,
 	WriteParams,
 } from "../../src/file-tools/types.js";
 
@@ -156,9 +160,14 @@ export default function fileTools(pi: ExtensionAPI): void {
 				details: withNativeLsDetails(result),
 			};
 		},
+		renderCall(args, theme, context) {
+			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+			text.setText(context.isPartial === false ? "" : formatLsCall(args, theme, context.cwd));
+			return text;
+		},
 		renderResult(result, { expanded, isPartial }, theme, context) {
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-			text.setText(formatFileToolTextResult(result, expanded, isPartial, theme, { collapsedLineLimit: 20 }));
+			text.setText(formatLsResult(result, expanded, isPartial, theme, context.cwd));
 			return text;
 		},
 	});
@@ -184,12 +193,12 @@ export default function fileTools(pi: ExtensionAPI): void {
 		},
 		renderCall(args, theme, context) {
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-			text.setText(formatFindCall(args, theme, context.cwd));
+			text.setText(context.isPartial === false ? "" : formatFindCall(args, theme, context.cwd));
 			return text;
 		},
 		renderResult(result, { expanded, isPartial }, theme, context) {
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-			text.setText(formatFindResult(result, expanded, isPartial, theme));
+			text.setText(formatFindResult(result, expanded, isPartial, theme, context.args, context.cwd));
 			return text;
 		},
 	});
@@ -215,12 +224,12 @@ export default function fileTools(pi: ExtensionAPI): void {
 		},
 		renderCall(args, theme, context) {
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-			text.setText(formatGrepCall(args, theme));
+			text.setText(context.isPartial === false ? "" : formatGrepCall(args, theme));
 			return text;
 		},
 		renderResult(result, { expanded }, theme, context) {
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-			text.setText(formatFailedDetails(result.details, theme) ?? formatGrepResult(result.details, expanded, theme));
+			text.setText(formatFailureCard("grep", grepTarget(context.args), result.details, theme) ?? formatGrepResult(result.details, expanded, theme));
 			return text;
 		},
 	});
@@ -239,9 +248,14 @@ export default function fileTools(pi: ExtensionAPI): void {
 				details: result,
 			};
 		},
+		renderCall(args, theme, context) {
+			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+			text.setText(context.isPartial === false ? "" : formatReadCall(args, theme, context.cwd));
+			return text;
+		},
 		renderResult(result, { expanded, isPartial }, theme, context) {
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-			text.setText(formatFileToolTextResult(result, expanded, isPartial, theme, { collapsedLineLimit: 10, hideCollapsedSuccess: true }));
+			text.setText(formatReadResult(result, expanded, isPartial, theme, context.args, context.cwd));
 			return text;
 		},
 	});
@@ -267,6 +281,7 @@ export default function fileTools(pi: ExtensionAPI): void {
 			};
 		},
 		renderCall(args, theme, context) {
+			if (context.isPartial === false) return new Text("", 0, 0);
 			const renderArgs = args as { path?: string; file_path?: string; content?: string } | undefined;
 			const rawPath = stringArg(renderArgs?.file_path ?? renderArgs?.path);
 			const fileContent = stringArg(renderArgs?.content);
@@ -291,14 +306,8 @@ export default function fileTools(pi: ExtensionAPI): void {
 		},
 		renderResult(result, _options, theme, context) {
 			const details = result.details;
-			const output = isFailedEditDetails(details) ? theme.fg("error", formatEditError(details)) : undefined;
-			if (output === undefined) {
-				const component = context.lastComponent instanceof Container ? context.lastComponent : new Container();
-				component.clear();
-				return component;
-			}
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-			text.setText(`\n${output}`);
+			text.setText(formatWriteResult(details, theme, context.args, context.cwd));
 			return text;
 		},
 	});
@@ -324,6 +333,7 @@ export default function fileTools(pi: ExtensionAPI): void {
 			};
 		},
 		renderCall(args, theme, context) {
+			if (context.isPartial === false) return new Text("", 0, 0);
 			const component = getEditCallComponent(context.state, context.lastComponent);
 			const argsKey = stableArgsKey(args);
 			if (component.previewArgsKey !== argsKey) {
@@ -342,10 +352,10 @@ export default function fileTools(pi: ExtensionAPI): void {
 					}
 				});
 			}
-			return buildEditCallComponent(component, args, theme);
+			return buildEditCallComponent(component, args, theme, context.expanded);
 		},
 		renderResult(result, { isPartial }, theme, context) {
-			if (isPartial) return new Text(theme.fg("warning", "Editing..."), 0, 0);
+			if (isPartial) return new Text(formatToolCard({ tool: "edit", status: "running", target: editTarget(context.args), summary: "applying" }, theme), 0, 0);
 
 			const details = result.details;
 			const callComponent = getEditCallComponent(context.state, undefined);
@@ -358,13 +368,12 @@ export default function fileTools(pi: ExtensionAPI): void {
 			} else if (isFailedEditDetails(details)) {
 				callComponent.settledError = true;
 			}
-			buildEditCallComponent(callComponent, context.args, theme);
+			buildEditCallComponent(callComponent, context.args, theme, context.expanded);
 
 			const component = context.lastComponent instanceof Container ? context.lastComponent : new Container();
 			component.clear();
-			const output = formatEditResult(details, previewBeforeResult, theme);
+			const output = formatEditResult(details, previewBeforeResult, theme, context.args, context.expanded);
 			if (output === undefined) return component;
-			component.addChild(new Spacer(1));
 			component.addChild(new Text(output, 1, 0));
 			return component;
 		},
@@ -397,11 +406,11 @@ function getEditCallComponent(state: { callComponent?: EditCallComponent }, last
 	return component;
 }
 
-function buildEditCallComponent(component: EditCallComponent, args: unknown, theme: Theme): EditCallComponent {
+function buildEditCallComponent(component: EditCallComponent, args: unknown, theme: Theme, expanded: boolean): EditCallComponent {
 	component.setBgFn(editHeaderBg(component.preview, component.settledError, theme));
 	component.clear();
 	component.addChild(new Text(formatEditCall(args, theme), 0, 0));
-	if (component.preview === undefined) return component;
+	if (component.preview === undefined || !expanded) return component;
 
 	component.addChild(new Spacer(1));
 	if (isFailedEditDetails(component.preview)) {
@@ -420,15 +429,23 @@ function editHeaderBg(preview: EditPreview | EditSuccess | undefined, settledErr
 	return (text) => theme.bg("toolPendingBg", text);
 }
 
-function formatEditResult(details: unknown, preview: EditPreview | EditSuccess | undefined, theme: Theme): string | undefined {
+function formatEditResult(details: unknown, preview: EditPreview | EditSuccess | undefined, theme: Theme, args: unknown, expanded: boolean): string | undefined {
 	if (isFailedEditDetails(details)) {
 		const errorText = formatEditError(details);
 		if (isFailedEditDetails(preview) && formatEditError(preview) === errorText) return undefined;
-		return theme.fg("error", errorText);
+		return formatFailureCard("edit", editTarget(args), details, theme);
 	}
-	if (!isEditSuccessDetails(details) || details.diff === "") return undefined;
+	if (!isEditSuccessDetails(details)) return undefined;
+	const header = formatToolCard({
+		tool: "edit",
+		status: "success",
+		target: details.path,
+		summary: joinParts([formatDiffStats(details.diff), `${details.replacements} replacements`, details.diff !== "" ? "diff available" : "no diff"]),
+	}, theme);
+	if (!expanded || details.diff === "") return header;
 	const previewDiff = preview !== undefined && !isFailedEditDetails(preview) ? preview.diff : undefined;
-	return details.diff === previewDiff ? undefined : renderDiff(details.diff);
+	if (details.diff === previewDiff) return header;
+	return `${header}\n\n${renderDiff(details.diff)}`;
 }
 
 function stableArgsKey(args: unknown): string | undefined {
@@ -438,10 +455,6 @@ function stableArgsKey(args: unknown): string | undefined {
 
 function formatEditError(result: FailedResult): string {
 	return `${result.error.code}: ${result.error.message}`;
-}
-
-function formatFailedDetails(details: unknown, theme: Pick<Theme, "fg">): string | undefined {
-	return isFailedDetails(details) ? theme.fg("error", formatEditError(details)) : undefined;
 }
 
 function previewException(error: unknown): FailedResult {
@@ -455,8 +468,13 @@ function previewException(error: unknown): FailedResult {
 }
 
 function formatEditCall(args: unknown, theme: Pick<Theme, "fg" | "bold">): string {
-	const label = isPlainRecord(args) && typeof args["path"] === "string" ? args["path"] : "file";
-	return `${theme.fg("toolTitle", theme.bold("edit"))} ${theme.fg("accent", label)}`;
+	const replacements = isPlainRecord(args) && Array.isArray(args["edits"]) ? args["edits"].length : undefined;
+	return formatToolCard({
+		tool: "edit",
+		status: "running",
+		target: editTarget(args),
+		summary: joinParts(["previewing", replacements !== undefined ? `${replacements} replacements` : undefined]),
+	}, theme);
 }
 
 function getWriteCallComponent(lastComponent: unknown): WriteCallComponent {
@@ -533,11 +551,22 @@ function formatWriteCall(
 ): string {
 	const rawPath = stringArg(args?.file_path ?? args?.path);
 	const fileContent = stringArg(args?.content);
-	let text = `${theme.fg("toolTitle", theme.bold("write"))} ${formatToolPath(rawPath, theme, cwd)}`;
+	const target = displayToolPath(rawPath, cwd);
 
 	if (fileContent === null) {
-		text += `\n\n${theme.fg("error", "[invalid content arg - expected string]")}`;
-	} else if (fileContent.length > 0) {
+		return formatToolCard({ tool: "write", status: "error", target, summary: "invalid content arg" }, theme);
+	}
+	const lineCount = fileContent === "" ? 0 : fileContent.split(/\r\n?|\n/).length;
+	const header = formatToolCard({
+		tool: "write",
+		status: "running",
+		target,
+		summary: joinParts([`${lineCount} lines`, formatChars(fileContent.length), options.expanded ? "preview" : "preview hidden"]),
+	}, theme);
+	if (!options.expanded || fileContent.length === 0) return header;
+
+	let text = header;
+	if (fileContent.length > 0) {
 		const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 		const renderedLines = lang
 			? (cache?.highlightedLines ?? highlightCode(replaceTabs(normalizeDisplayText(fileContent)), lang))
@@ -555,12 +584,12 @@ function formatWriteCall(
 	return text;
 }
 
-function formatToolPath(rawPath: string | null, theme: Pick<Theme, "fg">, cwd: string): string {
-	if (rawPath === null || rawPath.length === 0) return theme.fg("error", "?");
-	const normalizedCwd = cwd.replace(/\\/g, "/");
+function displayToolPath(rawPath: string | null, cwd: string): string {
+	if (rawPath === null || rawPath.length === 0) return "?";
+	const normalizedCwd = (cwd || ".").replace(/\\/g, "/");
 	const normalizedPath = rawPath.replace(/\\/g, "/");
 	const display = normalizedPath.startsWith(`${normalizedCwd}/`) ? normalizedPath.slice(normalizedCwd.length + 1) : rawPath;
-	return theme.fg("accent", display);
+	return display;
 }
 
 function trimTrailingEmptyLines(lines: string[]): string[] {
@@ -630,7 +659,12 @@ function formatFindCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, cwd: s
 	const record = isPlainRecord(args) ? args : {};
 	const query = stringArg(record["query"]);
 	const rawPath = stringArg(record["path"]) ?? ".";
-	return `${theme.fg("toolTitle", theme.bold("find"))} ${query === null ? theme.fg("error", "?") : theme.fg("accent", `"${query}"`)} ${theme.fg("toolOutput", "in")} ${formatToolPath(rawPath, theme, cwd)}`;
+	return formatToolCard({
+		tool: "find",
+		status: "running",
+		target: `${query === null ? "?" : `"${query}"`} in ${displayToolPath(rawPath, cwd)}`,
+		summary: "locating files/directories",
+	}, theme);
 }
 
 function formatFindResult(
@@ -638,9 +672,11 @@ function formatFindResult(
 	expanded: boolean,
 	isPartial: boolean,
 	theme: Pick<Theme, "fg" | "bold">,
+	args: unknown,
+	cwd: string,
 ): string {
-	if (isPartial) return theme.fg("warning", "Finding...");
-	const failure = formatFailedDetails(result.details, theme);
+	if (isPartial) return formatToolCard({ tool: "find", status: "running", target: findTarget(args, cwd), summary: "locating files/directories" }, theme);
+	const failure = formatFailureCard("find", findTarget(args, cwd), result.details, theme);
 	if (failure !== undefined) return failure;
 	if (isFindDetails(result.details)) return formatFindDetails(result.details, expanded, theme);
 
@@ -657,20 +693,22 @@ function formatFindResult(
 	return text;
 }
 
-function formatFindDetails(details: FindDetails, expanded: boolean, theme: Pick<Theme, "fg">): string {
+function formatFindDetails(details: FindDetails, expanded: boolean, theme: Pick<Theme, "fg" | "bold">): string {
 	const files = details.matches.filter((match) => match.kind === "file").length;
 	const directories = details.matches.filter((match) => match.kind === "directory").length;
-	const summary = [
+	const summary = joinParts([
 		`${details.totalMatches} ${details.totalMatches === 1 ? "match" : "matches"}`,
 		`${files} ${files === 1 ? "file" : "files"}`,
 		`${directories} ${directories === 1 ? "directory" : "directories"}`,
 		details.strategy,
-	].join(" · ");
-	if (!expanded) return theme.fg("toolOutput", summary);
+		details.truncated ? "truncated" : undefined,
+	]);
+	const header = formatToolCard({ tool: "find", status: "success", target: `"${details.query}" in ${details.path}`, summary }, theme);
+	if (!expanded) return header;
 
-	const lines = [summary];
+	const lines = [header, ""];
 	if (details.matches.length > 0) {
-		lines.push("", "Matches:");
+		lines.push("Matches:");
 		for (const match of details.matches) lines.push(`${match.kind === "directory" ? `${match.path}/` : match.path} (${match.kind})`);
 	}
 	if (details.collapsedGroups.length > 0) {
@@ -684,32 +722,88 @@ function formatFindDetails(details: FindDetails, expanded: boolean, theme: Pick<
 	}
 	lines.push("", `Scanned ${details.scannedEntries} entries; skipped ${details.skippedCount}; ignored ${details.ignoredCount}.`);
 	if (details.truncated) lines.push("Truncated.");
-	return `\n${lines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
+	return lines.map((line) => line === header ? line : theme.fg("toolOutput", line)).join("\n");
 }
 
-function formatFileToolTextResult(
+function formatLsCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, cwd: string): string {
+	const record = isPlainRecord(args) ? args : {};
+	const rawPath = stringArg(record["path"]) ?? ".";
+	return formatToolCard({ tool: "ls", status: "running", target: displayToolPath(rawPath, cwd), summary: "listing directory" }, theme);
+}
+
+function formatLsResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
 	expanded: boolean,
 	isPartial: boolean,
 	theme: Pick<Theme, "fg" | "bold">,
-	options: { collapsedLineLimit: number; hideCollapsedSuccess?: boolean },
+	cwd: string,
 ): string {
-	if (isPartial) return theme.fg("warning", "Running...");
-	const failure = formatFailedDetails(result.details, theme);
+	const target = isLsSuccess(result.details) ? result.details.path : cwd;
+	if (isPartial) return formatToolCard({ tool: "ls", status: "running", target, summary: "listing directory" }, theme);
+	const failure = formatFailureCard("ls", target, result.details, theme);
 	if (failure !== undefined) return failure;
-	if (options.hideCollapsedSuccess === true && !expanded) return "";
+	if (!isLsSuccess(result.details)) return fallbackTextResult(result, expanded, theme, 20);
+	const details = result.details;
+	const dirs = details.entries.filter((entry) => entry.type === "directory").length;
+	const files = details.entries.filter((entry) => entry.type === "file").length;
+	const total = details.total_entries ?? details.returned_entries ?? details.entries.length;
+	const header = formatToolCard({
+		tool: "ls",
+		status: "success",
+		target: details.path,
+		summary: joinParts([`${total} entries`, `${dirs} dirs`, `${files} files`, details.truncated ? "truncated" : undefined]),
+	}, theme);
+	if (!expanded) return header;
+	const lines = details.entries.map((entry) => {
+		const suffix = entry.type === "directory" ? "/" : entry.type === "symlink" && entry.link_target ? ` -> ${entry.link_target}` : "";
+		return `${entry.path}${suffix}`;
+	});
+	return [header, "", ...lines.map((line) => theme.fg("toolOutput", line))].join("\n");
+}
 
-	const output = textOutput(result).trim();
-	if (output.length === 0) return "";
-	const lines = output.split("\n");
-	const maxLines = expanded ? lines.length : options.collapsedLineLimit;
-	const displayLines = lines.slice(0, maxLines);
-	const remaining = lines.length - maxLines;
-	let text = `\n${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
-	if (remaining > 0) {
-		text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-	}
-	return text;
+function formatReadCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, cwd: string): string {
+	const record = isPlainRecord(args) ? args : {};
+	const rawPath = stringArg(record["path"]);
+	const range = typeof record["start_line"] === "number" || typeof record["end_line"] === "number"
+		? `lines ${record["start_line"] ?? 1}-${record["end_line"] ?? "end"}`
+		: "file";
+	return formatToolCard({ tool: "read", status: "running", target: displayToolPath(rawPath, cwd), summary: range }, theme);
+}
+
+function formatReadResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	expanded: boolean,
+	isPartial: boolean,
+	theme: Pick<Theme, "fg" | "bold">,
+	args: unknown,
+	cwd: string,
+): string {
+	const target = isReadSuccess(result.details) ? result.details.path : readTarget(args, cwd);
+	if (isPartial) return formatToolCard({ tool: "read", status: "running", target, summary: "reading file" }, theme);
+	const failure = formatFailureCard("read", target, result.details, theme);
+	if (failure !== undefined) return failure;
+	if (!isReadSuccess(result.details)) return fallbackTextResult(result, expanded, theme, 10);
+	const details = result.details;
+	const header = formatToolCard({
+		tool: "read",
+		status: "success",
+		target: details.path,
+		summary: joinParts([
+			`lines ${details.start_line}-${details.end_line}/${details.total_lines}`,
+			formatChars(details.content.length),
+			details.truncated || details.continuation !== undefined ? "more" : undefined,
+		]),
+	}, theme);
+	if (!expanded) return header;
+	return `${header}\n\n${theme.fg("toolOutput", details.content)}`;
+}
+
+function formatWriteResult(details: unknown, theme: Pick<Theme, "fg" | "bold">, args: unknown, cwd: string): string {
+	const target = isWriteSuccess(details) ? details.path : writeTarget(args, cwd);
+	const failure = formatFailureCard("write", target, details, theme);
+	if (failure !== undefined) return failure;
+	if (!isWriteSuccess(details)) return formatToolCard({ tool: "write", status: "neutral", target, summary: "waiting" }, theme);
+	return formatToolCard({ tool: "write", status: "success", target: details.path, summary: joinParts([formatBytes(details.bytes), "written"]) }, theme);
 }
 
 function textOutput(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -717,6 +811,83 @@ function textOutput(result: { content: Array<{ type: string; text?: string }> })
 		.filter((item): item is { type: "text"; text: string } => item.type === "text" && typeof item.text === "string")
 		.map((item) => item.text)
 		.join("\n");
+}
+
+function fallbackTextResult(
+	result: { content: Array<{ type: string; text?: string }> },
+	expanded: boolean,
+	theme: Pick<Theme, "fg">,
+	collapsedLineLimit: number,
+): string {
+	const output = textOutput(result).trim();
+	if (output.length === 0) return "";
+	const lines = output.split("\n");
+	const maxLines = expanded ? lines.length : collapsedLineLimit;
+	const displayLines = lines.slice(0, maxLines);
+	const remaining = lines.length - maxLines;
+	let text = displayLines.map((line) => theme.fg("toolOutput", line)).join("\n");
+	if (remaining > 0) text += theme.fg("muted", `\n... (${remaining} more lines)`);
+	return text;
+}
+
+function formatFailureCard(tool: string, target: string, details: unknown, theme: Pick<Theme, "fg" | "bold">): string | undefined {
+	if (!isFailedDetails(details)) return undefined;
+	return formatToolCard({ tool, status: "error", target, summary: `${details.error.code}: ${details.error.message}` }, theme);
+}
+
+function grepTarget(args: unknown): string {
+	const record = isPlainRecord(args) ? args : {};
+	const query = typeof record["query"] === "string" ? JSON.stringify(record["query"]) : "?";
+	const scope = typeof record["path"] === "string" && record["path"].length > 0 ? record["path"] : ".";
+	return `${query} in ${scope}`;
+}
+
+function findTarget(args: unknown, cwd: string): string {
+	const record = isPlainRecord(args) ? args : {};
+	const query = stringArg(record["query"]);
+	const rawPath = stringArg(record["path"]) ?? ".";
+	return `${query === null ? "?" : `"${query}"`} in ${displayToolPath(rawPath, cwd)}`;
+}
+
+function readTarget(args: unknown, cwd: string): string {
+	const record = isPlainRecord(args) ? args : {};
+	return displayToolPath(stringArg(record["path"]), cwd);
+}
+
+function writeTarget(args: unknown, cwd: string): string {
+	const record = isPlainRecord(args) ? args : {};
+	return displayToolPath(stringArg(record["file_path"] ?? record["path"]), cwd);
+}
+
+function editTarget(args: unknown): string {
+	return isPlainRecord(args) && typeof args["path"] === "string" && args["path"].length > 0 ? args["path"] : "file";
+}
+
+function formatDiffStats(diff: string): string {
+	let added = 0;
+	let removed = 0;
+	for (const line of diff.split("\n")) {
+		if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
+		else if (line.startsWith("-") && !line.startsWith("---")) removed += 1;
+	}
+	return `+${added} -${removed}`;
+}
+
+function isLsSuccess(value: unknown): value is LsSuccess {
+	return isPlainRecord(value) && typeof value["path"] === "string" && Array.isArray(value["entries"]) && typeof value["truncated"] === "boolean";
+}
+
+function isReadSuccess(value: unknown): value is ReadSuccess {
+	return isPlainRecord(value)
+		&& typeof value["path"] === "string"
+		&& typeof value["content"] === "string"
+		&& typeof value["start_line"] === "number"
+		&& typeof value["end_line"] === "number"
+		&& typeof value["total_lines"] === "number";
+}
+
+function isWriteSuccess(value: unknown): value is WriteSuccess {
+	return isPlainRecord(value) && value["status"] === "written" && typeof value["path"] === "string" && typeof value["bytes"] === "number";
 }
 
 function isFileToolName(value: string): boolean {

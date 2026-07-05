@@ -1,12 +1,14 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
+import { formatToolCard } from "../tui/tool-card.js";
+import { formatBytes, formatChars, formatDuration, joinParts } from "../tui/text.js";
 import type { WebFetchDetails, WebFetchFailureDetails, WebFetchProgressDetails, WebFetchSuccessDetails } from "./types.js";
-import { compactUrl, formatBytes, formatChars, shortUrlForCall, truncateMiddle } from "./url-utils.js";
+import { compactUrl, shortUrlForCall, truncateMiddle } from "./url-utils.js";
 
-export function renderWebFetchCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, context: { lastComponent?: unknown }): Text {
+export function renderWebFetchCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, context: { lastComponent?: unknown; isPartial?: boolean }): Text {
 	const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-	text.setText(formatWebFetchCall(args, theme));
+	text.setText(context.isPartial === false ? "" : formatWebFetchCall(args, theme));
 	return text;
 }
 
@@ -22,15 +24,13 @@ export function renderWebFetchResult(
 }
 
 export function formatWebFetchCall(args: unknown, theme: Pick<Theme, "fg" | "bold">): string {
-	const parts = [theme.fg("toolTitle", theme.bold("webfetch")), theme.fg("accent", shortUrlForCall(args))];
-	if (isRecord(args) && args["mode"] === "source") parts.push(theme.fg("muted", "source"));
+	const mode = isRecord(args) && args["mode"] === "source" ? "source" : "readable";
 	const offset = isRecord(args) && typeof args["offset"] === "number" ? args["offset"] : undefined;
 	const limit = isRecord(args) && typeof args["limit"] === "number" ? args["limit"] : undefined;
-	if (offset !== undefined && offset > 0) {
-		const end = limit !== undefined ? offset + limit : undefined;
-		parts.push(theme.fg("muted", end !== undefined ? `${formatChars(offset)}-${formatChars(end)}` : `${formatChars(offset)}+`));
-	}
-	return parts.join("  ");
+	const range = offset !== undefined && offset > 0
+		? limit !== undefined ? `offset ${offset}-${offset + limit}` : `offset ${offset}+`
+		: "offset 0";
+	return formatToolCard({ tool: "webfetch", status: "running", target: shortUrlForCall(args), summary: joinParts([mode, range]) }, theme);
 }
 
 export function formatWebFetchResult(
@@ -39,10 +39,13 @@ export function formatWebFetchResult(
 	theme: Pick<Theme, "fg" | "bold">,
 	_args?: unknown,
 ): string {
-	if (options.isPartial || isProgressDetails(details)) return theme.fg("warning", formatProgress(details));
+	const target = isRecord(_args) ? shortUrlForCall(_args) : targetFromDetails(details);
+	if (options.isPartial || isProgressDetails(details)) {
+		return formatToolCard({ tool: "webfetch", status: "running", target, summary: formatProgress(details) }, theme);
+	}
 	if (isSuccessDetails(details)) return formatSuccess(details, options.expanded === true, theme);
 	if (isFailureDetails(details)) return formatFailure(details, options.expanded === true, theme);
-	return theme.fg("muted", "webfetch");
+	return formatToolCard({ tool: "webfetch", status: "neutral", target, summary: "waiting" }, theme);
 }
 
 export function isWebFetchDetails(value: unknown): value is WebFetchDetails {
@@ -62,9 +65,22 @@ function formatProgress(details: unknown): string {
 function formatSuccess(details: WebFetchSuccessDetails, expanded: boolean, theme: Pick<Theme, "fg" | "bold">): string {
 	const format = labelFormat(details.format);
 	const range = details.range.next_offset !== undefined
-		? `chars ${formatChars(details.range.start)}-${formatChars(details.range.end)} of ${formatChars(details.range.total)}`
-		: `${formatChars(details.total_chars)} chars`;
-	const summaryParts = [
+		? `${formatChars(details.range.start)}-${formatChars(details.range.end)} of ${formatChars(details.range.total)}`
+		: formatChars(details.total_chars);
+	const header = formatToolCard({
+		tool: "webfetch",
+		status: "success",
+		target: compactUrl(details.final_url),
+		summary: joinParts([
+			`${details.http_status}`,
+			format.toLowerCase(),
+			range,
+			details.range.next_offset !== undefined ? "more" : undefined,
+			formatDuration(details.duration_ms),
+		]),
+	}, theme);
+	if (!expanded) return header;
+	const detailSummaryParts = [
 		details.title ? `"${truncateMiddle(details.title, 48)}"` : undefined,
 		`${details.http_status}`,
 		format,
@@ -72,11 +88,12 @@ function formatSuccess(details: WebFetchSuccessDetails, expanded: boolean, theme
 		details.authenticated ? "auth" : undefined,
 		details.range.next_offset !== undefined ? "more" : undefined,
 		details.snapshot === "hit" ? "snapshot" : undefined,
-		`${details.duration_ms}ms`,
+		formatDuration(details.duration_ms),
 	].filter((item): item is string => item !== undefined);
-	const summary = theme.fg("success", summaryParts.join(" · "));
-	if (!expanded) return summary;
+	const summary = theme.fg("success", detailSummaryParts.join(" · "));
 	return [
+		header,
+		"",
 		summary,
 		`  Status          ${details.http_status}`,
 		`  Final URL       ${details.final_url}`,
@@ -96,10 +113,16 @@ function formatSuccess(details: WebFetchSuccessDetails, expanded: boolean, theme
 
 function formatFailure(details: WebFetchFailureDetails, expanded: boolean, theme: Pick<Theme, "fg" | "bold">): string {
 	const status = details.http_status !== undefined ? `${details.http_status} ` : "";
-	const summary = theme.fg("error", `${status}${labelError(details)} · ${details.error.message}`);
-	if (!expanded) return summary;
+	const header = formatToolCard({
+		tool: "webfetch",
+		status: "error",
+		target: compactUrl(details.final_url ?? details.requested_url ?? "url"),
+		summary: joinParts([status.trim(), labelError(details), details.error.message]),
+	}, theme);
+	if (!expanded) return header;
 	return [
-		summary,
+		header,
+		"",
 		`  Error           ${details.error.code}`,
 		details.http_status !== undefined ? `  Status          ${details.http_status}` : undefined,
 		details.final_url ? `  Final URL       ${details.final_url}` : undefined,
@@ -110,6 +133,12 @@ function formatFailure(details: WebFetchFailureDetails, expanded: boolean, theme
 	]
 		.filter((item): item is string => item !== undefined)
 		.join("\n");
+}
+
+function targetFromDetails(details: unknown): string {
+	if (isSuccessDetails(details)) return compactUrl(details.final_url);
+	if (isFailureDetails(details)) return compactUrl(details.final_url ?? details.requested_url ?? "url");
+	return "url";
 }
 
 function labelFormat(format: string): string {

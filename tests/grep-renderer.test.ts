@@ -13,8 +13,16 @@ const theme = {
 
 describe("grep renderer", () => {
 	it("渲染折叠调用和结果摘要", () => {
-		expect(formatGrepCall({ query: "authentication flow", path: "src", match: "auto" }, theme)).toBe('grep "authentication flow" src · auto');
-		expect(formatGrepResult(success(), false, theme)).toBe('grep  "authentication flow"  1 regions · 1 files · symbol+lexical');
+		const call = formatGrepCall({ query: "authentication flow", path: "src", match: "auto" }, theme);
+		expect(call.split("\n")).toHaveLength(2);
+		expect(call).toContain('● grep');
+		expect(call).toContain('"authentication flow" in src');
+		expect(call).toContain("auto");
+
+		const result = formatGrepResult(success(), false, theme);
+		expect(result.split("\n")).toHaveLength(2);
+		expect(result).toContain('✓ grep');
+		expect(result).toContain("1 regions · 1 files · symbol+lexical · truncated");
 	});
 
 	it("展开状态显示区域元数据但不显示源码正文", () => {
