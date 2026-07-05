@@ -53,7 +53,7 @@ const lsParameters = Type.Object({ path: Type.String({ description: "Directory p
 const findParameters = Type.Object(
 	{
 		pattern: Type.String({ description: "Path glob relative to path; ** recurses." }),
-		path: Type.Optional(Type.String({ description: "Search root; defaults to workspace." })),
+		path: Type.Optional(Type.String({ description: "Search root, MUST be workspace-relative; defaults to workspace." })),
 	},
 	{ additionalProperties: false },
 );
@@ -148,6 +148,11 @@ export default function fileTools(pi: ExtensionAPI): void {
 				details: withNativeLsDetails(result),
 			};
 		},
+		renderResult(result, { expanded, isPartial }, theme, context) {
+			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+			text.setText(formatFileToolTextResult(result, expanded, isPartial, theme, { collapsedLineLimit: 20 }));
+			return text;
+		},
 	});
 
 	pi.registerTool({
@@ -168,6 +173,16 @@ export default function fileTools(pi: ExtensionAPI): void {
 				content: [{ type: "text", text: result.content }],
 				details: withNativeFindDetails(result.details),
 			};
+		},
+		renderCall(args, theme, context) {
+			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+			text.setText(formatFindCall(args, theme, context.cwd));
+			return text;
+		},
+		renderResult(result, { expanded, isPartial }, theme, context) {
+			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+			text.setText(formatFindResult(result, expanded, isPartial, theme));
+			return text;
 		},
 	});
 
@@ -197,7 +212,7 @@ export default function fileTools(pi: ExtensionAPI): void {
 		},
 		renderResult(result, { expanded }, theme, context) {
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-			text.setText(formatGrepResult(result.details, expanded, theme));
+			text.setText(formatFailedDetails(result.details, theme) ?? formatGrepResult(result.details, expanded, theme));
 			return text;
 		},
 	});
@@ -215,6 +230,11 @@ export default function fileTools(pi: ExtensionAPI): void {
 				content: [{ type: "text", text: JSON.stringify(scrubVersions(result), null, 2) }],
 				details: result,
 			};
+		},
+		renderResult(result, { expanded, isPartial }, theme, context) {
+			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+			text.setText(formatFileToolTextResult(result, expanded, isPartial, theme, { collapsedLineLimit: 10, hideCollapsedSuccess: true }));
+			return text;
 		},
 	});
 
@@ -341,6 +361,11 @@ export default function fileTools(pi: ExtensionAPI): void {
 			return component;
 		},
 	});
+
+	pi.on("tool_result", (event) => {
+		if (isFileToolName(event.toolName) && isFailedDetails(event.details)) return { isError: true };
+		return undefined;
+	});
 }
 
 function createEditCallComponent(): EditCallComponent {
@@ -405,6 +430,10 @@ function stableArgsKey(args: unknown): string | undefined {
 
 function formatEditError(result: FailedResult): string {
 	return `${result.error.code}: ${result.error.message}`;
+}
+
+function formatFailedDetails(details: unknown, theme: Pick<Theme, "fg">): string | undefined {
+	return isFailedDetails(details) ? theme.fg("error", formatEditError(details)) : undefined;
 }
 
 function previewException(error: unknown): FailedResult {
@@ -549,6 +578,10 @@ function isEditSuccessDetails(value: unknown): value is EditSuccess {
 }
 
 function isFailedEditDetails(value: unknown): value is FailedResult {
+	return isFailedDetails(value);
+}
+
+function isFailedDetails(value: unknown): value is FailedResult {
 	if (!isPlainRecord(value) || value["status"] !== "failed" || !isPlainRecord(value["error"])) return false;
 	const error = value["error"];
 	return typeof error["code"] === "string" && typeof error["message"] === "string";
@@ -572,6 +605,72 @@ function scrubVersions(value: unknown): unknown {
 		result[key] = scrubVersions(item);
 	}
 	return result;
+}
+
+function formatFindCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, cwd: string): string {
+	const record = isPlainRecord(args) ? args : {};
+	const pattern = stringArg(record["pattern"]);
+	const rawPath = stringArg(record["path"]) ?? ".";
+	return `${theme.fg("toolTitle", theme.bold("find"))} ${pattern === null ? theme.fg("error", "?") : theme.fg("accent", pattern)} ${theme.fg("toolOutput", "in")} ${formatToolPath(rawPath, theme, cwd)}`;
+}
+
+function formatFindResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	expanded: boolean,
+	isPartial: boolean,
+	theme: Pick<Theme, "fg" | "bold">,
+): string {
+	if (isPartial) return theme.fg("warning", "Finding...");
+	const failure = formatFailedDetails(result.details, theme);
+	if (failure !== undefined) return failure;
+
+	const output = textOutput(result).trim();
+	if (output.length === 0) return "";
+	const lines = output.split("\n");
+	const maxLines = expanded ? lines.length : 20;
+	const displayLines = lines.slice(0, maxLines);
+	const remaining = lines.length - maxLines;
+	let text = `\n${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
+	if (remaining > 0) {
+		text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+	}
+	return text;
+}
+
+function formatFileToolTextResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	expanded: boolean,
+	isPartial: boolean,
+	theme: Pick<Theme, "fg" | "bold">,
+	options: { collapsedLineLimit: number; hideCollapsedSuccess?: boolean },
+): string {
+	if (isPartial) return theme.fg("warning", "Running...");
+	const failure = formatFailedDetails(result.details, theme);
+	if (failure !== undefined) return failure;
+	if (options.hideCollapsedSuccess === true && !expanded) return "";
+
+	const output = textOutput(result).trim();
+	if (output.length === 0) return "";
+	const lines = output.split("\n");
+	const maxLines = expanded ? lines.length : options.collapsedLineLimit;
+	const displayLines = lines.slice(0, maxLines);
+	const remaining = lines.length - maxLines;
+	let text = `\n${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
+	if (remaining > 0) {
+		text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+	}
+	return text;
+}
+
+function textOutput(result: { content: Array<{ type: string; text?: string }> }): string {
+	return result.content
+		.filter((item): item is { type: "text"; text: string } => item.type === "text" && typeof item.text === "string")
+		.map((item) => item.text)
+		.join("\n");
+}
+
+function isFileToolName(value: string): boolean {
+	return value === "ls" || value === "find" || value === "grep" || value === "read" || value === "write" || value === "edit";
 }
 
 type NativeLsDetails = LsSuccess & {

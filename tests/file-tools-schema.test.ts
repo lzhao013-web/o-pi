@@ -8,6 +8,7 @@ function registeredTools(): Map<string, { parameters: unknown }> {
 		registerTool(tool: { name: string; parameters: unknown }) {
 			tools.set(tool.name, tool);
 		},
+		on() {},
 	} as never);
 	return tools;
 }
