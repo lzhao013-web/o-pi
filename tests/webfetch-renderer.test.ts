@@ -13,8 +13,9 @@ describe("webfetch renderer", () => {
 		const text = formatWebFetchCall({ url: "https://example.com/path?token=abc&q=x", mode: "source", offset: 20000, limit: 20000 }, theme);
 		expect(text).toContain("example.com/path?...");
 		expect(text).toContain("source");
-		expect(text).toContain("20k-40k");
+		expect(text).toContain("offset 20000-40000");
 		expect(text).not.toContain("abc");
+		expect(text.split("\n")).toHaveLength(2);
 	});
 
 	it("渲染 success、progress 和 failure", () => {

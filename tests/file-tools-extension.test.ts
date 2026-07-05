@@ -65,7 +65,9 @@ describe("file-tools extension", () => {
 			cwd: "/repo",
 			lastComponent: undefined,
 		});
-		expect(call?.render(120).join("\n")).toContain('find "auth service" in .');
+		const callOutput = call?.render(120).join("\n") ?? "";
+		expect(callOutput.split("\n")).toHaveLength(2);
+		expect(callOutput).toContain('find      "auth service" in .');
 
 		const details = {
 			query: "auth service",
@@ -89,7 +91,9 @@ describe("file-tools extension", () => {
 			theme,
 			{ lastComponent: undefined },
 		);
-		expect(collapsed?.render(120).join("\n")).toContain("5 matches · 1 file · 1 directory · fuzzy");
+		const collapsedOutput = collapsed?.render(120).join("\n") ?? "";
+		expect(collapsedOutput.split("\n")).toHaveLength(2);
+		expect(collapsedOutput).toContain("5 matches · 1 file · 1 directory · fuzzy · truncated");
 
 		const expanded = find?.renderResult?.(
 			{ content: [{ type: "text", text: "" }], details },

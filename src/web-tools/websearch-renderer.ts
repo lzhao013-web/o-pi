@@ -1,12 +1,14 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 
+import { formatToolCard } from "../tui/tool-card.js";
+import { formatBytes, formatDuration, joinParts } from "../tui/text.js";
 import type { WebSearchDetails, WebSearchFailureDetails, WebSearchProgressDetails, WebSearchSuccessDetails } from "./types.js";
-import { formatBytes, stripTerminalControls } from "./url-utils.js";
+import { stripTerminalControls } from "./url-utils.js";
 
-export function renderWebSearchCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, context: { lastComponent?: unknown }): Text {
+export function renderWebSearchCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, context: { lastComponent?: unknown; isPartial?: boolean }): Text {
 	const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-	text.setText(formatWebSearchCall(args, theme));
+	text.setText(context.isPartial === false ? "" : formatWebSearchCall(args, theme));
 	return text;
 }
 
@@ -22,7 +24,13 @@ export function renderWebSearchResult(
 }
 
 export function formatWebSearchCall(args: unknown, theme: Pick<Theme, "fg" | "bold">): string {
-	return [theme.fg("toolTitle", theme.bold("websearch")), theme.fg("accent", `"${queryForCall(args)}"`)].join("  ");
+	const limit = isRecord(args) && typeof args["limit"] === "number" ? `limit ${args["limit"]}` : undefined;
+	return formatToolCard({
+		tool: "websearch",
+		status: "running",
+		target: `"${queryForCall(args)}"`,
+		summary: joinParts([limit, "provider duckduckgo_html"]),
+	}, theme);
 }
 
 export function formatWebSearchResult(
@@ -31,7 +39,10 @@ export function formatWebSearchResult(
 	theme: Pick<Theme, "fg" | "bold">,
 	args?: unknown,
 ): string {
-	if (options.isPartial || isProgressDetails(details)) return theme.fg("warning", formatProgress(details));
+	const target = `"${isSuccessDetails(details) ? clean(details.query) : queryForCall(args)}"`;
+	if (options.isPartial || isProgressDetails(details)) {
+		return formatToolCard({ tool: "websearch", status: "running", target, summary: formatProgress(details) }, theme);
+	}
 	if (isSuccessDetails(details)) return formatSuccess(details, options.expanded === true, theme);
 	if (isFailureDetails(details)) return formatFailure(details, options.expanded === true, theme);
 	return formatWebSearchCall(args, theme);
@@ -52,40 +63,46 @@ function formatProgress(details: unknown): string {
 function formatSuccess(details: WebSearchSuccessDetails, expanded: boolean, theme: Pick<Theme, "fg" | "bold">): string {
 	const count = details.results.length;
 	const countText = count === 0 ? "no results" : `${count} results`;
-	const summary = `${formatWebSearchTitle(details.query, theme)}  ${countText} · ${details.duration_ms}ms`;
-	if (!expanded) {
-		const header = theme.fg(count === 0 ? "warning" : "success", summary);
-		const items = details.results.slice(0, 3).map((item) => `  ${item.rank}. ${truncateToWidth(clean(item.title).padEnd(36), 64, "...")}  ${domain(item.url)}`);
-		const more = count > 3 ? [`  ... ${count - 3} more`] : [];
-		return [header, ...items, ...more].join("\n");
-	}
+	const header = formatToolCard({
+		tool: "websearch",
+		status: count === 0 ? "warning" : "success",
+		target: `"${details.query}"`,
+		summary: joinParts([countText, details.cached ? "cache hit" : "cache miss", formatDuration(details.duration_ms)]),
+	}, theme);
+	if (!expanded) return header;
 
 	const rows = details.results.map((item) => {
 		const snippet = item.snippet ? `     ${truncateText(clean(item.snippet), 240)}\n` : "";
 		return `  ${item.rank}. ${truncateToWidth(clean(item.title), 120, "...")}\n     ${domain(item.url)}\n${snippet}     ${clean(item.url)}`;
 	});
 	return [
-		theme.fg(count === 0 ? "warning" : "success", summary),
+		header,
 		rows.length > 0 ? `\n${rows.join("\n\n")}` : undefined,
 		"",
 		"  Provider        DuckDuckGo HTML",
 		`  Cache           ${details.cached ? "hit" : "miss"}`,
 		`  Downloaded      ${formatBytes(details.downloaded_bytes)}`,
-		`  Duration        ${details.duration_ms} ms`,
+		`  Duration        ${formatDuration(details.duration_ms)}`,
 	]
 		.filter((item): item is string => item !== undefined)
 		.join("\n");
 }
 
 function formatFailure(details: WebSearchFailureDetails, expanded: boolean, theme: Pick<Theme, "fg" | "bold">): string {
-	const summary = theme.fg("error", `${labelError(details)} · ${clean(details.error.message)}`);
-	if (!expanded) return summary;
+	const header = formatToolCard({
+		tool: "websearch",
+		status: "error",
+		target: `"${details.query ?? "query"}"`,
+		summary: joinParts([labelError(details), clean(details.error.message)]),
+	}, theme);
+	if (!expanded) return header;
 	return [
-		summary,
+		header,
+		"",
 		`  Error           ${details.error.code}`,
 		details.http_status !== undefined ? `  Status          ${details.http_status}` : undefined,
 		"  Provider        DuckDuckGo HTML",
-		details.duration_ms !== undefined ? `  Duration        ${details.duration_ms} ms` : undefined,
+		details.duration_ms !== undefined ? `  Duration        ${formatDuration(details.duration_ms)}` : undefined,
 		details.error.code === "PARSE_FAILED" && details.response_preview ? `\n  Response\n${indent(truncateText(clean(details.response_preview), 500))}` : undefined,
 	]
 		.filter((item): item is string => item !== undefined)

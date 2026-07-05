@@ -6,3 +6,4 @@ Orion's Pi Agent.
 
 * [文件工具设计](docs/fs-tools.md)
 * [Web 工具](docs/web-tools.md)
+* [TUI V1](docs/tui.md)

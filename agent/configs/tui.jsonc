@@ -1,0 +1,35 @@
+{
+	"$schema": "../schemas/tui.schema.json",
+	"version": 1,
+	"enabled": true,
+
+	"preset": "compact",
+	"icons": "unicode",
+
+	"chrome": {
+		"title": true,
+		"header": false,
+		"footer": true,
+		"working_indicator": "dot"
+	},
+
+	"footer": {
+		"max_lines": 2,
+		"segments": ["cwd", "git", "model", "ctx", "tokens", "cost", "status"],
+		"narrow_segments": ["cwd", "git", "model", "ctx", "tokens", "cost", "status"],
+		"style": {
+			"workspace_color": "accent",
+			"git_color": "success",
+			"git_icon": ""
+		}
+	},
+
+	"tools": {
+		"expanded_default": false,
+		"show_timing": true,
+		"show_provider": false,
+		"max_target_chars": 72,
+		"max_summary_chars": 96,
+		"collapsed_lines": 2
+	}
+}

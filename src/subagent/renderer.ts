@@ -1,14 +1,13 @@
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { formatToolCard } from "../tui/tool-card.js";
+import { formatDuration, joinParts } from "../tui/text.js";
 import type { SubagentDetails, SubagentRunResult, UsageStats } from "./types.js";
 
-const COLLAPSED_EVENTS = 9;
-
-export function renderSubagentCall(args: unknown, theme: Pick<Theme, "fg" | "bold">): Text {
+export function renderSubagentCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, context?: { isPartial?: boolean }): Text {
+	if (context?.isPartial === false) return new Text("", 0, 0);
 	const record = isRecord(args) ? args : {};
-	const taskCount = Array.isArray(record["tasks"]) ? (record["tasks"] as unknown[]).length : 0;
-	const label = record["mode"] === "chain" ? `chain (${taskCount})` : `tasks (${taskCount})`;
-	return new Text(`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", label)}`, 0, 0);
+	return new Text(formatSubagentCall(record, theme), 0, 0);
 }
 
 export function renderSubagentResult(result: { content: Array<{ type: string; text?: string }>; details?: unknown }, options: { expanded: boolean; isPartial: boolean }, theme: Theme): Container | Text {
@@ -19,43 +18,50 @@ export function renderSubagentResult(result: { content: Array<{ type: string; te
 		container.addChild(new Text(result.content[0]?.text ?? "(no output)", 0, 0));
 		return container;
 	}
-	if (details.mode === "parallel") {
-		const done = details.results.filter((item) => item.exitCode !== -1).length;
-		const failed = details.results.filter((item) => item.error !== undefined).length;
-		const running = Math.max(0, details.results.length - done);
-		container.addChild(new Text(`${theme.fg(failed > 0 ? "warning" : "success", failed > 0 ? "✗" : "✓")} Subagents ${done}/${details.results.length} complete · ${running} running`, 0, 0));
-	} else {
-		const first = details.results[0];
-		if (first !== undefined) container.addChild(new Text(formatHeader(first, theme), 0, 0));
-	}
+	container.addChild(new Text(formatSubagentSummary(details, options.isPartial, theme), 0, 0));
+	if (!options.expanded) return container;
 	for (const item of details.results) {
 		container.addChild(new Spacer(1));
 		container.addChild(new Text(formatHeader(item, theme), 0, 0));
-		if (options.expanded) {
-			container.addChild(new Text(theme.fg("muted", `task: ${item.task}`), 0, 0));
-			container.addChild(new Text(theme.fg("muted", `source: ${item.source} cwd: ${item.cwd}`), 0, 0));
-			container.addChild(new Text(theme.fg("muted", `tools: ${item.tools.join(", ")}`), 0, 0));
-			if (item.model !== undefined) container.addChild(new Text(theme.fg("muted", `model: ${item.model}`), 0, 0));
-			if (item.outputFile !== undefined) container.addChild(new Text(theme.fg("accent", `file: ${item.outputFile}`), 0, 0));
-			if (item.stderr !== undefined) container.addChild(new Text(theme.fg("error", truncate(item.stderr, 1600)), 0, 0));
-			if (item.output !== undefined) container.addChild(new Text(theme.fg("toolOutput", truncate(item.output, 3000)), 0, 0));
-		} else {
-			const events = item.events.slice(-COLLAPSED_EVENTS);
-			for (const event of events) {
-				if (event.type === "tool") container.addChild(new Text(theme.fg("muted", `  ${event.name} ${formatToolArgs(event.args)}`), 0, 0));
-			}
-			if (item.error !== undefined) container.addChild(new Text(theme.fg("error", `  ${item.error}`), 0, 0));
-			else if (item.output !== undefined) container.addChild(new Text(theme.fg("toolOutput", `  ${firstLine(item.output)}`), 0, 0));
-		}
+		container.addChild(new Text(theme.fg("muted", `task: ${item.task}`), 0, 0));
+		container.addChild(new Text(theme.fg("muted", `source: ${item.source} cwd: ${item.cwd}`), 0, 0));
+		container.addChild(new Text(theme.fg("muted", `tools: ${item.tools.join(", ")}`), 0, 0));
+		if (item.model !== undefined) container.addChild(new Text(theme.fg("muted", `model: ${item.model}`), 0, 0));
+		if (item.outputFile !== undefined) container.addChild(new Text(theme.fg("accent", `file: ${item.outputFile}`), 0, 0));
+		if (item.stderr !== undefined) container.addChild(new Text(theme.fg("error", truncate(item.stderr, 1600)), 0, 0));
+		if (item.output !== undefined) container.addChild(new Text(theme.fg("toolOutput", truncate(item.output, 3000)), 0, 0));
 	}
 	return container;
+}
+
+function formatSubagentCall(record: Record<string, unknown>, theme: Pick<Theme, "fg" | "bold">): string {
+	const tasks = Array.isArray(record["tasks"]) ? record["tasks"] : [];
+	const mode = record["mode"] === "chain" ? "chain" : "parallel";
+	const agents = tasks.map((task) => isRecord(task) && typeof task["agent"] === "string" ? task["agent"] : undefined).filter((agent): agent is string => agent !== undefined);
+	return formatToolCard({
+		tool: "subagent",
+		status: "running",
+		target: `${mode} · ${tasks.length} tasks`,
+		summary: agents.length > 0 ? agents.join(", ") : "preparing",
+	}, theme);
+}
+
+function formatSubagentSummary(details: SubagentDetails, isPartial: boolean, theme: Pick<Theme, "fg" | "bold">): string {
+	const done = details.results.filter((item) => item.exitCode !== -1).length;
+	const failed = details.results.find((item) => item.error !== undefined);
+	const usage = sumUsage(details.results);
+	const status = isPartial ? "running" : failed === undefined ? "success" : "error";
+	const summary = failed !== undefined
+		? joinParts([`${done}/${details.results.length} complete`, `${failed.agent} failed`, "see expanded output"])
+		: joinParts([`${done}/${details.results.length} complete`, usage.turns > 0 ? `${usage.turns} turns` : undefined, formatTokens(totalTokens(usage)), usage.cost !== undefined && usage.cost > 0 ? `$${usage.cost.toFixed(3)}` : undefined]);
+	return formatToolCard({ tool: "subagent", status, target: `${details.mode} · ${details.results.length} tasks`, summary }, theme);
 }
 
 function formatHeader(result: SubagentRunResult, theme: Theme): string {
 	const failed = result.error !== undefined;
 	const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
 	const usage = formatUsage(result.usage);
-	const parts = [`${icon} ${theme.fg("toolTitle", theme.bold(result.agent))}`, `${result.attempts} attempt${result.attempts === 1 ? "" : "s"}`, `${(result.durationMs / 1000).toFixed(1)}s`];
+	const parts = [`${icon} ${theme.fg("toolTitle", theme.bold(result.agent))}`, `${result.attempts} attempt${result.attempts === 1 ? "" : "s"}`, formatDuration(result.durationMs)];
 	if (usage !== "") parts.push(usage);
 	return parts.join(" · ");
 }
@@ -63,24 +69,31 @@ function formatHeader(result: SubagentRunResult, theme: Theme): string {
 function formatUsage(usage: UsageStats): string {
 	const parts: string[] = [];
 	if (usage.turns > 0) parts.push(`${usage.turns} turns`);
-	const tokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+	const tokens = totalTokens(usage);
 	if (tokens > 0) parts.push(`${formatTokens(tokens)} tok`);
 	if (usage.cost !== undefined && usage.cost > 0) parts.push(`$${usage.cost.toFixed(4)}`);
 	return parts.join(" · ");
 }
 
+function sumUsage(results: SubagentRunResult[]): UsageStats {
+	return results.reduce<UsageStats>((sum, item) => ({
+		input: sum.input + item.usage.input,
+		output: sum.output + item.usage.output,
+		cacheRead: sum.cacheRead + item.usage.cacheRead,
+		cacheWrite: sum.cacheWrite + item.usage.cacheWrite,
+		contextTokens: sum.contextTokens + item.usage.contextTokens,
+		turns: sum.turns + item.usage.turns,
+		...(sum.cost !== undefined || item.usage.cost !== undefined ? { cost: (sum.cost ?? 0) + (item.usage.cost ?? 0) } : {}),
+	}), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, contextTokens: 0, turns: 0 });
+}
+
+function totalTokens(usage: UsageStats): number {
+	return usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+}
+
 function formatTokens(value: number): string {
 	if (value < 1000) return String(value);
 	return `${(value / 1000).toFixed(1)}k`;
-}
-
-function formatToolArgs(args: Record<string, unknown>): string {
-	const text = JSON.stringify(args);
-	return text.length <= 80 ? text : `${text.slice(0, 77)}...`;
-}
-
-function firstLine(text: string): string {
-	return truncate(text.trim().split(/\r?\n/)[0] ?? "", 180);
 }
 
 function truncate(text: string, max: number): string {
