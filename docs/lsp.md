@@ -18,6 +18,7 @@ agent/configs/lsp.jsonc
 | --- | --- | --- |
 | `version` | `1` | 配置版本。当前只接受 `1`。 |
 | `enabled` | `true` | 总开关。设为 `false` 后不启动任何 language server，文件工具保持普通行为。 |
+| `exclude_paths` | `[]` | 精确匹配这些 workspace root 时不启动 LSP。支持 `~` 表示用户家目录；默认配置排除 `~`，避免在 home 根目录触发全盘扫描。 |
 | `startup_timeout_ms` | `8000` | server `initialize` 请求超时，范围 `100`-`60000`。超时后该 server 视为 unavailable。 |
 | `request_timeout_ms` | `5000` | 单次 LSP 请求超时，范围 `100`-`60000`。用于 `documentSymbol`、`workspace/symbol` 等请求。 |
 | `idle_timeout_ms` | `300000` | server 空闲关闭时间，范围 `1000`-`3600000`。关闭后下次文件工具调用会按需重启。 |

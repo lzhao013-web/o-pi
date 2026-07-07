@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { generateDiffString, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { isBlockedPath, loadFileToolsConfig, toolPathIdentity } from "./config.js";
 import { fail, isFailed } from "./errors.js";
 import { normalizeToolPath, resolveWorkspaceRoot } from "./path-resolver.js";
@@ -42,6 +42,9 @@ export async function writeWorkspaceFile(cwd: string, params: unknown, signal?: 
 
 		const abortedAfterMkdir = checkAbort(signal);
 		if (abortedAfterMkdir) return abortedAfterMkdir;
+		const diff = await buildWriteDiff(target.absolutePath, input.content);
+		const abortedAfterDiff = checkAbort(signal);
+		if (abortedAfterDiff) return abortedAfterDiff;
 		try {
 			await writeFile(target.absolutePath, input.content, "utf8");
 		} catch {
@@ -54,6 +57,8 @@ export async function writeWorkspaceFile(cwd: string, params: unknown, signal?: 
 			status: "written",
 			path: target.relativePath,
 			bytes: Buffer.byteLength(input.content, "utf8"),
+			diff: diff.diff,
+			...(diff.firstChangedLine !== undefined ? { firstChangedLine: diff.firstChangedLine } : {}),
 		};
 		const diagnostics = await safeAfterWrite(runtime.lsp, {
 			workspaceRoot,
@@ -64,6 +69,24 @@ export async function writeWorkspaceFile(cwd: string, params: unknown, signal?: 
 		if (diagnostics !== undefined) result.lsp = { diagnostics };
 		return result;
 	});
+}
+
+async function buildWriteDiff(absolutePath: string, newText: string): Promise<{ diff: string; firstChangedLine?: number }> {
+	let oldText = "";
+	try {
+		oldText = await readFile(absolutePath, "utf8");
+	} catch {
+		oldText = "";
+	}
+	const result = generateDiffString(normalizeLineEndings(oldText), normalizeLineEndings(newText));
+	return {
+		diff: result.diff,
+		...(result.firstChangedLine !== undefined ? { firstChangedLine: result.firstChangedLine } : {}),
+	};
+}
+
+function normalizeLineEndings(text: string): string {
+	return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 async function safeAfterWrite(

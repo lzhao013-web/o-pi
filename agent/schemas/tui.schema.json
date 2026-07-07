@@ -70,7 +70,7 @@
 				"tiny_width": { "type": "integer", "minimum": 24, "maximum": 80, "default": 44 },
 				"show_hints": { "type": "boolean", "default": true },
 				"show_capabilities": { "type": "boolean", "default": true },
-				"clear_on_first_turn": { "type": "boolean", "default": true }
+				"clear_on_first_turn": { "type": "boolean", "default": false }
 			}
 		}
 	},

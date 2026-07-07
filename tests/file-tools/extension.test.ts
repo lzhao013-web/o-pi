@@ -160,6 +160,27 @@ describe("file-tools extension", () => {
 		expect(failure).toContain("OLD_TEXT_NOT_FOUND: edits[0].old was not found in the original file.");
 	});
 
+	it("write 完成后折叠态成功结果展示 diff", () => {
+		const registered: Array<{ name: string; renderResult?: RenderResult }> = [];
+		fileTools({
+			registerTool(tool: { name: string; renderResult?: RenderResult }) {
+				registered.push(tool);
+			},
+			on() {},
+		} as unknown as ExtensionAPI);
+
+		const output = renderWriteResult(registered, {
+			status: "written",
+			path: "src/app.ts",
+			bytes: 4,
+			diff: "-1 old\n+1 new",
+		});
+		expect(output).toContain("write     src/app.ts");
+		expect(output).toContain("+1 -1");
+		expect(output).toContain("-1 old");
+		expect(output).toContain("+1 new");
+	});
+
 	it("edit 参数完整后的折叠调用预览展示 diff", async () => {
 		const registered: Array<{ name: string; renderCall?: RenderCall }> = [];
 		fileTools({
@@ -239,6 +260,7 @@ describe("file-tools extension", () => {
 			delete lspFileHooks.afterWrite;
 			const clean = await executeTool(registered, "write", { path: "clean.ts", content: "export const ok = true;\n" }, ctx);
 			expect(textResult(clean)).toBe('<write path="clean.ts" lsp="clean"/>');
+			expect(clean.details).toMatchObject({ status: "written", path: "clean.ts", diff: expect.stringContaining("+1 export const ok = true;") });
 
 			lspFileHooks.afterWrite = vi.fn(async () => ({
 				status: "errors" as const,
@@ -270,7 +292,7 @@ describe("file-tools extension", () => {
 				"... 1 more diagnostics",
 				"</write>",
 			].join("\n"));
-			expect(errored.details).toMatchObject({ status: "written", lsp: { diagnostics: { status: "errors", items: expect.any(Array) } } });
+			expect(errored.details).toMatchObject({ status: "written", diff: expect.stringContaining("+1 foo"), lsp: { diagnostics: { status: "errors", items: expect.any(Array) } } });
 		} finally {
 			if (originalAfterWrite === undefined) delete lspFileHooks.afterWrite;
 			else lspFileHooks.afterWrite = originalAfterWrite;
@@ -340,6 +362,21 @@ function renderEditResult(registered: Array<{ name: string; renderResult?: Rende
 			expanded: false,
 			lastComponent: undefined,
 			state: {},
+		},
+	);
+	return component?.render(120).join("\n") ?? "";
+}
+
+function renderWriteResult(registered: Array<{ name: string; renderResult?: RenderResult }>, details: unknown): string {
+	const tool = registered.find((item) => item.name === "write");
+	const component = tool?.renderResult?.(
+		{ content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details },
+		{ expanded: false, isPartial: false },
+		theme,
+		{
+			args: { path: "src/app.ts", content: "new" },
+			cwd: "/repo",
+			lastComponent: undefined,
 		},
 	);
 	return component?.render(120).join("\n") ?? "";
