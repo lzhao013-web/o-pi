@@ -24,8 +24,9 @@ export interface RankInput {
 	query: string;
 	match: GrepMatchMode;
 	files: Array<{ path: string; units: IndexedCodeUnit[] }>;
-	sourceText: Map<string, string>;
+	sourceText?: Map<string, string>;
 	regex?: RegExp;
+	allowMetadataCandidates?: boolean;
 }
 
 const IDENTIFIER_LIKE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/u;
@@ -97,6 +98,9 @@ function rankUnit(unit: IndexedCodeUnit, input: RankInput, corpusSize: number): 
 	if (occurrence.length > 0) {
 		score += input.match === "auto" ? literalWeight(query) : 1000;
 		reasons.push(input.match === "regex" ? "regex" : "exact literal");
+	} else if (input.match !== "auto" && input.allowMetadataCandidates === true && metadataLooksRelevant(unit, input)) {
+		score += input.match === "regex" ? 420 : 520;
+		reasons.push("lexical");
 	}
 	if (unit.definitions.some((definition) => definition.toLocaleLowerCase() === queryLower)) {
 		score += 100;
@@ -108,7 +112,7 @@ function rankUnit(unit: IndexedCodeUnit, input: RankInput, corpusSize: number): 
 function rankFallbackText(input: RankInput): RankedGrepRegion[] {
 	const regions: RankedGrepRegion[] = [];
 	for (const file of input.files) {
-		const text = input.sourceText.get(file.path);
+		const text = input.sourceText?.get(file.path);
 		if (text === undefined) continue;
 		const matchedLines = matchLinesInText(text, input);
 		for (const line of matchedLines) {
@@ -180,13 +184,38 @@ function makeRegion(unit: IndexedCodeUnit, score: number, reasons: string[], mat
 
 function occurrenceLines(unit: IndexedCodeUnit, input: RankInput): number[] {
 	if (input.match === "auto" || input.match === "literal" || input.match === "regex") {
-		const text = input.sourceText.get(unit.path);
+		const text = input.sourceText?.get(unit.path);
 		if (text === undefined) return [];
 		const content = extractByteRange(text, unit.startByte, unit.endByte);
 		const lines = matchLinesInText(content, input).map((line) => line + unit.startLine - 1);
 		return Array.from(new Set(lines));
 	}
 	return [];
+}
+
+function metadataLooksRelevant(unit: IndexedCodeUnit, input: RankInput): boolean {
+	const values = [
+		unit.name,
+		unit.qualifiedName,
+		unit.signature,
+		...unit.definitions,
+		...unit.references,
+		...unit.calls,
+		...unit.imports,
+		...unit.tokens.keys(),
+	].filter((value): value is string => value !== undefined);
+	if (input.match === "regex") return values.some((value) => regexMatches(value, input.regex));
+	const queryTokens = splitTokens(input.query).map((token) => token.toLocaleLowerCase());
+	if (queryTokens.length === 0) return values.some((value) => value.includes(input.query));
+	const tokenSet = new Set(Array.from(unit.tokens.keys()));
+	return queryTokens.some((token) => tokenSet.has(token));
+}
+
+function regexMatches(value: string, regex: RegExp | undefined): boolean {
+	if (regex === undefined) return false;
+	const matched = regex.test(value);
+	if (regex.global) regex.lastIndex = 0;
+	return matched;
 }
 
 function matchLinesInText(text: string, input: RankInput): number[] {

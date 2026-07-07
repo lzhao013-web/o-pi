@@ -168,6 +168,27 @@ describe("grep", () => {
 		expect(expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "hiddenNeedle" })).regions).toHaveLength(0);
 	});
 
+	it("大目录缓存命中后二次 grep 不重新读取全部文件源码", async () => {
+		for (let index = 0; index < 60; index += 1) {
+			await writeFile(path.join(workspace, `module-${index}.ts`), `export function helper${index}() {\n  return ${index};\n}\n`);
+		}
+		await writeFile(path.join(workspace, "target.ts"), "export function targetNeedle() {\n  return 42;\n}\n");
+		expect(firstRegion(expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "targetNeedle" }))).symbol).toBe("targetNeedle");
+
+		let sourceReads = 0;
+		const result = expectGrepSuccess(
+			await grepWorkspaceFiles(workspace, { query: "targetNeedle" }, undefined, {
+				readSourceText: async (file) => {
+					sourceReads += 1;
+					return await readFile(file.absolutePath, "utf8");
+				},
+			}),
+		);
+
+		expect(firstRegion(result).content).toContain("targetNeedle");
+		expect(sourceReads).toBeLessThan(10);
+	});
+
 	it("unsupported language 安全退化到文本片段", async () => {
 		await writeFile(path.join(workspace, "notes.conf"), "section=true\nfatal authentication error\n");
 		const result = expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "fatal authentication error", match: "literal" }));

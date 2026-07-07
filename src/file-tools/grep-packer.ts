@@ -28,7 +28,7 @@ interface PackState {
 
 /** 在预算内选择正文、片段和签名；不会对已选 UTF-8 文本做任意字节截断。 */
 export function packGrepResults(input: GrepPackInput): GrepSuccess {
-	const selected = diversify(input.regions, input.resultLimit);
+	const selected = selectGrepCandidatesForPacking(input.regions, input.resultLimit);
 	const state: PackState = {
 		budgetTokens: input.tokenBudget,
 		bodyCount: 0,
@@ -172,7 +172,7 @@ function addRegion(input: GrepPackInput, state: PackState, region: GrepRegion): 
 	state.usedTokens = tokenCount(renderPackedBody(input, state.regions, state.usedFiles.size, false));
 }
 
-function diversify(regions: RankedGrepRegion[], limit: number): RankedGrepRegion[] {
+export function selectGrepCandidatesForPacking(regions: RankedGrepRegion[], limit: number): RankedGrepRegion[] {
 	const selected: RankedGrepRegion[] = [];
 	const used = new Set<string>();
 	for (const region of regions) {
