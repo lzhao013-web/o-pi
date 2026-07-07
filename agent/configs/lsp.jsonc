@@ -48,6 +48,13 @@
 			"command": "rust-analyzer",
 			"args": [],
 			"extensions": [".rs"]
+		},
+		{
+			"id": "yaml",
+			"enabled": true,
+			"command": "yaml-language-server",
+			"args": ["--stdio"],
+			"extensions": [".yaml"]
 		}
 	]
 }
