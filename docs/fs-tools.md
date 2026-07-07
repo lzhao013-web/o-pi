@@ -480,6 +480,7 @@ issueToken [callee]
 * 不要求先 `read`，也不更新 `read` 的版本缓存。
 * soft ignore 不阻止 `write`；`blocked_path` 会拒绝写入。
 * 写入机制与 Pi 内置 `write` 相同，使用普通 UTF-8 文件写入，不提供事务或回滚。
+* `details.diff` 保存写入前后 diff，TUI 折叠态默认展示；模型可见成功结果不包含 diff。
 
 模型可见成功结果只确认写入路径和 LSP 状态：
 

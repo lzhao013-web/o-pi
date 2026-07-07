@@ -269,6 +269,9 @@ export interface WriteSuccess {
 	status: "written";
 	path: string;
 	bytes: number;
+	/** Pi TUI 展示用的带行号 diff。 */
+	diff: string;
+	firstChangedLine?: number;
 	lsp?: {
 		diagnostics?: LspDiagnosticsSummary;
 	};

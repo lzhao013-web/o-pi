@@ -44,7 +44,7 @@ const defaultConfig: TuiConfig = {
 		tiny_width: 44,
 		show_hints: true,
 		show_capabilities: true,
-		clear_on_first_turn: true,
+		clear_on_first_turn: false,
 	},
 };
 

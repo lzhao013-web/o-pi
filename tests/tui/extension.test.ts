@@ -135,7 +135,7 @@ describe("tui extension", () => {
 		expect(output).toContain("skills     2 · user:1 · project:1");
 	});
 
-	it("turn_start 可清掉 banner，chrome.header false 时清空 header", async () => {
+	it("turn_start 默认保留 startup banner", async () => {
 		const handlers = new Map<string, Handler>();
 		const calls = createUiCalls();
 		const pi = createPi(handlers);
@@ -145,13 +145,16 @@ describe("tui extension", () => {
 		await handlers.get("session_start")?.({}, ctx);
 		await handlers.get("turn_start")?.({}, ctx);
 
-		expect(calls.header.at(-1)).toBeUndefined();
+		const header = calls.header.at(-1);
+		expect(header).toBeTypeOf("function");
+		const output = header?.({ requestRender() {} }, ctx.ui.theme).render(120).join("\n") ?? "";
+		expect(output).toContain("██████");
 		expect(calls.status.at(-1)).toEqual({ key: "o-pi:tui", text: "● running" });
 	});
 
 	it("turn_start 清掉 banner 后可恢复普通 one-line header", async () => {
 		const file = path.join(dir, "tui.jsonc");
-		await writeFile(file, '{ "version": 1, "chrome": { "header": true } }');
+		await writeFile(file, '{ "version": 1, "chrome": { "header": true }, "banner": { "clear_on_first_turn": true } }');
 		process.env["PI_TUI_CONFIG"] = file;
 		const handlers = new Map<string, Handler>();
 		const calls = createUiCalls();

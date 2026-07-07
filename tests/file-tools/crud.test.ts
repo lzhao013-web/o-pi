@@ -476,6 +476,7 @@ describe("write", () => {
 			status: "written",
 			path: "new/dir/file.txt",
 			bytes: Buffer.byteLength("hello\n你好\n", "utf8"),
+			diff: expect.stringContaining("+1 hello"),
 		});
 		expect(await readFile(path.join(workspace, "new", "dir", "file.txt"), "utf8")).toBe("hello\n你好\n");
 	});
@@ -483,7 +484,8 @@ describe("write", () => {
 	it("覆盖已有文件，不要求先 read", async () => {
 		await writeFile(path.join(workspace, "a.txt"), "old\n");
 		const result = await writeWorkspaceFile(workspace, { path: "a.txt", content: "new\n" });
-		expect(result).toMatchObject({ status: "written", path: "a.txt" });
+		expect(result).toMatchObject({ status: "written", path: "a.txt", diff: expect.stringContaining("-1 old") });
+		expect(result).toMatchObject({ diff: expect.stringContaining("+1 new") });
 		expect(await readFile(path.join(workspace, "a.txt"), "utf8")).toBe("new\n");
 	});
 

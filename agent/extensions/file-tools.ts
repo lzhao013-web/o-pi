@@ -929,10 +929,17 @@ function formatWriteResult(details: unknown, theme: Pick<Theme, "fg" | "bold">, 
 	const failure = formatFailureCard("write", target, details, theme);
 	if (failure !== undefined) return failure;
 	if (!isWriteSuccess(details)) return formatToolCard({ tool: "write", status: "neutral", target, summary: "waiting" }, theme);
-	const header = formatToolCard({ tool: "write", status: "success", target: details.path, summary: joinParts([formatBytes(details.bytes), "written", formatLspSummary(details.lsp?.diagnostics)]) }, theme);
-	if (!expanded) return header;
+	const diff = typeof details.diff === "string" ? details.diff : "";
+	const header = formatToolCard({
+		tool: "write",
+		status: "success",
+		target: details.path,
+		summary: joinParts([formatDiffStats(diff), formatBytes(details.bytes), diff !== "" ? "diff available" : "no diff", formatLspSummary(details.lsp?.diagnostics)]),
+	}, theme);
+	const renderedDiff = diff === "" ? undefined : renderDiff(diff);
+	if (!expanded) return [header, renderedDiff].filter((part): part is string => part !== undefined).join("\n\n");
 	const diagnostics = formatLspDiagnostics(details.lsp?.diagnostics, theme);
-	return diagnostics === undefined ? header : `${header}\n\n${diagnostics}`;
+	return [header, renderedDiff, diagnostics].filter((part): part is string => part !== undefined).join("\n\n");
 }
 
 function textOutput(result: { content: Array<{ type: string; text?: string }> }): string {
