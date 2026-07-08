@@ -43,6 +43,27 @@ describe("lsp references", () => {
 		await manager.reload();
 	});
 
+	it("server binary 缺失时退化为 unavailable", async () => {
+		const config = path.join(configDir, "lsp.jsonc");
+		await writeFile(
+			config,
+			JSON.stringify({
+				version: 1,
+				enabled: true,
+				startup_timeout_ms: 200,
+				servers: [{ id: "missing", command: "definitely-missing-o-pi-lsp", extensions: [".ts"] }],
+			}),
+		);
+		process.env.PI_LSP_CONFIG = config;
+
+		const manager = new LspManager();
+		await expect(manager.workspaceSymbols(workspace, "target")).resolves.toEqual([]);
+		const status = await manager.status(workspace);
+		expect(status.servers[0]).toMatchObject({ id: "missing", status: "unavailable" });
+		expect(status.servers[0]?.last_error).toMatch(/failed to start|ENOENT/);
+		await manager.reload();
+	});
+
 	it("grep references 开启时把 textDocument/references 转为 symbol 候选", async () => {
 		await mkdir(path.join(workspace, "src"));
 		await writeFile(path.join(workspace, "src", "def.ts"), "export function target() {}\n");

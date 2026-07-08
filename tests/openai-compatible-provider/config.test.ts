@@ -10,6 +10,7 @@ import {
 	normalizeModelsJsoncConfig,
 	redact_api_key,
 	registerOpenAICompatibleProviders,
+	resolveAutoModelsJsoncConfig,
 } from "../../src/openai-compatible-provider/index.js";
 
 let dir: string;
@@ -79,6 +80,152 @@ describe("openai-compatible-provider config", () => {
 		expect(applyRuntimePayloadConfig({ model: model?.id, messages: [], stream: true }, runtime)).toMatchObject({
 			model: "deepseek/deepseek-r1",
 		});
+	});
+
+	it("models: auto 会调用 provider models endpoint 并注册发现到的模型", async () => {
+		const config = await loadConfigFromText(`{
+			"providers": {
+				"gateway": {
+					"display_name": "Gateway",
+					"base_url": "https://gateway.example.com/v1",
+					"api_key": "$GATEWAY_API_KEY",
+					"models": "auto"
+				}
+			}
+		}`);
+		const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+		const resolved = await resolveAutoModelsJsoncConfig(config, path.join(dir, "models.jsonc"), {
+			env: { GATEWAY_API_KEY: "sk-test" },
+			fetch: async (url, init) => {
+				calls.push({ url, headers: init.headers });
+				return jsonResponse({
+					data: [
+						{
+							id: "vision-model",
+							name: "Vision Model",
+							context_length: 200000,
+							top_provider: { max_completion_tokens: 8192 },
+							architecture: { input_modalities: ["text", "image"] },
+						},
+					],
+				});
+			},
+		});
+		const [provider] = normalizeModelsJsoncConfig(resolved, path.join(dir, "models.jsonc"));
+
+		expect(calls).toEqual([
+			{
+				url: "https://gateway.example.com/v1/models",
+				headers: { Accept: "application/json", Authorization: "Bearer sk-test" },
+			},
+		]);
+		expect(provider?.config.models?.[0]).toMatchObject({
+			id: "vision-model",
+			name: "Vision Model",
+			contextWindow: 200000,
+			maxTokens: 8192,
+			input: ["text", "image"],
+		});
+	});
+
+	it("手写 models 会合并 models endpoint，冲突时保留手写配置", async () => {
+		const configPath = path.join(dir, "models.jsonc");
+		const config = await loadConfigFromText(`{
+			"providers": {
+				"gateway": {
+					"base_url": "https://gateway.example.com/v1",
+					"api_key": "EMPTY",
+					"models": [
+						{
+							"model": "manual-model",
+							"display_name": "Manual Model",
+							"context_window": 1000,
+							"max_tokens": 100
+						},
+						"manual-string"
+					]
+				}
+			}
+		}`);
+		const calls: string[] = [];
+		const resolved = await resolveAutoModelsJsoncConfig(config, configPath, {
+			fetch: async (url) => {
+				calls.push(url);
+				return jsonResponse({
+					data: [
+						{ id: "manual-model", name: "Endpoint Manual", context_length: 200000, max_completion_tokens: 8192 },
+						{ id: "manual-string", name: "Endpoint String", context_length: 200000 },
+						{ id: "endpoint-only", name: "Endpoint Only", context_length: 300000 },
+					],
+				});
+			},
+		});
+		const [provider] = normalizeModelsJsoncConfig(resolved, configPath);
+		const models = provider?.config.models ?? [];
+
+		expect(calls).toEqual(["https://gateway.example.com/v1/models"]);
+		expect(models.map((model) => model.id)).toEqual(["manual-model", "manual-string", "endpoint-only"]);
+		expect(models[0]).toMatchObject({
+			id: "manual-model",
+			name: "Manual Model",
+			contextWindow: 1000,
+			maxTokens: 100,
+		});
+		expect(models[1]).toMatchObject({
+			id: "manual-string",
+			name: "manual-string",
+			contextWindow: 128000,
+		});
+		expect(models[2]).toMatchObject({
+			id: "endpoint-only",
+			name: "Endpoint Only",
+			contextWindow: 300000,
+		});
+	});
+
+	it("省略 models 时默认从 /models 自动发现，EMPTY 不发送 Authorization", async () => {
+		const config = await loadConfigFromText(`{
+			"providers": {
+				"local": {
+					"base_url": "http://127.0.0.1:8000/v1",
+					"api_key": "EMPTY"
+				}
+			}
+		}`);
+		let headers: Record<string, string> | undefined;
+		const resolved = await resolveAutoModelsJsoncConfig(config, path.join(dir, "models.jsonc"), {
+			fetch: async (_url, init) => {
+				headers = init.headers;
+				return jsonResponse({ data: [{ id: "local-model" }] });
+			},
+		});
+		const [provider] = normalizeModelsJsoncConfig(resolved, path.join(dir, "models.jsonc"));
+
+		expect(headers).toEqual({ Accept: "application/json" });
+		expect(provider?.config.models?.[0]?.id).toBe("local-model");
+	});
+
+	it("自动发现模型失败时输出 provider 和 HTTP 状态且不泄露 Authorization", async () => {
+		const config = await loadConfigFromText(`{
+			"providers": {
+				"gateway": {
+					"base_url": "https://gateway.example.com/v1",
+					"api_key": "sk-secret",
+					"models": "auto"
+				}
+			}
+		}`);
+
+		await expect(
+			resolveAutoModelsJsoncConfig(config, path.join(dir, "models.jsonc"), {
+				fetch: async () => jsonResponse({ error: "unauthorized" }, { ok: false, status: 401, statusText: "Unauthorized" }),
+			}),
+		).rejects.toThrow('provider "gateway" models endpoint returned HTTP 401 Unauthorized');
+		await expect(
+			resolveAutoModelsJsoncConfig(config, path.join(dir, "models.jsonc"), {
+				fetch: async () => jsonResponse({ error: "unauthorized" }, { ok: false, status: 401, statusText: "Unauthorized" }),
+			}),
+		).rejects.not.toThrow("sk-secret");
 	});
 
 	it("api 字段映射到 Pi 当前 OpenAI-compatible API 名称", async () => {
@@ -397,10 +544,27 @@ describe("openai-compatible-provider config", () => {
 
 async function normalizeFromText(text: string) {
 	const file = path.join(dir, "models.jsonc");
+	const config = await loadConfigFromText(text);
+	return normalizeModelsJsoncConfig(config, file);
+}
+
+async function loadConfigFromText(text: string) {
+	const file = path.join(dir, "models.jsonc");
 	await writeFile(file, text);
 	const config = await loadModelsJsoncConfig(file);
 	if (!config) throw new Error("config unexpectedly missing");
-	return normalizeModelsJsoncConfig(config, file);
+	return config;
+}
+
+function jsonResponse(value: unknown, init: { ok?: boolean; status?: number; statusText?: string } = {}) {
+	const response = {
+		ok: init.ok ?? true,
+		status: init.status ?? 200,
+		async text() {
+			return JSON.stringify(value);
+		},
+	};
+	return init.statusText === undefined ? response : { ...response, statusText: init.statusText };
 }
 
 function createPi(calls: Array<{ name: string; config: PiProviderConfig }>): ExtensionAPI {
