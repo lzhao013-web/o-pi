@@ -168,6 +168,24 @@ describe("grep", () => {
 		expect(expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "hiddenNeedle" })).regions).toHaveLength(0);
 	});
 
+	it("显式 grep 允许读取 soft ignored 文件和目录内容", async () => {
+		await writeFile(path.join(workspace, ".piignore"), "ignored.ts\nignored-dir/\n");
+		await mkdir(path.join(workspace, "ignored-dir"));
+		await writeFile(path.join(workspace, "ignored.ts"), "export function hiddenFileNeedle() {}\n");
+		await writeFile(path.join(workspace, "ignored-dir", "secret.ts"), "export function hiddenDirNeedle() {}\n");
+
+		expect(expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "hiddenFileNeedle" })).regions).toHaveLength(0);
+		expect(expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "hiddenDirNeedle" })).regions).toHaveLength(0);
+		expect(firstRegion(expectGrepSuccess(await grepWorkspaceFiles(workspace, { path: "ignored.ts", query: "hiddenFileNeedle" })))).toMatchObject({
+			path: "ignored.ts",
+			symbol: "hiddenFileNeedle",
+		});
+		expect(firstRegion(expectGrepSuccess(await grepWorkspaceFiles(workspace, { path: "ignored-dir", query: "hiddenDirNeedle" })))).toMatchObject({
+			path: "ignored-dir/secret.ts",
+			symbol: "hiddenDirNeedle",
+		});
+	});
+
 	it("大目录缓存命中后二次 grep 不重新读取全部文件源码", async () => {
 		for (let index = 0; index < 60; index += 1) {
 			await writeFile(path.join(workspace, `module-${index}.ts`), `export function helper${index}() {\n  return ${index};\n}\n`);

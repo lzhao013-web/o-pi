@@ -286,6 +286,22 @@ describe("find", () => {
 		expect(result.details.ignoredCount).toBeGreaterThanOrEqual(2);
 	});
 
+	it("显式 find 允许命中 soft ignored 文件和目录内容", async () => {
+		await mkdir(path.join(workspace, "ignored-dir"), { recursive: true });
+		await writeFile(path.join(workspace, ".piignore"), "ignored.ts\nignored-dir/\n");
+		await writeFile(path.join(workspace, "ignored.ts"), "");
+		await writeFile(path.join(workspace, "ignored-dir", "secret.ts"), "");
+
+		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/*.ts" })).details.matches)).toEqual([]);
+		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ignored.ts" })).details.matches)).toEqual(["ignored.ts"]);
+		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { path: "ignored-dir", query: "**/*.ts" })).details.matches)).toEqual([
+			"ignored-dir/secret.ts",
+		]);
+		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ignored-dir/**/*.ts" })).details.matches)).toEqual([
+			"ignored-dir/secret.ts",
+		]);
+	});
+
 	it("blocked path 不出现在结果、统计或建议中，dotfile 正常参与搜索", async () => {
 		await mkdir(path.join(workspace, ".github"), { recursive: true });
 		await mkdir(path.join(workspace, ".git"), { recursive: true });
