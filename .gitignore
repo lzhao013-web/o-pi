@@ -6,6 +6,7 @@ agent/cookies.txt
 agent/models.jsonc
 
 subagents/
+.pi/
 
 package-lock.json
 
