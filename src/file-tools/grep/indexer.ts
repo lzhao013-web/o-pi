@@ -106,7 +106,7 @@ export async function getGrepIndex(cwd: string, params: Pick<GrepParams, "path" 
 			const indexed = await indexFile(state, root.realPath, root.relativePath, root.workspacePath, true, root.relativePath);
 			if (isFailed(indexed)) return indexed;
 		} else {
-			await walkDirectory(state, root.realPath, root.relativePath, root.workspacePath, ".");
+			await walkDirectory(state, root.realPath, root.relativePath, root.workspacePath, ".", isRootIgnored(state));
 		}
 	} catch (error) {
 		if (error instanceof AbortGrepIndex) return fail("OPERATION_ABORTED", "grep was aborted.", { path: root.relativePath });
@@ -180,12 +180,13 @@ async function walkDirectory(
 	displayDirectory: string,
 	workspaceDirectory: string | undefined,
 	searchRelativeDirectory: string,
+	ignoreBypass: boolean,
 ): Promise<void> {
 	assertNotAborted(state.signal);
 	if (!state.scanComplete) return;
 	if (isBlockedPath(state.config, toolPathIdentity(displayDirectory, absoluteDirectory, workspaceDirectory))) return;
-	if (isIgnoredPath(state.config, toolPathIdentity(displayDirectory, absoluteDirectory, workspaceDirectory))) return;
-	if (workspaceDirectory !== undefined && workspaceDirectory !== ".") {
+	if (!ignoreBypass && isIgnoredPath(state.config, toolPathIdentity(displayDirectory, absoluteDirectory, workspaceDirectory))) return;
+	if (!ignoreBypass && workspaceDirectory !== undefined && workspaceDirectory !== ".") {
 		const decision = state.ignoreSnapshot.evaluate({ path: workspaceDirectory, kind: "directory", intent: "index" });
 		if (decision.ignored && decision.prune) return;
 	}
@@ -210,18 +211,20 @@ async function walkDirectory(
 		if (isBlockedPath(state.config, identity)) continue;
 		if (entry.isSymbolicLink()) continue;
 		if (entry.isDirectory()) {
-			const decision = childWorkspacePath === undefined
+			const decision = ignoreBypass || childWorkspacePath === undefined
 				? { ignored: false, prune: false }
 				: state.ignoreSnapshot.evaluate({ path: childWorkspacePath, kind: "directory", intent: "index" });
-			if (isIgnoredPath(state.config, identity) || (decision.ignored && decision.prune)) continue;
-			await walkDirectory(state, childAbsolutePath, childDisplayPath, childWorkspacePath, childSearchPath);
+			if (!ignoreBypass && (isIgnoredPath(state.config, identity) || (decision.ignored && decision.prune))) continue;
+			await walkDirectory(state, childAbsolutePath, childDisplayPath, childWorkspacePath, childSearchPath, ignoreBypass);
 			continue;
 		}
 		if (!entry.isFile()) continue;
 		if (state.matchesGlob !== undefined && !state.matchesGlob(childSearchPath)) continue;
-		if (isIgnoredPath(state.config, identity)) continue;
-		const decision = childWorkspacePath === undefined ? { ignored: false } : state.ignoreSnapshot.evaluate({ path: childWorkspacePath, kind: "file", intent: "index" });
-		if (decision.ignored) continue;
+		if (!ignoreBypass) {
+			if (isIgnoredPath(state.config, identity)) continue;
+			const decision = childWorkspacePath === undefined ? { ignored: false } : state.ignoreSnapshot.evaluate({ path: childWorkspacePath, kind: "file", intent: "index" });
+			if (decision.ignored) continue;
+		}
 		await indexFile(state, childAbsolutePath, childDisplayPath, childWorkspacePath, false, childSearchPath);
 	}
 }
@@ -242,16 +245,7 @@ async function indexFile(
 	state.scannedFiles += 1;
 	state.seenPaths.add(displayPath);
 
-	if (explicit) {
-		if (state.matchesGlob !== undefined && !state.matchesGlob(path.basename(searchPath)) && !state.matchesGlob(searchPath)) return;
-		if (isIgnoredPath(state.config, toolPathIdentity(displayPath, absolutePath, workspacePath))) {
-			return fail("PROTECTED_PATH", "Path is ignored for search.", { path: displayPath });
-		}
-		if (workspacePath !== undefined) {
-			const decision = state.ignoreSnapshot.evaluate({ path: workspacePath, kind: "file", intent: "index" });
-			if (decision.ignored) return fail("PROTECTED_PATH", "Path is ignored for search.", { path: displayPath });
-		}
-	}
+	if (explicit && state.matchesGlob !== undefined && !state.matchesGlob(path.basename(searchPath)) && !state.matchesGlob(searchPath)) return;
 
 	let info;
 	try {
@@ -361,6 +355,12 @@ function compactSkipped(skipped: Required<GrepSkippedFiles>): GrepSkippedFiles {
 	if (skipped.access_denied > 0) result.access_denied = skipped.access_denied;
 	if (skipped.too_large > 0) result.too_large = skipped.too_large;
 	return result;
+}
+
+function isRootIgnored(state: WalkState): boolean {
+	if (isIgnoredPath(state.config, toolPathIdentity(state.root.relativePath, state.root.realPath, state.root.workspacePath))) return true;
+	if (state.root.workspacePath === undefined || state.root.workspacePath === ".") return false;
+	return state.ignoreSnapshot.evaluate({ path: state.root.workspacePath, kind: state.root.kind, intent: "index" }).ignored;
 }
 
 function hashText(text: string): string {

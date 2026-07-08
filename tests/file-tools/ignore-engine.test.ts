@@ -248,6 +248,10 @@ describe("ignore engine", () => {
 				{ name: ".piignore", path: ".piignore", type: "file" },
 			],
 		});
+		expect(await listWorkspaceDirectory(workspace, { path: "dist" })).toMatchObject({
+			path: "dist",
+			entries: [{ name: "schema.json", path: "dist/schema.json", type: "file", ignored: true, ignore_source: ".piignore" }],
+		});
 		const read = await readWorkspaceFile(workspace, { path: "dist/schema.json" });
 		expect(read).toMatchObject({ content: "{\"a\":1}\n", ignored: true, ignore_source: ".piignore" });
 		if (!("version" in read)) throw new Error("read failed");

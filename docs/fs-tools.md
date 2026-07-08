@@ -56,7 +56,7 @@ ignore：路径是否应从自动发现、遍历、搜索或索引中排除。
 状态行为：
 
 * 普通路径：`ls` 返回，`find` / `grep` 可搜索，`read` 允许，`write` / `edit` 允许。
-* soft ignored：`ls` 返回并标记，显式 `read` 允许，`write` / `edit` 允许，`find` 默认跳过。
+* soft ignored：默认发现、递归搜索和索引跳过内容；显式 `ls` / `find` / `grep` / `read` / `write` / `edit` 允许。
 * cwd 外路径：允许访问；不套用当前 cwd 的 ignore 规则。
 * blocked path：父目录 `ls` 隐藏，直接 `ls` / `find` / `grep` / `read` / `write` / `edit` 拒绝或跳过。
 
@@ -114,7 +114,7 @@ ignore：路径是否应从自动发现、遍历、搜索或索引中排除。
 字段：
 
 * `blocked_path`：硬阻止路径。命中后不可列出、搜索、读取或写入；相对规则可匹配同名路径段，绝对规则按绝对路径匹配。目录规则以 `/` 结尾。检查同时作用于输入解析后的 lexical path 和 `realpath`，因此 symlink 指向 blocked path 时也会被拒绝。
-* `ignored_path`：软忽略路径。命中后 `ls` / `read` 返回 `ignored: true` 和 `ignore_source: "file-tools.jsonc"`，不阻止显式访问。
+* `ignored_path`：软忽略路径。命中后 `ls` / `read` 返回 `ignored: true` 和 `ignore_source: "file-tools.jsonc"`，不阻止显式访问；默认发现、递归搜索和索引跳过。
 * `limits.ls_entries`：`ls` 单次最多返回条目数。
 * `limits.read_lines`：`read` 单次最多返回行数。
 * `limits.read_bytes`：`read` 单次最多返回 UTF-8 字节数。
@@ -397,7 +397,7 @@ c/** (29 files)
 
 行为：
 
-* 先检查 `path/query` 是否是存在的文件或目录；命中 visible exact path 时直接返回，不扫描完整目录树。
+* 先检查 `path/query` 是否是存在的文件或目录；命中 exact path 时直接返回，不扫描完整目录树，soft ignore 不阻止显式 exact 命中。
 * exact 未命中且 `query` 含有效 glob 语法时执行 glob；`src/**/*.ts` 与 `path=src, query=**/*.ts` 等价。
 * 其他查询按名称、stem、路径 segment、路径片段和 Fuse.js tokenized fuzzy path 排序。
 * tokenization 覆盖 `/`、`.`、`-`、`_`、camelCase、PascalCase 和字母/数字边界。
@@ -406,7 +406,7 @@ c/** (29 files)
 * 排序优先 exact path、basename、stem、segment、basename prefix/substring、token 覆盖、ordered/fuzzy path，再按短路径、浅深度和字典序稳定排序。
 * workspace 内结果路径相对 workspace root，统一使用 `/`；workspace 外显式搜索路径返回规范化后的相对或绝对路径。
 * 文件和目录 symlink 均不返回；目录 symlink 不进入。
-* 目录遍历和目录结果分开处理：可 prune 的 ignored 目录不进入；因反向 include 不能 prune 的目录可进入但自身不返回。
+* 目录遍历和目录结果分开处理：默认可 prune 的 ignored 目录不进入；因反向 include 不能 prune 的目录可进入但自身不返回；显式 `path` 或 glob 静态前缀命中 ignored 目录时允许在该目录内查找。
 * `blocked_path` 命中时拒绝或跳过；`.git/` 默认不可查。
 * 输出预算、返回结果数和最大扫描条目数由 `~/.pi/agent/configs/file-tools.jsonc` 和 `.pi/configs/file-tools.jsonc` 的 `limits` 控制，不暴露为工具参数。
 
@@ -460,7 +460,7 @@ issueToken [callee]
 
 * TypeScript、TSX、JavaScript、JSX、Python、Go、Rust 使用 `tree-sitter` 官方 grammar 提取函数、方法、类、接口/trait、类型/枚举、模块和顶层声明。
 * 不支持或解析失败的语言退化为文本搜索和紧凑行窗口，不让整个调用失败。
-* 每次调用创建 ignore snapshot；目录遍历使用 ignore `index` intent，ignored 文件不进入索引。
+* 每次调用创建 ignore snapshot；默认目录遍历使用 ignore `index` intent，ignored 文件不进入索引；显式 `path` 指向 ignored 文件或目录时允许在该路径内检索。
 * 进程内按调用 `cwd` 缓存索引。缓存保存范围、signature、token 和关系元数据，不永久保存完整源码；返回源码时重新读取排名靠前的文件。
 * 文件 fingerprint 使用 size、mtime 和内容 hash；新增、修改、删除和 ignore 变化会在后续调用中更新。
 * 普通 dotfile 可检索；`.git/` 等 `blocked_path` 不可检索。
