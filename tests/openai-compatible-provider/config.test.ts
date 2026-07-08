@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ExtensionAPI, ProviderConfig as PiProviderConfig } from "@earendil-works/pi-coding-agent";
+import { AuthStorage, ModelRegistry, type ExtensionAPI, type ProviderConfig as PiProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -60,6 +60,34 @@ describe("openai-compatible-provider config", () => {
 			id: "Qwen/Qwen3-Coder-480B-A35B-Instruct",
 			name: "Qwen/Qwen3-Coder-480B-A35B-Instruct",
 		});
+	});
+
+	it("同名 provider 注册到 Pi 时完全替换内置 provider 模型", async () => {
+		const providers = await normalizeFromText(`{
+			"providers": {
+				"opencode": {
+					"display_name": "Private OpenCode",
+					"base_url": "https://private-opencode.example.com/v1",
+					"api_key": "EMPTY",
+					"models": ["private-opencode-model"]
+				}
+			}
+		}`);
+		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		const builtInModelIds = registry.getAll().filter((model) => model.provider === "opencode").map((model) => model.id);
+		expect(builtInModelIds.length).toBeGreaterThan(0);
+		expect(builtInModelIds).not.toEqual(["private-opencode-model"]);
+
+		registerOpenAICompatibleProviders(createRegistryPi(registry), providers);
+
+		const models = registry.getAll().filter((model) => model.provider === "opencode");
+		expect(models.map((model) => model.id)).toEqual(["private-opencode-model"]);
+		expect(models[0]).toMatchObject({
+			name: "private-opencode-model",
+			baseUrl: "https://private-opencode.example.com/v1",
+			api: "openai-completions",
+		});
+		expect(registry.getProviderDisplayName("opencode")).toBe("Private OpenCode");
 	});
 
 	it("对象模型的 model 同时作为 Pi model id 和 API model 名", async () => {
@@ -571,6 +599,16 @@ function createPi(calls: Array<{ name: string; config: PiProviderConfig }>): Ext
 	return {
 		registerProvider(name: string, config: PiProviderConfig) {
 			calls.push({ name, config });
+		},
+		on() {},
+		setThinkingLevel() {},
+	} as unknown as ExtensionAPI;
+}
+
+function createRegistryPi(registry: ModelRegistry): ExtensionAPI {
+	return {
+		registerProvider(name: string, config: PiProviderConfig) {
+			registry.registerProvider(name, config);
 		},
 		on() {},
 		setThinkingLevel() {},
