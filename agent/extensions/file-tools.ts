@@ -79,7 +79,7 @@ const editParameters = Type.Object({
 	edits: Type.Array(
 		Type.Object(
 			{
-				old: Type.String({ minLength: 1, description: "Exact text that appears once in the original file." }),
+				old: Type.String({ minLength: 1, description: "Exact text that appears once in the original file. Must be UNIQUE in the original file." }),
 				new: Type.String({ description: "Replacement text." }),
 			},
 			{ additionalProperties: false },
