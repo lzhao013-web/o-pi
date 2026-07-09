@@ -18,8 +18,10 @@
 		"@earendil-works/pi-ai": "latest",
 		"@earendil-works/pi-coding-agent": "latest",
 		"@earendil-works/pi-tui": "latest",
+		"@mathjax/src": "latest",
 		"@modelcontextprotocol/sdk": "latest",
 		"@mozilla/readability": "latest",
+		"@resvg/resvg-js": "latest",
 		"ajv": "latest",
 		"content-type": "latest",
 		"file-type": "latest",
@@ -30,6 +32,8 @@
 		"jsonc-parser": "latest",
 		"linkedom": "latest",
 		"picomatch": "latest",
+		"remark-math": "latest",
+		"remark-parse": "latest",
 		"tough-cookie": "latest",
 		"tree-sitter": "latest",
 		"tree-sitter-go": "latest",
@@ -41,6 +45,7 @@
 		"turndown-plugin-gfm": "latest",
 		"typebox": "latest",
 		"undici": "latest",
+		"unified": "latest",
 		"vscode-jsonrpc": "latest",
 		"vscode-languageserver-protocol": "latest"
 	}

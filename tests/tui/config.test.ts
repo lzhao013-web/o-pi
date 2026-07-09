@@ -45,6 +45,7 @@ describe("tui config", () => {
 		expect(config.banner.tiny_width).toBe(36);
 		expect(config.banner.show_hints).toBe(false);
 		expect(config.banner.show_capabilities).toBe(true);
+		expect(config.math).toEqual(defaultTuiConfig().math);
 	});
 
 	it("缺失 banner 时合并默认值", async () => {
@@ -54,6 +55,18 @@ describe("tui config", () => {
 		const config = await loadTuiConfig();
 		expect(config.banner).toEqual(defaultTuiConfig().banner);
 		expect(config.chrome.header).toBe(true);
+	});
+
+	it("加载 math 配置覆盖并合并默认值", async () => {
+		const file = path.join(dir, "math.jsonc");
+		await writeFile(file, '{ "version": 1, "math": { "inline": "source", "svg_scale": 4, "foreground": "#ffffff" } }');
+		process.env["PI_TUI_CONFIG"] = file;
+		const config = await loadTuiConfig();
+		expect(config.math.enabled).toBe(true);
+		expect(config.math.display).toBe(true);
+		expect(config.math.inline).toBe("source");
+		expect(config.math.svg_scale).toBe(4);
+		expect(config.math.foreground).toBe("#ffffff");
 	});
 
 	it("schema 校验失败给出错误", async () => {
@@ -76,6 +89,8 @@ describe("tui config", () => {
 			["style", '{ "version": 1, "banner": { "style": "full" } }'],
 			["side", '{ "version": 1, "banner": { "side_by_side_min_width": 40 } }'],
 			["tiny", '{ "version": 1, "banner": { "tiny_width": 12 } }'],
+			["math-inline", '{ "version": 1, "math": { "inline": "image" } }'],
+			["math-color", '{ "version": 1, "math": { "foreground": "white" } }'],
 		] as const) {
 			const file = path.join(dir, `${name}.jsonc`);
 			await writeFile(file, text);

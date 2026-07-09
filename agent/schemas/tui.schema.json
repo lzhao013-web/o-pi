@@ -72,6 +72,19 @@
 				"show_capabilities": { "type": "boolean", "default": true },
 				"clear_on_first_turn": { "type": "boolean", "default": false }
 			}
+		},
+		"math": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"enabled": { "type": "boolean", "default": true },
+				"display": { "type": "boolean", "default": true },
+				"inline": { "enum": ["text", "source"], "default": "text" },
+				"max_width_cells": { "type": "integer", "minimum": 16, "maximum": 240, "default": 120 },
+				"max_height_cells": { "type": "integer", "minimum": 4, "maximum": 80, "default": 18 },
+				"svg_scale": { "type": "number", "minimum": 1, "maximum": 8, "default": 2 },
+				"foreground": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "default": "#d4d4d4" }
+			}
 		}
 	},
 	"$defs": {

@@ -42,5 +42,15 @@
 		"show_hints": true,
 		"show_capabilities": true,
 		"clear_on_first_turn": false
+	},
+
+	"math": {
+		"enabled": true,
+		"display": true,
+		"inline": "text",
+		"max_width_cells": 120,
+		"max_height_cells": 18,
+		"svg_scale": 2,
+		"foreground": "#d4d4d4"
 	}
 }

@@ -42,6 +42,15 @@ const defaultConfig: TuiConfig = {
 		show_capabilities: true,
 		clear_on_first_turn: false,
 	},
+	math: {
+		enabled: true,
+		display: true,
+		inline: "text",
+		max_width_cells: 120,
+		max_height_cells: 18,
+		svg_scale: 2,
+		foreground: "#d4d4d4",
+	},
 };
 
 export class TuiConfigError extends Error {
@@ -79,6 +88,7 @@ export function defaultTuiConfig(): TuiConfig {
 		},
 		tools: { ...defaultConfig.tools },
 		banner: { ...defaultConfig.banner },
+		math: { ...defaultConfig.math },
 	};
 }
 
@@ -91,6 +101,7 @@ interface RawTuiConfig {
 	footer?: Partial<Omit<TuiConfig["footer"], "style">> & { style?: Partial<TuiConfig["footer"]["style"]> };
 	tools?: Partial<TuiConfig["tools"]>;
 	banner?: Partial<TuiConfig["banner"]>;
+	math?: Partial<TuiConfig["math"]>;
 }
 
 function mergeConfig(raw: RawTuiConfig): TuiConfig {
@@ -132,6 +143,15 @@ function mergeConfig(raw: RawTuiConfig): TuiConfig {
 			show_hints: raw.banner?.show_hints ?? defaultConfig.banner.show_hints,
 			show_capabilities: raw.banner?.show_capabilities ?? defaultConfig.banner.show_capabilities,
 			clear_on_first_turn: raw.banner?.clear_on_first_turn ?? defaultConfig.banner.clear_on_first_turn,
+		},
+		math: {
+			enabled: raw.math?.enabled ?? defaultConfig.math.enabled,
+			display: raw.math?.display ?? defaultConfig.math.display,
+			inline: raw.math?.inline ?? defaultConfig.math.inline,
+			max_width_cells: raw.math?.max_width_cells ?? defaultConfig.math.max_width_cells,
+			max_height_cells: raw.math?.max_height_cells ?? defaultConfig.math.max_height_cells,
+			svg_scale: raw.math?.svg_scale ?? defaultConfig.math.svg_scale,
+			foreground: raw.math?.foreground ?? defaultConfig.math.foreground,
 		},
 	};
 	if (merged.tools.collapsed_lines !== 2) throw new TuiConfigError("tools.collapsed_lines only supports 2.");

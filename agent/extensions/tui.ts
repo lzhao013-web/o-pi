@@ -7,6 +7,14 @@ import type { TuiConfig, TuiFooterSkillsSnapshot, TuiFooterSnapshot, TuiFooterTo
 
 const STATUS_KEY = "o-pi:tui";
 
+interface MathMarkdownModule {
+	installMathMarkdownRenderer(config: TuiConfig["math"]): void;
+	supportsDisplayMathImages(): boolean;
+	warmDisplayMathRenderer(): Promise<void>;
+}
+
+let mathMarkdownModule: MathMarkdownModule | undefined;
+
 /** 注册 o-pi TUI V1：只使用 Pi 公开 UI API，不替换主 TUI 或 input editor。 */
 export default function tuiExtension(pi: ExtensionAPI): void {
 	let config: TuiConfig | undefined;
@@ -22,6 +30,8 @@ export default function tuiExtension(pi: ExtensionAPI): void {
 			refreshTitle();
 		});
 		config = await loadTuiConfig();
+		const mathEnabled = config.enabled && config.math.enabled;
+		await configureMathMarkdown(config, mathEnabled);
 		snapshot = makeSnapshot(ctx, pi, "ready", gitCache.get(ctx.cwd));
 		setTitle = (title) => ctx.ui.setTitle(title);
 		if (!config.enabled) {
@@ -116,6 +126,13 @@ export default function tuiExtension(pi: ExtensionAPI): void {
 		ctx.ui.setWorkingIndicator();
 		if (ctx.cwd) ctx.ui.setTitle(formatTitle({ cwd: ctx.cwd, status: "ready" }));
 	}
+}
+
+async function configureMathMarkdown(config: TuiConfig, mathEnabled: boolean): Promise<void> {
+	if (!mathEnabled && mathMarkdownModule === undefined) return;
+	mathMarkdownModule ??= await import("../../src/tui/math-markdown.js");
+	mathMarkdownModule.installMathMarkdownRenderer({ ...config.math, enabled: mathEnabled });
+	if (mathEnabled && config.math.display && mathMarkdownModule.supportsDisplayMathImages()) void mathMarkdownModule.warmDisplayMathRenderer();
 }
 
 function applyChrome(ctx: ExtensionContext, config: TuiConfig, getSnapshot: () => TuiFooterSnapshot): void {

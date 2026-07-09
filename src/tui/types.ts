@@ -63,6 +63,17 @@ export interface TuiBannerConfig {
 	clear_on_first_turn: boolean;
 }
 
+/** LaTeX math 渲染配置；行内公式保持文本化，块级公式可用 MathJax 渲染为终端图片。 */
+export interface TuiMathConfig {
+	enabled: boolean;
+	display: boolean;
+	inline: "text" | "source";
+	max_width_cells: number;
+	max_height_cells: number;
+	svg_scale: number;
+	foreground: string;
+}
+
 /** TUI V1 配置；缺失字段由 loader 合并默认值。 */
 export interface TuiConfig {
 	version: 1;
@@ -73,6 +84,7 @@ export interface TuiConfig {
 	footer: TuiFooterConfig;
 	tools: TuiToolsConfig;
 	banner: TuiBannerConfig;
+	math: TuiMathConfig;
 }
 
 /** footer 渲染所需的纯数据快照，避免组件长期持有 ExtensionContext。 */
