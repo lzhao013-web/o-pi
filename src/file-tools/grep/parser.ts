@@ -43,10 +43,7 @@ interface RawUnit {
 	endByte: number;
 }
 
-interface TreeSitterLanguage {
-	name: string;
-	language: unknown;
-}
+type TreeSitterLanguage = ParserModule.Language;
 
 interface LineIndex {
 	lineStarts: number[];
