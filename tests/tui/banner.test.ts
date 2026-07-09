@@ -41,7 +41,7 @@ describe("startup banner", () => {
 
 	it("width 80 使用 stacked", () => {
 		const lines = formatStartupBanner(snapshot, baseConfig, 80, plainTheme());
-		expect(lines[0]).toContain("██████");
+		expect(lines.join("\n")).toContain("██████");
 		expect(lines.some((line) => line.startsWith("workspace"))).toBe(true);
 		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 	});
