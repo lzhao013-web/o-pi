@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { collectAncestorDirs, isPathInside, safeRealpath, uniqueResolvedPaths } from "../resource-paths.js";
 
 export interface PromptResourceDiscoveryOptions {
 	cwd: string;
@@ -11,25 +12,11 @@ export function discoverAgentsPromptPaths(options: PromptResourceDiscoveryOption
 	const userPromptsDir = path.join(os.homedir(), ".agents", "prompts");
 	const paths = [...loadPromptFilesFromDir(userPromptsDir, undefined)];
 	if (options.projectTrusted) {
-		for (const dir of collectAncestorAgentsPromptDirs(options.cwd).filter((candidate) => path.resolve(candidate) !== path.resolve(userPromptsDir))) {
+		for (const dir of collectAncestorDirs(options.cwd, ".agents", "prompts").filter((candidate) => path.resolve(candidate) !== path.resolve(userPromptsDir))) {
 			paths.push(...loadPromptFilesFromDir(dir, dir));
 		}
 	}
-	return uniquePaths(paths);
-}
-
-function collectAncestorAgentsPromptDirs(startDir: string): string[] {
-	const dirs: string[] = [];
-	const gitRoot = findGitRepoRoot(startDir);
-	let current = path.resolve(startDir);
-	while (true) {
-		dirs.push(path.join(current, ".agents", "prompts"));
-		if (gitRoot !== undefined && current === gitRoot) break;
-		const parent = path.dirname(current);
-		if (parent === current) break;
-		current = parent;
-	}
-	return dirs;
+	return uniqueResolvedPaths(paths);
 }
 
 function loadPromptFilesFromDir(dir: string, containmentRoot: string | undefined): string[] {
@@ -55,39 +42,4 @@ function loadPromptFilesFromDir(dir: string, containmentRoot: string | undefined
 		files.push(filePath);
 	}
 	return files;
-}
-
-function findGitRepoRoot(startDir: string): string | undefined {
-	let current = path.resolve(startDir);
-	while (true) {
-		if (existsSync(path.join(current, ".git"))) return current;
-		const parent = path.dirname(current);
-		if (parent === current) return undefined;
-		current = parent;
-	}
-}
-
-function safeRealpath(filePath: string): string | undefined {
-	try {
-		return realpathSync(filePath);
-	} catch {
-		return undefined;
-	}
-}
-
-function isPathInside(candidate: string, root: string): boolean {
-	const relative = path.relative(root, candidate);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function uniquePaths(paths: string[]): string[] {
-	const seen = new Set<string>();
-	const result: string[] = [];
-	for (const item of paths) {
-		const resolved = path.resolve(item);
-		if (seen.has(resolved)) continue;
-		seen.add(resolved);
-		result.push(item);
-	}
-	return result;
 }

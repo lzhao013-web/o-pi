@@ -1,24 +1,13 @@
+import { StringEnum, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 
 /** OpenAI-compatible 兼容预设名称，用户只需选择一个高层 preset。 */
-export const CompatPresetNameSchema = Type.Union([
-	Type.Literal("openai"),
-	Type.Literal("openai_compatible"),
-	Type.Literal("local"),
-	Type.Literal("qwen"),
-	Type.Literal("deepseek"),
-	Type.Literal("strict"),
-]);
+export const COMPAT_PRESET_NAMES = ["openai", "openai_compatible", "local", "qwen", "deepseek", "strict"] as const;
+export const CompatPresetNameSchema = StringEnum(COMPAT_PRESET_NAMES);
 
 /** Pi 当前支持的推理强度档位；配置后会在选中模型时自动切换。 */
-export const ReasoningEffortSchema = Type.Union([
-	Type.Literal("off"),
-	Type.Literal("minimal"),
-	Type.Literal("low"),
-	Type.Literal("medium"),
-	Type.Literal("high"),
-	Type.Literal("xhigh"),
-]);
+export const REASONING_EFFORT_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const satisfies readonly ModelThinkingLevel[];
+export const ReasoningEffortSchema = StringEnum(REASONING_EFFORT_VALUES);
 
 const SamplingDefaultsSchema = Type.Object(
 	{

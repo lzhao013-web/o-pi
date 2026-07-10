@@ -1,5 +1,5 @@
 import type { BuildSystemPromptOptions, ContextUsage, SessionEntry, ToolInfo } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, ImageContent, Message, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 import { countContentTokens, countTextTokens, type TokenCounterScope } from "../token-counter.js";
 import type { ContextBreakdownItem, ContextStats } from "./types.js";
 import { collectInjectedSkillContextTexts } from "../skill-context/context.js";

@@ -1,5 +1,5 @@
-import path from "node:path";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { formatWorkspace } from "../tui/footer.js";
 import { joinParts } from "../tui/text.js";
 import type { ContextBreakdownItem, StatsSnapshot } from "./types.js";
 
@@ -20,10 +20,10 @@ function renderWide(snapshot: StatsSnapshot, width: number): string[] {
 		formatSummaryLine(snapshot),
 		"",
 		`Context breakdown · current request window · ${snapshot.context.confidence === "exact" ? "exact" : "~estimated"}`,
-		renderBreakdownBar(snapshot.context.items, width),
+		renderBreakdownBar(snapshot.context.items),
 		"",
-		columns(["source", "tokens", "share", "note"], [26, 11, 8], "note", width),
-		...snapshot.context.items.map((item) => columns([item.label, formatTokens(item.tokens, item.estimated), formatShare(item.share, true), item.note ?? ""], [26, 11, 8], "", width)),
+		columns(["source", "tokens", "share", "note"], [26, 11, 8], "note"),
+		...snapshot.context.items.map((item) => columns([item.label, formatTokens(item.tokens, item.estimated), formatShare(item.share, true), item.note ?? ""], [26, 11, 8], "")),
 		"",
 		"Session usage",
 		formatUsage(snapshot),
@@ -47,10 +47,10 @@ function renderMedium(snapshot: StatsSnapshot, width: number): string[] {
 		formatSummaryLine(snapshot),
 		"",
 		`Context breakdown · ${snapshot.context.confidence === "exact" ? "exact" : "~estimated"}`,
-		renderBreakdownBar(snapshot.context.items, width),
+		renderBreakdownBar(snapshot.context.items),
 		"",
-		columns(["source", "tokens", "%", "note"], [18, 9, 6], "note", width),
-		...snapshot.context.items.map((item) => columns([shortLabel(item), formatTokens(item.tokens, item.estimated), formatShare(item.share, false), shortNote(item)], [18, 9, 6], "", width)),
+		columns(["source", "tokens", "%", "note"], [18, 9, 6], "note"),
+		...snapshot.context.items.map((item) => columns([shortLabel(item), formatTokens(item.tokens, item.estimated), formatShare(item.share, false), shortNote(item)], [18, 9, 6], "")),
 		"",
 		"Session usage",
 		formatUsage(snapshot),
@@ -111,7 +111,7 @@ function formatSummaryLine(snapshot: StatsSnapshot): string {
 	]);
 }
 
-function renderBreakdownBar(items: ContextBreakdownItem[], _width: number): string {
+function renderBreakdownBar(items: ContextBreakdownItem[]): string {
 	const parts = items.filter((item) => (item.share ?? 0) >= 0.5).map((item) => `[ ${shortLabel(item)} ${formatShare(item.share, true)} ]`);
 	return parts.join(" ");
 }
@@ -187,7 +187,7 @@ function shortNote(item: ContextBreakdownItem): string {
 	return item.note.replace("messages", "msgs").replace("active tools", "tools").replace("latest user message", "latest input");
 }
 
-function columns(values: [string, string, string, string], widths: [number, number, number], fallbackNote: string, _width: number): string {
+function columns(values: [string, string, string, string], widths: [number, number, number], fallbackNote: string): string {
 	const [firstWidth, secondWidth, thirdWidth] = widths;
 	const fixed = `${padEnd(values[0], firstWidth)}  ${padStart(values[1], secondWidth)}  ${padStart(values[2], thirdWidth)}  `;
 	return `${fixed}${values[3] || fallbackNote}`;
@@ -242,17 +242,6 @@ function padEnd(text: string, width: number): string {
 
 function padStart(text: string, width: number): string {
 	return " ".repeat(Math.max(0, width - visibleWidth(text))) + text;
-}
-
-function formatWorkspace(cwd: string): string {
-	const home = process.env["HOME"] || process.env["USERPROFILE"];
-	if (!home) return cwd;
-	const resolvedCwd = path.resolve(cwd);
-	const resolvedHome = path.resolve(home);
-	const relative = path.relative(resolvedHome, resolvedCwd);
-	if (relative === "") return "~";
-	if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) return `~/${relative.split(path.sep).join("/")}`;
-	return cwd;
 }
 
 function formatTokens(value: number | undefined, estimated: boolean): string {

@@ -3,9 +3,10 @@ import path from "node:path";
 import { generateDiffString, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { guardWritablePath, PathGuardBlockedError } from "../../safety/path-guard.js";
 import { loadFileToolsConfig } from "../config.js";
-import { fail, isFailed } from "../core/errors.js";
+import { fail, isAccessDenied, isFailed, protectedPathFailure } from "../core/errors.js";
 import { normalizeToolPath, resolveWorkspaceRoot } from "../core/path-resolver.js";
-import type { FailedResult, FileToolLspHooks, LspDiagnosticsSummary, ToolOutcome, WriteParams, WriteSuccess } from "../types.js";
+import { normalizeLineEndings } from "../core/text-file.js";
+import type { FileToolLspHooks, LspDiagnosticsSummary, ToolOutcome, WriteParams, WriteSuccess } from "../types.js";
 
 interface WritablePath {
 	relativePath: string;
@@ -32,7 +33,7 @@ export async function writeWorkspaceFile(cwd: string, params: unknown, signal?: 
 	try {
 		await guardWritablePath(input.path, { cwd: workspaceRoot, blocked_path: config.blocked_path });
 	} catch (error) {
-		if (error instanceof PathGuardBlockedError) return blockedPathFailure(target.relativePath, error);
+		if (error instanceof PathGuardBlockedError) return protectedPathFailure(target.relativePath, error.block);
 		if (isAccessDenied(error)) return fail("ACCESS_DENIED", "Parent path cannot be accessed.", { path: target.relativePath });
 		return fail("INVALID_PATH", "Parent path cannot be resolved.", { path: target.relativePath });
 	}
@@ -91,10 +92,6 @@ async function buildWriteDiff(absolutePath: string, newText: string): Promise<{ 
 	};
 }
 
-function normalizeLineEndings(text: string): string {
-	return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-}
-
 async function safeAfterWrite(
 	hooks: FileToolLspHooks | undefined,
 	input: Parameters<NonNullable<FileToolLspHooks["afterWrite"]>>[0],
@@ -136,21 +133,6 @@ function resolveWritablePath(workspaceRoot: string, inputPath: string): ToolOutc
 
 function checkAbort(signal: AbortSignal | undefined): ToolOutcome<never> | undefined {
 	return signal?.aborted === true ? fail("OPERATION_ABORTED", "Operation aborted.") : undefined;
-}
-
-function blockedPathFailure(displayPath: string, error: PathGuardBlockedError): FailedResult {
-	return fail("PROTECTED_PATH", error.block.message, {
-		path: displayPath,
-		details: {
-			code: error.block.code,
-			...(error.block.matched_rule !== undefined ? { matched_rule: error.block.matched_rule } : {}),
-			...(error.block.matched_path !== undefined ? { matched_path: error.block.matched_path } : {}),
-		},
-	});
-}
-
-function isAccessDenied(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && (error.code === "EACCES" || error.code === "EPERM");
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

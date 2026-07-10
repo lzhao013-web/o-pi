@@ -19,10 +19,10 @@ export class ToolDefaultsConfigError extends Error {
 
 export async function loadToolDefaultsConfig(cwd = process.cwd()): Promise<ToolDefaultsConfig> {
 	const userPath = userConfigPath();
-	const userConfig = parseToolMap((await readOptionalConfig(userPath))?.value, userPath);
+	const userConfig = parseToolMap(await readOptionalConfig(userPath), userPath);
 
 	const projectPath = projectConfigPath(cwd);
-	const projectConfig = projectPath === undefined ? {} : parseToolMap((await readOptionalConfig(projectPath))?.value, projectPath);
+	const projectConfig = projectPath === undefined ? {} : parseToolMap(await readOptionalConfig(projectPath), projectPath);
 
 	return { tools: { ...userConfig, ...projectConfig } };
 }
@@ -51,13 +51,12 @@ function parseToolMap(value: unknown, sourcePath: string): Record<string, boolea
 	return result;
 }
 
-async function readOptionalConfig(filePath: string): Promise<{ value: unknown } | undefined> {
-	const value = await readOptionalJsoncConfig({
+async function readOptionalConfig(filePath: string): Promise<unknown | undefined> {
+	return readOptionalJsoncConfig({
 		path: filePath,
 		label: "tools",
 		createError: (message, details) => new ToolDefaultsConfigError(message, details),
 	});
-	return value === undefined ? undefined : { value };
 }
 
 function userConfigPath(): string {

@@ -4,14 +4,18 @@ import { parseHTML } from "linkedom";
 import { classifyNetworkError } from "./http-client.js";
 import { readLimitedResponseBody, responseContentLength } from "./response-body.js";
 import type { WebHttpFetch, WebHttpResponse, WebSearchFailureDetails, WebSearchItem, WebToolsConfig } from "./types.js";
-import { stripTerminalControls } from "./url-utils.js";
+import {
+	normalizeSearchResultUrl,
+	normalizeSearchText,
+	SEARCH_RESULT_MAX_SNIPPET_CHARS,
+	SEARCH_RESULT_MAX_TITLE_CHARS,
+} from "./url-utils.js";
+
+export { normalizeSearchText } from "./url-utils.js";
 
 export const SEARCH_ENDPOINT = new URL("https://html.duckduckgo.com/html/");
 
 const CHALLENGE_MARKERS = ["anomaly-modal", "anomaly.js", "challenge-form", "Unfortunately, bots use DuckDuckGo too"];
-const TRACKING_PARAMS = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"];
-const MAX_TITLE_CHARS = 300;
-const MAX_SNIPPET_CHARS = 500;
 
 /** DDG 后端返回原始搜索结果或已映射的搜索失败 details。 */
 export type DuckDuckGoHtmlResult =
@@ -146,7 +150,7 @@ export function parseDuckDuckGoHtml(html: string, limit = 20): DuckDuckGoParseRe
 	for (const block of blocks) {
 		if (block.classList.contains("result--ad") || block.querySelector(".badge--ad") !== null) continue;
 		const titleLink = block.querySelector(".result__a");
-		const title = normalizeSearchText(titleLink?.textContent ?? "").slice(0, MAX_TITLE_CHARS);
+		const title = normalizeSearchText(titleLink?.textContent ?? "").slice(0, SEARCH_RESULT_MAX_TITLE_CHARS);
 		if (title.length === 0) continue;
 		const href = titleLink?.getAttribute("href");
 		if (href === null || href === undefined) continue;
@@ -155,7 +159,7 @@ export function parseDuckDuckGoHtml(html: string, limit = 20): DuckDuckGoParseRe
 		const normalizedUrl = url.toString();
 		if (seen.has(normalizedUrl)) continue;
 		seen.add(normalizedUrl);
-		const snippet = normalizeSearchText(block.querySelector(".result__snippet")?.textContent ?? "").slice(0, MAX_SNIPPET_CHARS);
+		const snippet = normalizeSearchText(block.querySelector(".result__snippet")?.textContent ?? "").slice(0, SEARCH_RESULT_MAX_SNIPPET_CHARS);
 		results.push({
 			rank: results.length + 1,
 			title,
@@ -187,17 +191,7 @@ export function unwrapDuckDuckGoUrl(href: string): URL | undefined {
 			return undefined;
 		}
 	}
-	if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-	url.hash = "";
-	for (const name of TRACKING_PARAMS) url.searchParams.delete(name);
-	return url;
-}
-
-export function normalizeSearchText(value: string): string {
-	return stripTerminalControls(value)
-		.replace(/[\u0000-\u001f\u007f]/g, " ")
-		.replace(/\s+/g, " ")
-		.trim();
+	return normalizeSearchResultUrl(url, { allowUserinfo: true });
 }
 
 function isChallengeHtml(html: string): boolean {

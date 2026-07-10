@@ -46,15 +46,7 @@ export async function loadBashToolConfig(): Promise<BashToolConfig> {
 }
 
 export function defaultBashToolConfig(): BashToolConfig {
-	return {
-		version: 1,
-		default_timeout_seconds: defaultConfig.default_timeout_seconds,
-		limits: { ...defaultConfig.limits },
-		safety: {
-			deny_patterns: [...(defaultConfig.safety?.deny_patterns ?? [])],
-			deny_regex: [...(defaultConfig.safety?.deny_regex ?? [])],
-		},
-	};
+	return structuredClone(defaultConfig);
 }
 
 interface RawBashToolConfig {

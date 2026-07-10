@@ -1,5 +1,6 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { discoverAgents, formatAvailableAgents, resolveSubagentTools } from "./agents.js";
 import { loadSubagentConfig } from "./config.js";
 import { formatFileHandoff, formatResultForContext, limitHandoff, persistResult } from "./output.js";
@@ -47,7 +48,7 @@ export async function executeSubagent(params: SubagentToolParams, context: Execu
 			const liveResults: Array<SubagentRunResult | undefined> = new Array(tasks.length);
 			emitUpdate(context, detailsBase, compactResults(liveResults));
 			const results = await mapWithConcurrency(tasks, config.maxConcurrency, async (task, index) => {
-				const result = await executeOne(task, index, mode, runId, params, context, config, discovery.agents, (partial) => {
+				const result = await executeOne(task, mode, runId, params, context, config, discovery.agents, (partial) => {
 					liveResults[index] = partial;
 					emitUpdate(context, detailsBase, compactResults(liveResults));
 				});
@@ -67,7 +68,7 @@ export async function executeSubagent(params: SubagentToolParams, context: Execu
 			const step = tasks[i];
 			if (step === undefined) continue;
 			const taskText = step.task.replace(/\{previous\}/g, previous);
-			const result = await executeOne({ ...step, task: taskText }, i, mode, runId, params, context, config, discovery.agents, (partial) => {
+			const result = await executeOne({ ...step, task: taskText }, mode, runId, params, context, config, discovery.agents, (partial) => {
 				emitUpdate(context, detailsBase, [...results, partial]);
 			});
 			const persisted = await persistResult(result, { cwd: result.cwd, runId, index: i, outputMode: effectiveOutputMode(result, params, config), maxInlineOutputChars: config.maxInlineOutputChars });
@@ -105,7 +106,6 @@ function requireTasks(tasks: SubagentTask[] | undefined): SubagentTask[] {
 
 async function executeOne(
 	task: SubagentTask,
-	index: number,
 	mode: SubagentMode,
 	runId: string,
 	params: SubagentToolParams,
@@ -321,19 +321,15 @@ function createRunId(): string {
 	return `${stamp}-${suffix}`;
 }
 
-function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
-	if (ms <= 0) return Promise.resolve();
-	return new Promise((resolve, reject) => {
-		const timer = setTimeout(resolve, ms);
-		if (signal !== undefined) {
-			const abort = () => {
-				clearTimeout(timer);
-				reject(new SubagentExecutionError("subagent aborted"));
-			};
-			if (signal.aborted) abort();
-			else signal.addEventListener("abort", abort, { once: true });
-		}
-	});
+async function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	if (ms <= 0) return;
+	try {
+		if (signal === undefined) await sleep(ms);
+		else await sleep(ms, undefined, { signal });
+	} catch (error) {
+		if (signal?.aborted) throw new SubagentExecutionError("subagent aborted");
+		throw error;
+	}
 }
 
 function emptyProcessOutput(): ProcessRunOutput {

@@ -19,6 +19,7 @@ cd ~/.pi && npm install
 ## 文档
 
 * [文件工具设计](docs/fs-tools.md)
+* [Bash 工具](docs/bash-tool.md)
 * [LSP 内部增强](docs/lsp.md)
 * [Web 工具](docs/web-tools.md)
 * [Tool Input Repair](docs/tool-repair.md)
@@ -27,5 +28,8 @@ cd ~/.pi && npm install
 * [TUI V1](docs/tui.md)
 * [Slash commands](docs/slash-cmds.md)
 * [Skill Context](docs/skill-context.md)
+* [Subagent](docs/subagent.md)
 * [Prompt Templates](docs/prompt-templates.md)
+* [提示词设计](docs/prompt-design.md)
+* [Pi 工具提示词字段](docs/tool-prompt-fields.md)
 * [Token counter](docs/token-counter.md)

@@ -34,7 +34,7 @@ export async function loadSkillContextConfig(): Promise<SkillContextConfig> {
 }
 
 export function defaultSkillContextConfig(): SkillContextConfig {
-	return { ...defaultConfig };
+	return structuredClone(defaultConfig);
 }
 
 interface RawSkillContextConfig {

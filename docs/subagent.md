@@ -229,11 +229,13 @@ chain handoff：
 
 项目配置不能修改 `allow_project_agents`、`project_agents_override_user`、`confirm_write_agents`、`default_tools` 或 `agent_overrides`，避免项目扩大用户级能力边界。
 
-默认配置文件位于：
+仓库配置文件位于：
 
 ```text
 agent/configs/subagent.jsonc
 ```
+
+该文件完整列出默认值，便于直接修改；内置回退值定义在 `src/subagent/config.ts`。
 
 重要默认值：
 

@@ -7,8 +7,7 @@ import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 
 import { isNotFound } from "../config-loader.js";
 import { invalidModelsJsonc } from "./errors.js";
-import { COMPAT_PRESETS } from "./presets.js";
-import { ModelsJsoncConfigSchema, type ModelsJsoncConfig } from "./schema.js";
+import { COMPAT_PRESET_NAMES, ModelsJsoncConfigSchema, REASONING_EFFORT_VALUES, type ModelsJsoncConfig } from "./schema.js";
 
 let validateModelsJsonc: ValidateFunction | undefined;
 
@@ -103,11 +102,12 @@ const PROVIDER_SAMPLING_FIELDS = new Set([
 	"seed",
 	"stop",
 ]);
-const REASONING_EFFORT_VALUES = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+const COMPAT_PRESET_NAME_SET = new Set<string>(COMPAT_PRESET_NAMES);
+const REASONING_EFFORT_VALUE_SET = new Set<string>(REASONING_EFFORT_VALUES);
 
 function prevalidateModelsJsonc(value: unknown, configPath: string): void {
 	if (!isRecord(value) || !isRecord(value.providers)) return;
-	const expectedCompat = Object.keys(COMPAT_PRESETS).join(", ");
+	const expectedCompat = COMPAT_PRESET_NAMES.join(", ");
 	for (const [providerId, provider] of Object.entries(value.providers)) {
 		if (!isRecord(provider)) continue;
 		for (const field of Object.keys(provider)) {
@@ -120,7 +120,7 @@ function prevalidateModelsJsonc(value: unknown, configPath: string): void {
 				`Provider "${providerId}" contains provider-level sampling defaults. Sampling defaults are only supported under each model.`,
 			);
 		}
-		if (typeof provider.compat === "string" && !(provider.compat in COMPAT_PRESETS)) {
+		if (typeof provider.compat === "string" && !COMPAT_PRESET_NAME_SET.has(provider.compat)) {
 			throw invalidModelsJsonc(configPath, `provider "${providerId}" has unknown compat preset "${provider.compat}"; expected one of ${expectedCompat}`);
 		}
 		if (Array.isArray(provider.models)) {
@@ -132,7 +132,7 @@ function prevalidateModelsJsonc(value: unknown, configPath: string): void {
 				if (isRecord(model) && "reasoning" in model) {
 					throw invalidModelsJsonc(configPath, `providers.${providerId}.models[${index}].reasoning is not supported; use reasoning_effort instead`);
 				}
-				if (isRecord(model) && typeof model.reasoning_effort === "string" && !REASONING_EFFORT_VALUES.has(model.reasoning_effort)) {
+				if (isRecord(model) && typeof model.reasoning_effort === "string" && !REASONING_EFFORT_VALUE_SET.has(model.reasoning_effort)) {
 					throw invalidModelsJsonc(
 						configPath,
 						`providers.${providerId}.models[${index}].reasoning_effort must be one of off, minimal, low, medium, high, xhigh`,

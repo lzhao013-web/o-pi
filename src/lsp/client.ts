@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	createMessageConnection,
 	StreamMessageReader,
@@ -20,11 +20,8 @@ import {
 	PublishDiagnosticsNotification,
 	ReferencesRequest,
 	ShutdownRequest,
-	TextDocumentSyncKind,
 	WorkspaceSymbolRequest,
 	type Diagnostic,
-	type DocumentSymbol,
-	type InitializeResult,
 	type Location,
 	type SymbolInformation,
 	type WorkspaceSymbol,
@@ -33,7 +30,7 @@ import {
 import type { DiagnosticsLedger } from "./diagnostics.js";
 import { LspDocuments } from "./documents.js";
 import type { LspConfig, LspDocumentSymbols, LspServerConfig, LspServerStatus } from "./types.js";
-import { fileUriToPath } from "./uri.js";
+import { fileUriToPath, pathToFileUri, workspaceRelativePath } from "./uri.js";
 
 /** 单个 stdio language server client，封装 initialize、文档同步、symbol 和诊断通知。 */
 export class LspClient {
@@ -42,7 +39,6 @@ export class LspClient {
 	private state: LspServerStatus["status"] = "idle";
 	private lastError: string | undefined;
 	private idleTimer: NodeJS.Timeout | undefined;
-	private textDocumentSync: TextDocumentSyncKind | undefined;
 	private readonly transportFailureRejectors = new Set<(error: Error) => void>();
 	private readonly documents = new LspDocuments();
 
@@ -64,7 +60,7 @@ export class LspClient {
 			open_documents: this.documents.count(),
 			diagnostics: this.diagnostics.all().reduce((sum, entry) => {
 				const filePath = fileUriToPath(entry.uri);
-				return filePath !== undefined && isUnderRoot(this.root, filePath) ? sum + entry.items.length : sum;
+				return filePath !== undefined && workspaceRelativePath(this.root, filePath) !== undefined ? sum + entry.items.length : sum;
 			}, 0),
 		};
 		if (this.lastError !== undefined) status.last_error = this.lastError;
@@ -111,7 +107,7 @@ export class LspClient {
 		if (connection === undefined) return false;
 		const document = this.documents.context(filePath, text);
 		const version = this.documents.nextVersion(document.uri);
-		if (!this.documents.has(document.uri) || version === 1) {
+		if (version === 1) {
 			const sent = await this.sendNotification(connection, (active) => active.sendNotification(DidOpenTextDocumentNotification.type, {
 				textDocument: {
 					uri: document.uri,
@@ -221,11 +217,11 @@ export class LspClient {
 		});
 
 		try {
-			const result = await withTimeout(
+			await withTimeout(
 				this.withTransportFailure(() => connection.sendRequest(InitializeRequest.type, {
 					processId: process.pid,
-					rootUri: pathToRootUri(this.root),
-					workspaceFolders: [{ uri: pathToRootUri(this.root), name: path.basename(this.root) || this.root }],
+					rootUri: pathToFileUri(this.root),
+					workspaceFolders: [{ uri: pathToFileUri(this.root), name: path.basename(this.root) || this.root }],
 					capabilities: {
 						textDocument: {
 							synchronization: { didSave: true },
@@ -239,7 +235,6 @@ export class LspClient {
 				})),
 				this.config.startup_timeout_ms,
 			);
-			this.textDocumentSync = syncKind(result);
 			const initialized = await this.sendNotification(connection, (active) => active.sendNotification(InitializedNotification.type, {}));
 			if (!initialized) return false;
 			this.state = "ready";
@@ -375,13 +370,6 @@ class SafeMessageWriter implements MessageWriter {
 	}
 }
 
-function syncKind(result: InitializeResult): TextDocumentSyncKind | undefined {
-	const sync = result.capabilities.textDocumentSync;
-	if (typeof sync === "number") return sync;
-	if (typeof sync === "object" && sync !== null && typeof sync.change === "number") return sync.change;
-	return undefined;
-}
-
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 	let timer: NodeJS.Timeout | undefined;
 	try {
@@ -396,19 +384,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 	}
 }
 
-function pathToRootUri(root: string): string {
-	return pathToFileURL(path.resolve(root)).toString();
-}
-
-function isUnderRoot(root: string, filePath: string): boolean {
-	const relative = path.relative(root, filePath);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }

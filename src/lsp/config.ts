@@ -100,14 +100,7 @@ export async function loadLspConfig(): Promise<LoadedLspConfig> {
 }
 
 export function defaultLspConfig(): LspConfig {
-	return {
-		...defaultConfig,
-		exclude_paths: [...defaultConfig.exclude_paths],
-		diagnostics: { ...defaultConfig.diagnostics },
-		read: { ...defaultConfig.read },
-		grep: { ...defaultConfig.grep },
-		servers: defaultConfig.servers.map((server) => ({ ...server, args: [...server.args], extensions: [...server.extensions] })),
-	};
+	return structuredClone(defaultConfig);
 }
 
 export function resolveLspConfigPath(): string {

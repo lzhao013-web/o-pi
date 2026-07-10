@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import type { FileToolLspHooks, FileToolLspSymbolCandidate, LspDiagnosticsSummary } from "../file-tools/types.js";
+import { emptySummary } from "./diagnostics.js";
 import type { LspManager } from "./manager.js";
 
 /** 将 LSP manager 包装为 file-tools 可选 hook；所有异常都在这里吞掉并退化。 */
@@ -59,16 +60,6 @@ async function diagnosticsOrUnavailable(factory: () => Promise<LspDiagnosticsSum
 	try {
 		return await factory();
 	} catch {
-		return {
-			status: "unavailable",
-			file_errors: 0,
-			file_warnings: 0,
-			new_errors: 0,
-			new_warnings: 0,
-			resolved_errors: 0,
-			resolved_warnings: 0,
-			baseline: "unknown",
-			items: [],
-		};
+		return emptySummary("unavailable");
 	}
 }

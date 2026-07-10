@@ -18,7 +18,7 @@ agent/configs/lsp.jsonc
 | --- | --- | --- |
 | `version` | `1` | 配置版本。当前只接受 `1`。 |
 | `enabled` | `true` | 总开关。设为 `false` 后不启动任何 language server，文件工具保持普通行为。 |
-| `exclude_paths` | `[]` | 精确匹配这些 workspace root 时不启动 LSP。支持 `~` 表示用户家目录；默认配置排除 `~`，避免在 home 根目录触发全盘扫描。 |
+| `exclude_paths` | `["~"]` | 精确匹配这些 workspace root 时不启动 LSP。支持 `~` 表示用户家目录；仓库配置排除 home 根目录，避免触发全盘扫描。配置文件缺失时内置回退值为 `[]`。 |
 | `startup_timeout_ms` | `8000` | server `initialize` 请求超时，范围 `100`-`60000`。超时后该 server 视为 unavailable。 |
 | `request_timeout_ms` | `5000` | 单次 LSP 请求超时，范围 `100`-`60000`。用于 `documentSymbol`、`workspace/symbol` 等请求。 |
 | `idle_timeout_ms` | `300000` | server 空闲关闭时间，范围 `1000`-`3600000`。关闭后下次文件工具调用会按需重启。 |
@@ -26,7 +26,7 @@ agent/configs/lsp.jsonc
 | `diagnostics` | 见下表 | 控制 `write` / `edit` 成功后的诊断等待和返回内容。 |
 | `read` | 见下表 | 控制 `read` 的 outline / enclosing symbol 增强。 |
 | `grep` | 见下表 | 控制 `grep` 的 workspace symbol 增强。 |
-| `servers` | TypeScript / Python / Rust | language server 列表，最多 50 个。 |
+| `servers` | TypeScript / Python / Rust / YAML | language server 列表，最多 50 个。配置文件缺失时内置回退列表不含 YAML。 |
 
 `diagnostics`：
 
@@ -65,7 +65,7 @@ agent/configs/lsp.jsonc
 | `extensions` | 必填 | 文件扩展名列表，必须带前导点，例如 `".ts"`。`read/write/edit` 按文件扩展名选择 server。 |
 | `initialization_options` | 未设置 | 原样传给 LSP `initialize.initializationOptions`，用于 server 私有配置。 |
 
-默认包含 TypeScript、Python、Rust server。binary 不存在时 server 标记为 unavailable，文件工具继续成功执行。
+仓库配置包含 TypeScript、Python、Rust、YAML server。binary 不存在时 server 标记为 unavailable，文件工具继续成功执行。
 
 ## 行为
 

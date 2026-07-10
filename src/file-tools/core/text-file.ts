@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fail } from "./errors.js";
-import type { FailedResult, NewlineKind, TextFile, ToolOutcome } from "../types.js";
+import type { NewlineKind, TextFile, ToolOutcome } from "../types.js";
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024;
 export const DEFAULT_MAX_OUTPUT_LINES = 2_000;
+
+export function normalizeLineEndings(text: string): string {
+	return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const textDecoder = new TextDecoder("utf-8", { fatal: true });

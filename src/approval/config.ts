@@ -81,15 +81,7 @@ export async function loadApprovalGateConfig(): Promise<ApprovalGateConfig> {
 }
 
 export function defaultApprovalGateConfig(): ApprovalGateConfig {
-	return {
-		version: 1,
-		enabled: defaultConfig.enabled,
-		ui: { ...defaultConfig.ui },
-		remember: { ...defaultConfig.remember },
-		defaults: { ...defaultConfig.defaults },
-		ask_rules: cloneRules(defaultConfig.ask_rules),
-		deny_rules: [],
-	};
+	return structuredClone(defaultConfig);
 }
 
 interface RawApprovalGateConfig {

@@ -82,7 +82,7 @@ ignore：路径是否应从自动发现、遍历、搜索或索引中排除。
 
 项目配置不能修改 `ignore.piignore`、`ignore.gitignore` 或 `ignore.git_tracked_files_bypass`，避免项目关闭用户级 ignore 策略。
 
-默认配置：
+内置默认配置如下；仓库配置文件完整列出当前值，并额外保护私钥路径、忽略常见依赖目录：
 
 ```jsonc
 {

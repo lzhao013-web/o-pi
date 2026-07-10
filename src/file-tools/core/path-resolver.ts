@@ -3,8 +3,8 @@ import path from "node:path";
 
 import { guardExistingPath, PathGuardBlockedError, resolveInputPath } from "../../safety/path-guard.js";
 import type { FileToolsConfig } from "../config.js";
-import { fail } from "./errors.js";
-import type { FailedResult, ResolvedPath, ToolOutcome } from "../types.js";
+import { fail, isAccessDenied, isFailed, protectedPathFailure } from "./errors.js";
+import type { ResolvedPath, ToolOutcome } from "../types.js";
 
 /** 词法路径解析结果；absolutePath 用于文件系统访问，relativePath 用于模型展示，workspacePath 仅在路径位于 workspace 内时存在。 */
 export interface LexicalToolPath {
@@ -90,7 +90,7 @@ async function resolveExistingPath(
 		const guarded = await guardExistingPath(inputPath, { cwd: workspaceRoot, blocked_path: config.blocked_path });
 		guardedRealPath = guarded.real_path;
 	} catch (error) {
-		if (error instanceof PathGuardBlockedError) return blockedPathFailure(lexical.relativePath, error);
+		if (error instanceof PathGuardBlockedError) return protectedPathFailure(lexical.relativePath, error.block);
 		throw error;
 	}
 
@@ -110,23 +110,4 @@ async function resolveExistingPath(
 		realPath: real,
 		...(lexical.workspacePath !== undefined ? { workspacePath: lexical.workspacePath } : {}),
 	};
-}
-
-function blockedPathFailure(displayPath: string, error: PathGuardBlockedError): FailedResult {
-	return fail("PROTECTED_PATH", error.block.message, {
-		path: displayPath,
-		details: {
-			code: error.block.code,
-			...(error.block.matched_rule !== undefined ? { matched_rule: error.block.matched_rule } : {}),
-			...(error.block.matched_path !== undefined ? { matched_path: error.block.matched_path } : {}),
-		},
-	});
-}
-
-function isFailed<T>(result: T | FailedResult): result is FailedResult {
-	return typeof result === "object" && result !== null && "status" in result && result.status === "failed";
-}
-
-function isAccessDenied(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && (error.code === "EACCES" || error.code === "EPERM");
 }

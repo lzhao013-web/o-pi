@@ -33,7 +33,7 @@ export function renderFindResults(input: RenderFindInput): { content: string; de
 	const header = formatHeader(input.totalMatches, input.totalFiles, input.totalDirectories);
 	const narrowLines = [header, "", ...input.matches.map(formatMatchPath)];
 	if (input.matches.length <= NARROW_RESULT_LIMIT && fitsBudget(narrowLines, tokenBudget)) {
-		return { content: narrowLines.filter((line, index) => index !== 1 || input.matches.length > 0).join("\n"), details };
+		return { content: narrowLines.filter((_line, index) => index !== 1 || input.matches.length > 0).join("\n"), details };
 	}
 
 	const selected = selectConcreteMatches(input.matches);

@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { collectAncestorDirs, isPathInside, safeRealpath, uniqueResolvedPaths } from "../resource-paths.js";
 import type { AgentDefinition, AgentDiscovery, OutputMode, SubagentConfig, SubagentSource } from "./types.js";
 
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
@@ -11,9 +12,9 @@ export function discoverAgents(cwd: string, config: SubagentConfig): AgentDiscov
 	const warnings: string[] = [];
 	const userAgentsDir = path.join(getAgentDir(), "agents");
 	const userAgentsHomeDir = path.join(os.homedir(), ".agents", "agents");
-	const userAgentsDirs = uniquePaths([userAgentsDir, userAgentsHomeDir]);
+	const userAgentsDirs = uniqueResolvedPaths([userAgentsDir, userAgentsHomeDir]);
 	const projectAgentsDirs = config.allowProjectAgents
-		? uniquePaths([...findProjectPiAgentsDirs(cwd), ...collectAncestorAgentsDirs(cwd)]).filter((dir) => path.resolve(dir) !== path.resolve(userAgentsHomeDir))
+		? uniqueResolvedPaths([...findProjectPiAgentsDirs(cwd), ...collectAncestorDirs(cwd, ".agents", "agents")]).filter((dir) => path.resolve(dir) !== path.resolve(userAgentsHomeDir))
 		: [];
 	const userAgents = userAgentsDirs.flatMap((dir) => loadAgentsFromDir(dir, "user", config, warnings, undefined));
 	const projectAgents = projectAgentsDirs.flatMap((dir) => loadAgentsFromDir(dir, "project", config, warnings, dir));
@@ -174,61 +175,12 @@ function findProjectPiAgentsDirs(cwd: string): string[] {
 	return nearest === undefined ? [] : [nearest];
 }
 
-function collectAncestorAgentsDirs(startDir: string): string[] {
-	const dirs: string[] = [];
-	const gitRoot = findGitRepoRoot(startDir);
-	let current = path.resolve(startDir);
-	while (true) {
-		dirs.push(path.join(current, ".agents", "agents"));
-		if (gitRoot !== undefined && current === gitRoot) break;
-		const parent = path.dirname(current);
-		if (parent === current) break;
-		current = parent;
-	}
-	return dirs;
-}
-
-function findGitRepoRoot(startDir: string): string | undefined {
-	let current = path.resolve(startDir);
-	while (true) {
-		if (existsSync(path.join(current, ".git"))) return current;
-		const parent = path.dirname(current);
-		if (parent === current) return undefined;
-		current = parent;
-	}
-}
-
 function isDirectory(filePath: string): boolean {
 	try {
 		return statSync(filePath).isDirectory();
 	} catch {
 		return false;
 	}
-}
-
-function safeRealpath(filePath: string): string | undefined {
-	try {
-		return realpathSync(filePath);
-	} catch {
-		return undefined;
-	}
-}
-
-function isPathInside(candidate: string, root: string): boolean {
-	const relative = path.relative(root, candidate);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function uniquePaths(paths: string[]): string[] {
-	const seen = new Set<string>();
-	const result: string[] = [];
-	for (const item of paths) {
-		const resolved = path.resolve(item);
-		if (seen.has(resolved)) continue;
-		seen.add(resolved);
-		result.push(item);
-	}
-	return result;
 }
 
 function parseOutputMode(value: unknown, field: string): OutputMode {

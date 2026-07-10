@@ -1,4 +1,5 @@
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { LspClient } from "./client.js";
 import { loadLspConfig, normalizeExcludePath, resolveLspConfigPath } from "./config.js";
@@ -206,17 +207,9 @@ function enabledServersForExtension(servers: LspServerConfig[], extension: strin
 }
 
 function uriToWorkspacePath(root: string, uri: string): { path: string; relative: string } | undefined {
-	const absolute = pathFromFileUri(uri);
+	const absolute = fileUriToPath(uri);
 	if (absolute === undefined) return undefined;
 	const relative = workspaceRelativePath(root, absolute);
 	if (relative === undefined) return undefined;
 	return { path: absolute, relative };
-}
-
-function pathFromFileUri(uri: string): string | undefined {
-	return fileUriToPath(uri);
-}
-
-async function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }

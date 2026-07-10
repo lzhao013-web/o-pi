@@ -1,15 +1,15 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
-import { normalizeSearchText } from "../duckduckgo-html.js";
 import type { WebSearchErrorCode, WebSearchFailureDetails, WebSearchItem, WebToolsConfig } from "../types.js";
+import {
+	normalizeSearchResultUrl,
+	normalizeSearchText,
+	SEARCH_RESULT_MAX_SNIPPET_CHARS,
+	SEARCH_RESULT_MAX_TITLE_CHARS,
+} from "../url-utils.js";
 import type { NormalizedSearchParams, SearchProviderContext, SearchProviderResult, WebSearchProvider } from "./types.js";
-
-const TRACKING_PARAMS = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"];
-const MAX_TITLE_CHARS = 300;
-const MAX_SNIPPET_CHARS = 500;
 
 /** Exa MCP client 的最小可替换接口；单测通过 fake client 避免真实网络。 */
 export interface ExaMcpClient {
@@ -37,7 +37,6 @@ export class DefaultExaMcpClientFactory implements ExaMcpClientFactory {
 			},
 			async close() {
 				await client.close();
-				await transport.close();
 			},
 		};
 	}
@@ -107,8 +106,8 @@ export function normalizeExaMcpResult(raw: unknown, limit: number): WebSearchIte
 		const url = normalizeResultUrl(candidate.url);
 		if (url === undefined || seen.has(url)) continue;
 		seen.add(url);
-		const title = normalizeSearchText(candidate.title ?? url).slice(0, MAX_TITLE_CHARS);
-		const snippet = normalizeSearchText(candidate.snippet ?? "").slice(0, MAX_SNIPPET_CHARS);
+		const title = normalizeSearchText(candidate.title ?? url).slice(0, SEARCH_RESULT_MAX_TITLE_CHARS);
+		const snippet = normalizeSearchText(candidate.snippet ?? "").slice(0, SEARCH_RESULT_MAX_SNIPPET_CHARS);
 		results.push({
 			rank: results.length + 1,
 			title: title.length > 0 ? title : url,
@@ -192,17 +191,7 @@ function parseJsonText(text: string): unknown | undefined {
 
 function normalizeResultUrl(raw: string | undefined): string | undefined {
 	if (raw === undefined) return undefined;
-	let url: URL;
-	try {
-		url = new URL(raw);
-	} catch {
-		return undefined;
-	}
-	if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-	if (url.username !== "" || url.password !== "") return undefined;
-	url.hash = "";
-	for (const name of TRACKING_PARAMS) url.searchParams.delete(name);
-	return url.toString();
+	return normalizeSearchResultUrl(raw)?.toString();
 }
 
 function candidate(title: string | undefined, url: string | undefined, snippet?: string): { title?: string; url?: string; snippet?: string } {
@@ -214,41 +203,21 @@ function candidate(title: string | undefined, url: string | undefined, snippet?:
 }
 
 function asClientTransport(transport: StreamableHTTPClientTransport): Transport {
-	return new ClientTransportAdapter(transport);
-}
-
-class ClientTransportAdapter implements Transport {
-	onclose?: () => void;
-	onerror?: (error: Error) => void;
-	onmessage?: <T extends JSONRPCMessage>(message: T) => void;
-
-	constructor(private readonly transport: StreamableHTTPClientTransport) {}
-
-	async start(): Promise<void> {
-		this.installHandlers();
-		await this.transport.start();
-	}
-
-	async send(message: JSONRPCMessage): Promise<void> {
-		await this.transport.send(message);
-	}
-
-	async close(): Promise<void> {
-		await this.transport.close();
-	}
-
-	setProtocolVersion(version: string): void {
-		this.transport.setProtocolVersion(version);
-	}
-
-	private installHandlers(): void {
-		if (this.onclose === undefined) delete this.transport.onclose;
-		else this.transport.onclose = this.onclose;
-		if (this.onerror === undefined) delete this.transport.onerror;
-		else this.transport.onerror = this.onerror;
-		if (this.onmessage === undefined) delete this.transport.onmessage;
-		else this.transport.onmessage = (message) => this.onmessage?.(message);
-	}
+	const adapter: Transport = {
+		async start() {
+			if (adapter.onclose === undefined) delete transport.onclose;
+			else transport.onclose = adapter.onclose;
+			if (adapter.onerror === undefined) delete transport.onerror;
+			else transport.onerror = adapter.onerror;
+			if (adapter.onmessage === undefined) delete transport.onmessage;
+			else transport.onmessage = (message) => adapter.onmessage?.(message);
+			await transport.start();
+		},
+		send: (message) => transport.send(message),
+		close: () => transport.close(),
+		setProtocolVersion: (version) => transport.setProtocolVersion(version),
+	};
+	return adapter;
 }
 
 function failed(code: WebSearchErrorCode, message: string, query: string): SearchProviderResult {

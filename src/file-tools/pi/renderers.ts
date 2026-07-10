@@ -1,7 +1,6 @@
 import {
 	getLanguageFromPath,
 	highlightCode,
-	keyHint,
 	renderDiff,
 	type Theme,
 	type ToolRenderResultOptions,
@@ -374,15 +373,7 @@ function formatWriteCall(
 		? (cache?.highlightedLines ?? highlightCode(replaceTabs(normalizeDisplayText(fileContent)), lang))
 		: normalizeDisplayText(fileContent).split("\n");
 	const lines = trimTrailingEmptyLines(renderedLines);
-	const totalLines = lines.length;
-	const maxLines = options.expanded ? lines.length : 10;
-	const displayLines = lines.slice(0, maxLines);
-	const remaining = lines.length - maxLines;
-	let text = `${header}\n\n${displayLines.map((line) => (lang ? line : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
-	if (remaining > 0) {
-		text += `${theme.fg("muted", `\n... (${remaining} more lines, ${totalLines} total,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-	}
-	return text;
+	return `${header}\n\n${lines.map((line) => (lang ? line : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
 }
 
 function formatFindCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, cwd: string): string {

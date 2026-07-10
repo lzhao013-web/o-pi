@@ -1,3 +1,4 @@
+import type { PathGuardBlock } from "../../safety/path-guard.js";
 import type { FailedResult, FileToolError, FileToolErrorCode } from "../types.js";
 
 /** 统一生成失败结果，避免工具返回形状漂移。 */
@@ -25,4 +26,19 @@ export function fail(
 
 export function isFailed<T>(result: T | FailedResult): result is FailedResult {
 	return typeof result === "object" && result !== null && "status" in result && result.status === "failed";
+}
+
+export function protectedPathFailure(displayPath: string, block: PathGuardBlock): FailedResult {
+	return fail("PROTECTED_PATH", block.message, {
+		path: displayPath,
+		details: {
+			code: block.code,
+			...(block.matched_rule !== undefined ? { matched_rule: block.matched_rule } : {}),
+			...(block.matched_path !== undefined ? { matched_path: block.matched_path } : {}),
+		},
+	});
+}
+
+export function isAccessDenied(error: unknown): boolean {
+	return typeof error === "object" && error !== null && "code" in error && (error.code === "EACCES" || error.code === "EPERM");
 }

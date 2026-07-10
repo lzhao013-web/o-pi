@@ -66,7 +66,7 @@ export function registerSystemCommand(pi: Pick<ExtensionAPI, "registerCommand"> 
 		async handler(_args, ctx) {
 			if (ctx.mode !== "tui") return;
 
-			// 命令上下文的 getSystemPromptOptions() 是 Pi 0.80.3 暴露的结构化基础输入；
+			// 命令上下文的 getSystemPromptOptions() 是 Pi 暴露的结构化基础输入；
 			// 它不包含当前命令渲染出的 prompt，因此这里必须复用本扩展的构建函数。
 			const systemPromptOptions = ctx.getSystemPromptOptions();
 			const activeTools = pi.getActiveTools?.() ?? getToolsFromPromptOptions(systemPromptOptions);
@@ -338,7 +338,7 @@ export class SystemPromptViewer implements Component {
 	}
 
 	private fitLine(content: string, width: number): string {
-		return padToWidth(truncateToWidth(content, width, ""), width);
+		return truncateToWidth(content, width, "", true);
 	}
 }
 
@@ -371,11 +371,6 @@ function wrapByColumns(text: string, width: number): string[] {
 
 	if (current) lines.push(current);
 	return lines.length > 0 ? lines : [" "];
-}
-
-function padToWidth(text: string, width: number): string {
-	const visible = visibleWidth(text);
-	return text + " ".repeat(Math.max(0, width - visible));
 }
 
 function getToolsFromPromptOptions(options: BuildSystemPromptOptions): string[] {

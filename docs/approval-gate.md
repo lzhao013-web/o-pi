@@ -43,7 +43,7 @@ Safety guardrail 负责硬性拒绝明显危险操作，例如 bash deny pattern
 
 ## 配置
 
-配置文件：`agent/configs/approval-gate.jsonc`，schema：`agent/schemas/approval-gate.schema.json`。
+配置文件：`agent/configs/approval-gate.jsonc`，schema：`agent/schemas/approval-gate.schema.json`。文件完整列出默认规则，便于直接修改。
 
 关键字段：
 

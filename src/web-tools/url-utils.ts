@@ -18,6 +18,11 @@ const SENSITIVE_QUERY_NAMES = new Set([
 	"jwt",
 ]);
 
+const SEARCH_TRACKING_QUERY_NAMES = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"];
+
+export const SEARCH_RESULT_MAX_TITLE_CHARS = 300;
+export const SEARCH_RESULT_MAX_SNIPPET_CHARS = 500;
+
 export function redactUrl(value: string | URL): string {
 	const url = typeof value === "string" ? new URL(value) : new URL(value.toString());
 	url.hash = "";
@@ -54,6 +59,27 @@ export function stripTerminalControls(value: string): string {
 	return value
 		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
 		.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+export function normalizeSearchText(value: string): string {
+	return stripTerminalControls(value)
+		.replace(/[\u0000-\u001f\u007f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+export function normalizeSearchResultUrl(value: string | URL, options: { allowUserinfo?: boolean } = {}): URL | undefined {
+	let url: URL;
+	try {
+		url = new URL(value.toString());
+	} catch {
+		return undefined;
+	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+	if (options.allowUserinfo !== true && (url.username !== "" || url.password !== "")) return undefined;
+	url.hash = "";
+	for (const name of SEARCH_TRACKING_QUERY_NAMES) url.searchParams.delete(name);
+	return url;
 }
 
 export function normalizeUrl(input: URL): string {

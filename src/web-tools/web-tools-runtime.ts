@@ -49,13 +49,7 @@ export function createWebToolsRuntime(options: WebToolsRuntimeOptions = {}): Web
 			try {
 				config = await loadWebToolsConfig();
 			} catch (error) {
-				const message = error instanceof WebToolsConfigError ? error.message : String(error);
-				const details = {
-					status: "failed" as const,
-					error: { code: "CONFIG_ERROR" as const, message },
-					duration_ms: 0,
-				};
-				return { content: failureContent("webfetch", details.error.code, details.error.message), details };
+				return configFailure("webfetch", error);
 			}
 			allowedFakeIpRanges = config.network.fake_ip_ranges;
 			return executeWebFetch(params, {
@@ -74,13 +68,7 @@ export function createWebToolsRuntime(options: WebToolsRuntimeOptions = {}): Web
 			try {
 				config = await loadWebToolsConfig();
 			} catch (error) {
-				const message = error instanceof WebToolsConfigError ? error.message : String(error);
-				const details = {
-					status: "failed" as const,
-					error: { code: "CONFIG_ERROR" as const, message },
-					duration_ms: 0,
-				};
-				return { content: failureContent("websearch", details.error.code, details.error.message), details };
+				return configFailure("websearch", error);
 			}
 			allowedFakeIpRanges = config.network.fake_ip_ranges;
 			if (searchCacheTtlSeconds !== config.websearch.cache_ttl_seconds) {
@@ -123,6 +111,14 @@ export function createWebToolsRuntime(options: WebToolsRuntimeOptions = {}): Web
 			searchRouter = undefined;
 			await dispatcher.close();
 		},
+	};
+}
+
+function configFailure(tool: "webfetch" | "websearch", error: unknown): WebFetchResult & WebSearchResult {
+	const message = error instanceof WebToolsConfigError ? error.message : String(error);
+	return {
+		content: failureContent(tool, "CONFIG_ERROR", message),
+		details: { status: "failed", error: { code: "CONFIG_ERROR", message }, duration_ms: 0 },
 	};
 }
 

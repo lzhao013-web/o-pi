@@ -1,8 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import picomatch from "picomatch";
+import { expandHomePath, isNotFound } from "../config-loader.js";
 import type { ApprovalAllowRule, ApprovalRequest, PersistentApprovalRulesFile } from "./types.js";
 
 export interface ApprovalStore {
@@ -179,14 +179,4 @@ function conservativePathGlob(targetPath: string): string | undefined {
 
 function normalizePath(value: string): string {
 	return value.replace(/\\/g, "/");
-}
-
-function expandHomePath(value: string): string {
-	if (value === "~") return os.homedir();
-	if (value.startsWith("~/") || value.startsWith("~\\")) return path.join(os.homedir(), value.slice(2));
-	return value;
-}
-
-function isNotFound(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }

@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 export const SEARCH_MIN_REQUEST_INTERVAL_MS = 15 * 1000;
 export const SEARCH_PROVIDER_BLOCKED_COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -59,18 +61,13 @@ export class SearchRequestGate {
 	}
 }
 
-function sleep(ms: number, signal: AbortSignal | undefined): Promise<{ status: "ready" } | { status: "aborted"; message: string }> {
-	if (ms <= 0) return Promise.resolve({ status: "ready" });
-	if (signal?.aborted) return Promise.resolve({ status: "aborted", message: "search request was aborted before rate-limit wait completed." });
-	return new Promise((resolve) => {
-		const timeout = setTimeout(() => {
-			signal?.removeEventListener("abort", abort);
-			resolve({ status: "ready" });
-		}, ms);
-		const abort = () => {
-			clearTimeout(timeout);
-			resolve({ status: "aborted", message: "search request was aborted during rate-limit wait." });
-		};
-		signal?.addEventListener("abort", abort, { once: true });
-	});
+async function sleep(ms: number, signal: AbortSignal | undefined): Promise<{ status: "ready" } | { status: "aborted"; message: string }> {
+	if (ms <= 0) return { status: "ready" };
+	if (signal?.aborted) return { status: "aborted", message: "search request was aborted before rate-limit wait completed." };
+	try {
+		await delay(ms, undefined, signal === undefined ? undefined : { signal });
+		return { status: "ready" };
+	} catch {
+		return { status: "aborted", message: "search request was aborted during rate-limit wait." };
+	}
 }

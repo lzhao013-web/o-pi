@@ -96,8 +96,6 @@ export function detectOutputFormat(text: string): BashOutputFormat {
 	if (/^(diff --git |--- .+\n\+\+\+ |@@ )/m.test(trimmed)) return "diff";
 	if (trimmed.startsWith("{") || trimmed.startsWith("[")) return "json";
 	if (trimmed.startsWith("<") && /<([A-Za-z_:][\w:.-]*)(\s|>|\/>)/.test(trimmed.slice(0, 200))) return "xml";
-	const firstLine = trimmed.split("\n", 1)[0] ?? "";
-	if (Buffer.byteLength(firstLine, "utf8") > 16_384) return "text";
 	return "text";
 }
 

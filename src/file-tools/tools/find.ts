@@ -3,7 +3,7 @@ import path from "node:path";
 import picomatch from "picomatch";
 
 import { ignoreConfigFromFileTools, isBlockedPath, isIgnoredPath, loadFileToolsConfig, toolPathIdentity, type FileToolsConfig } from "../config.js";
-import { fail, isFailed } from "../core/errors.js";
+import { fail, isAccessDenied, isFailed, protectedPathFailure } from "../core/errors.js";
 import { createFindEntry, rankFindEntries, rankGlobEntries, type RankedFindEntry } from "../find/ranker.js";
 import { renderFindResults } from "../find/renderer.js";
 import { defaultIgnoreEngine } from "../ignore/ignore-engine.js";
@@ -143,7 +143,7 @@ async function resolveWorkspaceSearchRoot(
 		const guarded = await guardExistingPath(inputPath, { cwd: workspaceRoot, blocked_path: config.blocked_path });
 		guardedRealPath = guarded.real_path;
 	} catch (error) {
-		if (error instanceof PathGuardBlockedError) return blockedPathFailure(lexical.relativePath, error);
+		if (error instanceof PathGuardBlockedError) return protectedPathFailure(lexical.relativePath, error.block);
 		throw error;
 	}
 
@@ -593,21 +593,6 @@ function assertNotAborted(signal: AbortSignal | undefined): void {
 }
 
 class AbortFind extends Error {}
-
-function blockedPathFailure(displayPath: string, error: PathGuardBlockedError): ToolOutcome<never> {
-	return fail("PROTECTED_PATH", error.block.message, {
-		path: displayPath,
-		details: {
-			code: error.block.code,
-			...(error.block.matched_rule !== undefined ? { matched_rule: error.block.matched_rule } : {}),
-			...(error.block.matched_path !== undefined ? { matched_path: error.block.matched_path } : {}),
-		},
-	});
-}
-
-function isAccessDenied(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && (error.code === "EACCES" || error.code === "EPERM");
-}
 
 function compareStableString(left: string, right: string): number {
 	if (left < right) return -1;

@@ -4,7 +4,7 @@ import path from "node:path";
 import picomatch from "picomatch";
 
 import { ignoreConfigFromFileTools, isBlockedPath, isIgnoredPath, loadFileToolsConfig, toolPathIdentity, type FileToolsConfig } from "../config.js";
-import { fail, isFailed } from "../core/errors.js";
+import { fail, isAccessDenied, isFailed, protectedPathFailure } from "../core/errors.js";
 import { defaultIgnoreEngine } from "../ignore/ignore-engine.js";
 import type { IgnoreSnapshot } from "../ignore/ignore-types.js";
 import { parseCodeUnits, type ParsedFileIndex } from "./parser.js";
@@ -103,7 +103,7 @@ export async function getGrepIndex(cwd: string, params: Pick<GrepParams, "path" 
 	try {
 		assertNotAborted(signal);
 		if (root.kind === "file") {
-			const indexed = await indexFile(state, root.realPath, root.relativePath, root.workspacePath, true, root.relativePath);
+			const indexed = await indexFile(state, root.realPath, root.relativePath, true, root.relativePath);
 			if (isFailed(indexed)) return indexed;
 		} else {
 			await walkDirectory(state, root.realPath, root.relativePath, root.workspacePath, ".", isRootIgnored(state));
@@ -144,7 +144,7 @@ async function resolveGrepRoot(
 		const guarded = await guardExistingPath(inputPath, { cwd: workspaceRoot, blocked_path: config.blocked_path });
 		real = guarded.real_path ?? lexical.absolutePath;
 	} catch (error) {
-		if (error instanceof PathGuardBlockedError) return blockedPathFailure(lexical.relativePath, error);
+		if (error instanceof PathGuardBlockedError) return protectedPathFailure(lexical.relativePath, error.block);
 		throw error;
 	}
 	try {
@@ -225,7 +225,7 @@ async function walkDirectory(
 			const decision = childWorkspacePath === undefined ? { ignored: false } : state.ignoreSnapshot.evaluate({ path: childWorkspacePath, kind: "file", intent: "index" });
 			if (decision.ignored) continue;
 		}
-		await indexFile(state, childAbsolutePath, childDisplayPath, childWorkspacePath, false, childSearchPath);
+		await indexFile(state, childAbsolutePath, childDisplayPath, false, childSearchPath);
 	}
 }
 
@@ -233,7 +233,6 @@ async function indexFile(
 	state: WalkState,
 	absolutePath: string,
 	displayPath: string,
-	workspacePath: string | undefined,
 	explicit: boolean,
 	searchPath: string,
 ): Promise<ToolOutcome<void>> {
@@ -371,10 +370,6 @@ function isUnderRoot(root: string, filePath: string): boolean {
 	return root === "." || filePath === root || filePath.startsWith(`${root}/`);
 }
 
-function normalizeRelative(value: string): string {
-	return value.replace(/\\/g, "/") || ".";
-}
-
 function joinDisplayPath(parent: string, child: string): string {
 	if (parent === ".") return child;
 	if (path.isAbsolute(parent)) return path.normalize(path.join(parent, child));
@@ -397,18 +392,3 @@ function compareStableString(left: string, right: string): number {
 }
 
 class AbortGrepIndex extends Error {}
-
-function blockedPathFailure(displayPath: string, error: PathGuardBlockedError): ToolOutcome<never> {
-	return fail("PROTECTED_PATH", error.block.message, {
-		path: displayPath,
-		details: {
-			code: error.block.code,
-			...(error.block.matched_rule !== undefined ? { matched_rule: error.block.matched_rule } : {}),
-			...(error.block.matched_path !== undefined ? { matched_path: error.block.matched_path } : {}),
-		},
-	});
-}
-
-function isAccessDenied(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && (error.code === "EACCES" || error.code === "EPERM");
-}

@@ -1,4 +1,4 @@
-import { lstat, readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import ignoreFactory from "ignore";
 import { isWorkspaceMetadataPath } from "../core/path-resolver.js";
@@ -81,7 +81,7 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 		const tracked = await loadGitTrackedFiles(root);
 		const caseInsensitive = resolveCaseInsensitive(config, tracked.ignoreCase);
 		const [ruleFiles, discoveryDiagnostics] = await discoverRuleFiles(root, config);
-		const { ruleSets, diagnostics } = await compileRuleSets(root, ruleFiles, config, caseInsensitive, discoveryDiagnostics);
+		const { ruleSets, diagnostics } = await compileRuleSets(ruleFiles, config, caseInsensitive, discoveryDiagnostics);
 		const fingerprint = buildFingerprint(config, caseInsensitive, ruleFiles, tracked.paths, diagnostics);
 		const cacheKey = `${root}:${JSON.stringify(config)}:${caseInsensitive}`;
 		const cached = this.cache.get(cacheKey);
@@ -307,7 +307,6 @@ async function addRuleFile(
 }
 
 async function compileRuleSets(
-	root: string,
 	ruleFiles: RuleFile[],
 	config: IgnoreConfig,
 	caseInsensitive: boolean,

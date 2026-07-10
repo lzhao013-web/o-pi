@@ -1,6 +1,6 @@
 # TUI V1
 
-`agent/extensions/tui.ts` 提供 o-pi 的轻量 TUI chrome。它保留 Pi 原生单列 transcript 和输入框，只通过 Pi 0.80.3 公开 UI API 增加 title、可选 header、footer/status 和 working indicator。
+`agent/extensions/tui.ts` 提供 o-pi 的轻量 TUI chrome。它保留 Pi 原生单列 transcript 和输入框，只通过当前本地 Pi 依赖的公开 UI API 增加 title、可选 header、footer/status 和 working indicator。
 
 启动时会显示轻量 ASCII banner：左侧是 `O Pi` wordmark，右侧是当前可得的 workspace、model、context、tools 状态。宽终端左右排列，窄终端上下排列，极窄终端降级为 compact text；所有行都会按终端可见宽度截断。
 
@@ -21,11 +21,11 @@ agent/configs/tui.jsonc
 
 ## 配置
 
-核心字段：
+仓库配置完整列出当前有效值；内置回退值由 `src/tui/config.ts` 提供。可配置字段：
 
 * `enabled`: 开关。
-* `preset`: `compact` 或 `minimal`。
-* `icons`: `unicode`、`ascii`、`nerd`、`auto`；V1 不强依赖 Nerd Font。
+* `preset`: 保留的兼容字段；当前 renderer 不按该值分支。
+* `icons`: 保留的兼容字段；当前全局配置不改变各工具 renderer 的图标选择。
 * `chrome.title/header/footer`: 控制轻量 chrome。
 * `chrome.working_indicator`: `dot`、`spinner`、`off`。
 * `banner.enabled`: 启动 banner 开关。
@@ -38,12 +38,11 @@ agent/configs/tui.jsonc
 * `banner.clear_on_first_turn`: 第一轮 turn 开始时清除 startup banner，并恢复普通 header 或内置 header。
 * `footer.segments`: 宽屏字段。
 * `footer.narrow_segments`: 窄屏字段。
-* `footer.max_lines`: 固定为 `2`。
+* `footer.max_lines`: schema 固定为 `2`，renderer 不读取该值做动态布局。
 * `footer.style.workspace_color`: workspace 路径颜色，使用 Pi theme token。
 * `footer.style.git_color`: git 分支颜色，使用 Pi theme token。
 * `footer.style.git_icon`: git 分支前缀 UTF-8 图标。
-* `tools.max_target_chars/max_summary_chars`: 工具卡片截断长度。
-* `tools.collapsed_lines`: 固定为 `2`。
+* `tools.*`: 保留的兼容字段；当前工具 renderer 使用各自稳定的两行布局和默认截断预算，不读取这组全局配置。
 
 footer 最多两行：
 
@@ -78,7 +77,7 @@ skills    3 · user:2 · project:1
 
 skills 数量来自 Pi 公开 `pi.getCommands()` 中 `source: "skill"` 的命令，并按 `sourceInfo.scope` 统计 user/project。temporary scope 只在存在时追加 `temp:n`。这不依赖 system prompt 中是否展示 skills，也不计入 tools 的 `active/total`。
 
-Pi 0.80.3 没有比 `ctx.ui.setHeader()` 更专门的 public startup banner API。本扩展只通过公开 header API 显示 banner；如果 `clear_on_first_turn` 为 true，第一轮 turn 开始后恢复普通 one-line header 或清空 header，让 Pi 内置 startup help/resources 行为保持原样。
+当前本地 Pi API 没有比 `ctx.ui.setHeader()` 更专门的 public startup banner 入口。本扩展只通过公开 header API 显示 banner；如果 `clear_on_first_turn` 为 true，第一轮 turn 开始后恢复普通 one-line header 或清空 header，让 Pi 内置 startup help/resources 行为保持原样。
 
 首轮对话前通过 `/model` 或快捷键切换模型时，Pi 会触发 `model_select`。TUI 会重建当前快照并通过 `setStatus/setFooter/setHeader/setTitle` 公开 API 触发重绘，保证 startup banner、footer 和终端 title 同步更新。单独切换 thinking level 时同理。
 
@@ -118,7 +117,7 @@ expanded view 先保留这 2 行，再追加详情。renderer 会清理 ANSI、O
 
 ## 已确认的 Pi API
 
-从本地 `@earendil-works/pi-coding-agent@0.80.3` 类型确认：
+从当前本地 `@earendil-works/pi-coding-agent` 类型确认：
 
 * `ctx.ui.setStatus(key, text)`
 * `ctx.ui.setTitle(title)`

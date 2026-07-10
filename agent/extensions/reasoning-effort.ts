@@ -1,12 +1,13 @@
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const COMMAND_NAME = "reasoning-effort";
 const COMMAND_DESCRIPTION = "Change the current reasoning effort.";
 
-/** Pi 0.80.3 CLI 与模型运行时支持的推理强度档位；off 会关闭当前模型 reasoning。 */
-export const REASONING_EFFORT_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+/** 当前 Pi CLI 与模型运行时支持的推理强度档位；off 会关闭当前模型 reasoning。 */
+export const REASONING_EFFORT_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const satisfies readonly ModelThinkingLevel[];
 
-export type ReasoningEffortLevel = (typeof REASONING_EFFORT_LEVELS)[number];
+export type ReasoningEffortLevel = ModelThinkingLevel;
 
 /** 判断用户输入是否是 Pi 支持的推理强度，避免把无效字符串写入会话状态。 */
 export function parseReasoningEffortLevel(input: string): ReasoningEffortLevel | undefined {

@@ -15,9 +15,9 @@
 
 ## 配置
 
-配置文件：`agent/configs/bash-tool.jsonc`，schema：`agent/schemas/bash-tool.schema.json`。
+配置文件：`agent/configs/bash-tool.jsonc`，schema：`agent/schemas/bash-tool.schema.json`。文件完整列出当前有效配置，便于直接修改。
 
-- `default_timeout_seconds`：未传 `timeout` 时的秒数，默认 `120`。
+- `default_timeout_seconds`：未传 `timeout` 时的秒数。内置默认值为 `120`；本仓库配置覆盖为 `300`。
 - `limits.success_output_bytes`：成功输出视图预算。
 - `limits.failure_output_bytes`：失败、超时、取消输出视图预算。
 - `limits.live_output_bytes`：流式更新只展示最近输出的预算。
@@ -25,7 +25,7 @@
 - `safety.deny_patterns`：轻量字符串 / glob 风格黑名单。`*` 匹配任意文本，未包含 glob 字符时按 substring 匹配。
 - `safety.deny_regex`：正则黑名单。配置加载时校验，非法正则会使配置加载失败。
 
-默认配置包含少量明显危险命令模式，例如 `rm -rf /`、`mkfs`、`dd ... of=/dev/` 和 `curl|wget | sh`。未配置 `safety` 时保持兼容，命令照常交给 shell 后端。
+内置默认配置包含少量明显危险命令模式，例如 `rm -rf /`、`mkfs`、`dd ... of=/dev/` 和 `curl|wget | sh`。省略 `safety` 时仍使用这些默认规则；只有显式把 `deny_patterns` 和 `deny_regex` 都设为空数组才会清空它们。
 
 命中黑名单时不会启动进程，模型收到：
 

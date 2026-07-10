@@ -1,13 +1,13 @@
 import { writeFile } from "node:fs/promises";
 import { generateDiffString } from "@earendil-works/pi-coding-agent";
 import { guardWritablePath, PathGuardBlockedError } from "../../safety/path-guard.js";
-import { fail, isFailed } from "../core/errors.js";
+import { fail, isAccessDenied, isFailed, protectedPathFailure } from "../core/errors.js";
 import { ignoreConfigFromFileTools, loadFileToolsConfig } from "../config.js";
 import { defaultIgnoreEngine } from "../ignore/ignore-engine.js";
 import { resolveExistingFile, resolveWorkspaceRoot } from "../core/path-resolver.js";
 import type { ReadVersionCache } from "../core/read-cache.js";
-import { buildTextBytes, readTextFile, sha256Version } from "../core/text-file.js";
-import type { EditParams, EditPreviewSuccess, EditReplacement, EditSuccess, FailedResult, FileToolLspDiagnosticSnapshot, FileToolLspHooks, LspDiagnosticsSummary, TextFile, ToolOutcome } from "../types.js";
+import { buildTextBytes, normalizeLineEndings, readTextFile, sha256Version } from "../core/text-file.js";
+import type { EditParams, EditPreviewSuccess, EditReplacement, EditSuccess, FileToolLspDiagnosticSnapshot, FileToolLspHooks, LspDiagnosticsSummary, TextFile, ToolOutcome } from "../types.js";
 import type { IgnoreSnapshot } from "../ignore/ignore-types.js";
 
 interface PreparedEdit {
@@ -103,7 +103,7 @@ async function prepareEdit(
 	try {
 		await guardWritablePath(input.path, { cwd: workspaceRoot, blocked_path: config.blocked_path });
 	} catch (error) {
-		if (error instanceof PathGuardBlockedError) return blockedPathFailure(resolved.relativePath, error);
+		if (error instanceof PathGuardBlockedError) return protectedPathFailure(resolved.relativePath, error.block);
 		if (isAccessDenied(error)) return fail("ACCESS_DENIED", "Parent path cannot be accessed.", { path: resolved.relativePath });
 		return fail("INVALID_PATH", "Parent path cannot be resolved.", { path: resolved.relativePath });
 	}
@@ -177,21 +177,6 @@ function validateReplacement(value: unknown, index: number): ToolOutcome<EditRep
 function noteSoftIgnore(ignoreSnapshot: IgnoreSnapshot, workspacePath: string | undefined): void {
 	if (workspacePath === undefined) return;
 	ignoreSnapshot.evaluate({ path: workspacePath, kind: "file", intent: "explicit-edit" });
-}
-
-function blockedPathFailure(displayPath: string, error: PathGuardBlockedError): FailedResult {
-	return fail("PROTECTED_PATH", error.block.message, {
-		path: displayPath,
-		details: {
-			code: error.block.code,
-			...(error.block.matched_rule !== undefined ? { matched_rule: error.block.matched_rule } : {}),
-			...(error.block.matched_path !== undefined ? { matched_path: error.block.matched_path } : {}),
-		},
-	});
-}
-
-function isAccessDenied(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && (error.code === "EACCES" || error.code === "EPERM");
 }
 
 async function readExistingWithVersion(
@@ -293,10 +278,6 @@ function buildDiff(oldText: string, newText: string): { diff: string; firstChang
 		diff: result.diff,
 		...(result.firstChangedLine !== undefined ? { firstChangedLine: result.firstChangedLine } : {}),
 	};
-}
-
-function normalizeLineEndings(text: string): string {
-	return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

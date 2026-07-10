@@ -15,6 +15,30 @@ const NUMBER_RANGES = {
 	maxHandoffChars: [1_000, 200_000],
 } as const;
 
+const defaultConfig: SubagentConfig = {
+	maxParallelTasks: 4,
+	maxConcurrency: 1,
+	timeoutMs: 600_000,
+	retries: 1,
+	retryDelayMs: 1_000,
+	retryOnEmptyOutput: true,
+	retryOnTimeout: false,
+	maxInlineOutputChars: 12_000,
+	maxHandoffChars: 16_000,
+	outputMode: "inline",
+	agentScope: "user",
+	allowProjectAgents: false,
+	projectAgentsOverrideUser: false,
+	confirmWriteAgents: true,
+	defaultTools: ["read", "grep", "find", "ls"],
+	agentOverrides: {
+		scout: { tools: ["read", "grep", "find", "ls"] },
+		planner: { tools: ["read", "grep", "find", "ls"] },
+		reviewer: { tools: ["read", "grep", "find", "ls", "bash"] },
+		worker: { tools: ["read", "grep", "find", "ls", "bash", "edit", "write"] },
+	},
+};
+
 export const findNearestProjectRoot = findNearestProjectRootBase;
 
 export class SubagentConfigError extends Error {
@@ -26,29 +50,7 @@ export class SubagentConfigError extends Error {
 
 /** 返回内置默认配置；默认并发为 1，适合单 GPU 本地模型。 */
 export function defaultSubagentConfig(): SubagentConfig {
-	return {
-		maxParallelTasks: 4,
-		maxConcurrency: 1,
-		timeoutMs: 600_000,
-		retries: 1,
-		retryDelayMs: 1_000,
-		retryOnEmptyOutput: true,
-		retryOnTimeout: false,
-		maxInlineOutputChars: 12_000,
-		maxHandoffChars: 16_000,
-		outputMode: "inline",
-		agentScope: "user",
-		allowProjectAgents: false,
-		projectAgentsOverrideUser: false,
-		confirmWriteAgents: true,
-		defaultTools: ["read", "grep", "find", "ls"],
-		agentOverrides: {
-			scout: { tools: ["read", "grep", "find", "ls"] },
-			planner: { tools: ["read", "grep", "find", "ls"] },
-			reviewer: { tools: ["read", "grep", "find", "ls", "bash"] },
-			worker: { tools: ["read", "grep", "find", "ls", "bash", "edit", "write"] },
-		},
-	};
+	return structuredClone(defaultConfig);
 }
 
 /** 加载用户与项目 JSONC 配置；项目配置只能覆盖普通运行参数。 */
@@ -56,12 +58,12 @@ export async function loadSubagentConfig(cwd = process.cwd()): Promise<SubagentC
 	const defaults = defaultSubagentConfig();
 	const userPath = userConfigPath();
 	const userRaw = await readOptionalConfig(userPath);
-	const userMerged = mergeUserConfig(defaults, userRaw?.value);
+	const userMerged = mergeUserConfig(defaults, userRaw);
 	validateConfig(userMerged, userPath);
 
 	const projectPath = projectConfigPath(cwd);
 	const projectRaw = projectPath === undefined ? undefined : await readOptionalConfig(projectPath);
-	const merged = mergeProjectConfig(userMerged, projectRaw?.value);
+	const merged = mergeProjectConfig(userMerged, projectRaw);
 	validateConfig(merged, projectPath ?? userPath);
 	return merged;
 }
@@ -131,13 +133,12 @@ function projectConfigPath(cwd: string): string | undefined {
 	return projectAgentConfigPath(cwd, "subagent.jsonc", PROJECT_CONFIG_ENV, PROJECT_ROOT_ENV);
 }
 
-async function readOptionalConfig(filePath: string): Promise<{ value: unknown } | undefined> {
-	const value = await readOptionalJsoncConfig({
+async function readOptionalConfig(filePath: string): Promise<unknown | undefined> {
+	return readOptionalJsoncConfig({
 		path: filePath,
 		label: "subagent",
 		createError: (message, details) => new SubagentConfigError(message, details),
 	});
-	return value === undefined ? undefined : { value };
 }
 
 function parseOverrides(value: unknown): Record<string, AgentOverride> {
@@ -157,18 +158,7 @@ function parseOverrides(value: unknown): Record<string, AgentOverride> {
 }
 
 function cloneConfig(config: SubagentConfig): SubagentConfig {
-	const clonedOverrides: Record<string, AgentOverride> = {};
-	for (const [name, override] of Object.entries(config.agentOverrides)) {
-		clonedOverrides[name] = {
-			...(override.model !== undefined ? { model: override.model } : {}),
-			...(override.tools !== undefined ? { tools: [...override.tools] } : {}),
-		};
-	}
-	return {
-		...config,
-		defaultTools: [...config.defaultTools],
-		agentOverrides: clonedOverrides,
-	};
+	return structuredClone(config);
 }
 
 function requireToolList(value: unknown, field: string): string[] {

@@ -41,7 +41,7 @@
 
 ## 配置
 
-配置文件：`agent/configs/skill-context.jsonc`
+配置文件：`agent/configs/skill-context.jsonc`。仓库文件完整列出默认值；对应写法如下：
 
 ```jsonc
 {

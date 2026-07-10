@@ -74,22 +74,7 @@ export async function loadTuiConfig(): Promise<TuiConfig> {
 }
 
 export function defaultTuiConfig(): TuiConfig {
-	return {
-		version: 1,
-		enabled: defaultConfig.enabled,
-		preset: defaultConfig.preset,
-		icons: defaultConfig.icons,
-		chrome: { ...defaultConfig.chrome },
-		footer: {
-			max_lines: 2,
-			segments: [...defaultConfig.footer.segments],
-			narrow_segments: [...defaultConfig.footer.narrow_segments],
-			style: { ...defaultConfig.footer.style },
-		},
-		tools: { ...defaultConfig.tools },
-		banner: { ...defaultConfig.banner },
-		math: { ...defaultConfig.math },
-	};
+	return structuredClone(defaultConfig);
 }
 
 interface RawTuiConfig {

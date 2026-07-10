@@ -7,11 +7,13 @@
 	"retries": 1,
 	"retry_delay_ms": 1000,
 	"retry_on_empty_output": true,
+	"retry_on_timeout": false,
 	"max_inline_output_chars": 12000,
 	"max_handoff_chars": 16000,
 	"output_mode": "inline",
 	"agent_scope": "user",
 	"allow_project_agents": false,
+	"project_agents_override_user": false,
 	"confirm_write_agents": true,
 	"default_tools": ["read", "grep", "find", "ls"],
 	"agent_overrides": {

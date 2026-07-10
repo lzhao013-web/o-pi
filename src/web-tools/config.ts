@@ -73,29 +73,7 @@ export async function loadWebToolsConfig(): Promise<WebToolsConfig> {
 }
 
 export function defaultWebToolsConfig(): WebToolsConfig {
-	return {
-		version: 2,
-		network: { fake_ip_ranges: [...defaultConfig.network.fake_ip_ranges] },
-		websearch: {
-			provider_order: [...defaultConfig.websearch.provider_order],
-			fallback: defaultConfig.websearch.fallback,
-			default_results: defaultConfig.websearch.default_results,
-			cache_ttl_seconds: defaultConfig.websearch.cache_ttl_seconds,
-			exa_mcp: { ...defaultConfig.websearch.exa_mcp },
-			duckduckgo_html: { ...defaultConfig.websearch.duckduckgo_html },
-		},
-		webfetch: {
-			timeout_seconds: defaultConfig.webfetch.timeout_seconds,
-			max_redirects: defaultConfig.webfetch.max_redirects,
-			user_agent: defaultConfig.webfetch.user_agent,
-			limits: { ...defaultConfig.webfetch.limits },
-			cookies: {
-				enabled: defaultConfig.webfetch.cookies.enabled,
-				domains: [...defaultConfig.webfetch.cookies.domains],
-				confirmation: defaultConfig.webfetch.cookies.confirmation,
-			},
-		},
-	};
+	return structuredClone(defaultConfig);
 }
 
 export function defaultCookiePath(): string {

@@ -1,7 +1,7 @@
 import { readdir, readlink } from "node:fs/promises";
 import path from "node:path";
 import { ignoreConfigFromFileTools, isBlockedPath, isIgnoredPath, loadFileToolsConfig, type ToolPathIdentity } from "../config.js";
-import { fail, isFailed } from "../core/errors.js";
+import { fail, isAccessDenied, isFailed } from "../core/errors.js";
 import { defaultIgnoreEngine } from "../ignore/ignore-engine.js";
 import { resolveExistingDirectory, resolveWorkspaceRoot } from "../core/path-resolver.js";
 import type { LsEntry, LsEntryType, LsParams, LsSuccess, ToolOutcome } from "../types.js";
@@ -170,8 +170,4 @@ async function readSymlinkTarget(absolutePath: string): Promise<string | undefin
 	} catch {
 		return undefined;
 	}
-}
-
-function isAccessDenied(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && (error.code === "EACCES" || error.code === "EPERM");
 }

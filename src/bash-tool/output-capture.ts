@@ -23,7 +23,6 @@ export class OutputCapture {
 	private capturedBytes = 0;
 	private lineBreaks = 0;
 	private lastCharWasNewline = false;
-	private sawText = false;
 	private head = "";
 	private tail = "";
 	private binary = false;
@@ -88,7 +87,6 @@ export class OutputCapture {
 
 	private appendPreview(text: string): void {
 		if (text.length === 0) return;
-		this.sawText = true;
 		for (const char of text) {
 			if (char === "\n") this.lineBreaks += 1;
 			this.lastCharWasNewline = char === "\n";
@@ -99,7 +97,6 @@ export class OutputCapture {
 			this.head = takeHeadBytes(this.head + text, headLimit);
 		}
 		this.tail = takeTailBytes(this.tail + text, this.previewLimit - headLimit);
-		if (!this.sawText) this.lastCharWasNewline = false;
 	}
 }
 
@@ -144,4 +141,3 @@ async function chmodBestEffort(target: string, mode: number): Promise<void> {
 		// Windows 文件权限不完全兼容 POSIX mode；尽力设置即可。
 	}
 }
-

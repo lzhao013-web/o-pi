@@ -43,7 +43,6 @@ export async function runPiProcess(input: ProcessRunInput, options: { signal?: A
 	let output = "";
 	let stopReason: string | undefined;
 	let error: string | undefined;
-	let model: string | undefined;
 	let parseErrors = 0;
 	let wrote = false;
 	let timedOut = false;
@@ -128,8 +127,6 @@ export async function runPiProcess(input: ProcessRunInput, options: { signal?: A
 			const handleMessage = (message: Record<string, unknown>) => {
 				if (stringField(message, "role") !== "assistant") return;
 				usage.turns++;
-				const messageModel = stringField(message, "model");
-				if (messageModel !== undefined) model = messageModel;
 				const reason = stringField(message, "stopReason");
 				if (reason !== undefined) stopReason = reason;
 				const errorMessage = stringField(message, "errorMessage");
@@ -198,7 +195,6 @@ export async function runPiProcess(input: ProcessRunInput, options: { signal?: A
 		};
 	} finally {
 		if (tmpDir !== undefined) await rm(tmpDir, { recursive: true, force: true });
-		void model;
 	}
 }
 

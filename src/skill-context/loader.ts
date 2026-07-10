@@ -5,7 +5,7 @@ import type { BuildSystemPromptOptions, SlashCommandInfo } from "@earendil-works
 import { parseSkillFile } from "./frontmatter.js";
 import type { LoadedSkill, SkillCandidate, SkillContextConfig } from "./types.js";
 
-/** 将 Pi 0.80.3 的 systemPromptOptions.skills 和 getCommands() skill 项统一为候选列表。 */
+/** 将 Pi 的 systemPromptOptions.skills 和 getCommands() skill 项统一为候选列表。 */
 export function collectSkillCandidates(options: BuildSystemPromptOptions | undefined, commands: SlashCommandInfo[]): SkillCandidate[] {
 	const candidates: SkillCandidate[] = [];
 	for (const skill of options?.skills ?? []) {

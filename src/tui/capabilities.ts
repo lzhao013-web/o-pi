@@ -35,7 +35,6 @@ export function summarizeCapabilityGroups(
 	if (tools === undefined) return [];
 	const activeNames = uniqueNonEmpty(tools.activeNames);
 	const allNames = uniqueNonEmpty(tools.allNames === undefined ? tools.activeNames : [...tools.allNames, ...tools.activeNames]);
-	const activeSet = new Set(activeNames);
 	const groupedNames = new Set<string>();
 	const summaries: CapabilityGroupSummary[] = [];
 

@@ -17,8 +17,6 @@ export interface ProcessedInlineImage {
 	hints: string[];
 }
 
-const INLINE_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-
 export async function detectFileType(bytes: Buffer): Promise<DetectedFileType | undefined> {
 	const detected = await fileTypeFromBuffer(bytes);
 	if (detected === undefined) return undefined;
