@@ -5,6 +5,10 @@ Web 工具分为搜索和抓取：
 - `websearch`：搜索公开网页索引，返回标题、URL 和摘要。
 - `webfetch`：读取一个已知 HTTP(S) URL，返回有界文本。
 
+## 加载生命周期
+
+扩展启动时只同步注册工具 schema、renderer 和事件；`session_start` 会发起但不等待 runtime 异步预热。首次工具调用复用同一个加载 Promise，并发调用不会重复创建 runtime。共享 dispatcher、Cookie store、WebFetch 执行层和 Exa SDK 随 runtime 在后台初始化；DDG HTML 后端在搜索 router 建立时预取，HTML 转换器与实际抓取请求并发加载。加载失败会清除该 Promise，后续调用可以重试；`session_shutdown` 会等待进行中的初始化并释放已创建资源。
+
 ## websearch
 
 ```ts

@@ -10,7 +10,6 @@ import type {
 	WebFetchExecutionContext,
 	CookieStore,
 } from "./types.js";
-import { convertContent } from "./content-converter.js";
 import { fetchHttpUrl, type HttpClientOptions } from "./http-client.js";
 import { escapeXml, normalizeUrl, redactUrl } from "./url-utils.js";
 import type { SnapshotCache } from "./snapshot-cache.js";
@@ -53,9 +52,14 @@ export async function executeWebFetch(params: WebFetchParams, runtime: ExecuteWe
 	}
 
 	if (conversion === undefined || http === undefined) {
+		const converterPromise = import("./content-converter.js");
 		const fetched = await fetchHttpUrl(params.url, { ...runtime, startedAt });
-		if (fetched.status === "failed") return { content: failureContent(fetched.details), details: fetched.details };
+		if (fetched.status === "failed") {
+			void converterPromise.catch(() => undefined);
+			return { content: failureContent(fetched.details), details: fetched.details };
+		}
 		runtime.context.onUpdate?.({ content: "Converting...", details: { status: "progress", phase: "converting", http_status: fetched.httpStatus } });
+		const { convertContent } = await converterPromise;
 		const converted = convertContent(fetched.body, fetched.headers, fetched.finalUrl, mode);
 		if ("status" in converted) {
 			const details: WebFetchFailureDetails = {

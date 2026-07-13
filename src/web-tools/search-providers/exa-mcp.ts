@@ -1,5 +1,4 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import type { WebSearchErrorCode, WebSearchFailureDetails, WebSearchItem, WebToolsConfig } from "../types.js";
@@ -24,7 +23,14 @@ export interface ExaMcpClientFactory {
 
 /** 默认 Exa hosted MCP client factory；API key 仅从环境变量注入请求头。 */
 export class DefaultExaMcpClientFactory implements ExaMcpClientFactory {
+	private readonly sdk = loadExaMcpSdk();
+
+	constructor() {
+		void this.sdk.catch(() => undefined);
+	}
+
 	async connect(config: WebToolsConfig["websearch"]["exa_mcp"], signal?: AbortSignal): Promise<ExaMcpClient> {
+		const { Client, StreamableHTTPClientTransport } = await this.sdk;
 		const headers = apiKeyHeaders(config);
 		const transport = new StreamableHTTPClientTransport(new URL(config.url), {
 			...(headers !== undefined ? { requestInit: { headers } } : {}),
@@ -40,6 +46,14 @@ export class DefaultExaMcpClientFactory implements ExaMcpClientFactory {
 			},
 		};
 	}
+}
+
+async function loadExaMcpSdk() {
+	const [{ Client }, { StreamableHTTPClientTransport }] = await Promise.all([
+		import("@modelcontextprotocol/sdk/client/index.js"),
+		import("@modelcontextprotocol/sdk/client/streamableHttp.js"),
+	]);
+	return { Client, StreamableHTTPClientTransport };
 }
 
 /** 创建 Exa MCP provider；连接失败和调用失败都交给 router fallback。 */

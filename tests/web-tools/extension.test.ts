@@ -4,9 +4,10 @@ import path from "node:path";
 import { Agent } from "undici";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import webTools from "../../agent/extensions/web-tools.js";
+import webTools, { createWebToolsExtension } from "../../agent/extensions/web-tools.js";
 import { createWebToolsRuntime } from "../../src/web-tools/web-tools-runtime.js";
 import type { WebSearchProvider } from "../../src/web-tools/search-providers/types.js";
+import type { WebToolsRuntime } from "../../src/web-tools/types.js";
 import { httpResponse } from "../helpers/http.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
@@ -63,10 +64,67 @@ describe("web-tools extension", () => {
 		})).toEqual({ isError: true });
 		await handlers.get("session_shutdown")?.({});
 	});
+
+	it("session_start 非阻塞预热 runtime，并让并发执行和 shutdown 复用同一加载结果", async () => {
+		const registered: Array<{ name: string; execute: Function }> = [];
+		const handlers = new Map<string, Function>();
+		let resolveRuntime: ((runtime: WebToolsRuntime) => void) | undefined;
+		const pendingRuntime = new Promise<WebToolsRuntime>((resolve) => {
+			resolveRuntime = resolve;
+		});
+		const close = vi.fn(async () => undefined);
+		const runtime: WebToolsRuntime = {
+			async search() {
+				return {
+					content: "search",
+					details: {
+						status: "success",
+						query: "pi",
+						provider: "exa_mcp",
+						results: [],
+						cached: false,
+						downloaded_bytes: 0,
+						duration_ms: 0,
+						attempts: [],
+					},
+				};
+			},
+			async fetch() {
+				return {
+					content: "fetch",
+					details: { status: "failed", error: { code: "INVALID_URL", message: "bad" } },
+				};
+			},
+			close,
+		};
+		const loadRuntime = vi.fn(() => pendingRuntime);
+		const extension = createWebToolsExtension(loadRuntime);
+		const pi = {
+			registerTool(tool: unknown) {
+				registered.push(tool as { name: string; execute: Function });
+			},
+			on(name: string, handler: Function) {
+				handlers.set(name, handler);
+			},
+		};
+		extension(pi as ExtensionAPI);
+
+		expect(handlers.get("session_start")?.({})).toBeUndefined();
+		expect(loadRuntime).toHaveBeenCalledTimes(1);
+		const search = registered.find((tool) => tool.name === "websearch");
+		if (search === undefined) throw new Error("missing websearch");
+		const execution = search.execute("search-1", { query: "pi" }, undefined, undefined, {});
+		expect(loadRuntime).toHaveBeenCalledTimes(1);
+		if (resolveRuntime === undefined) throw new Error("missing runtime resolver");
+		resolveRuntime(runtime);
+		await expect(execution).resolves.toMatchObject({ content: [{ type: "text", text: "search" }] });
+		await handlers.get("session_shutdown")?.({});
+		expect(close).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("web-tools runtime", () => {
-	it("复用搜索结果缓存，并在 close 时释放 provider 与 dispatcher", async () => {
+	it("并发初始化只创建一个 router，复用搜索缓存并在 close 时释放一次资源", async () => {
 		let calls = 0;
 		let providerClosed = 0;
 		const provider: WebSearchProvider = {
@@ -88,12 +146,16 @@ describe("web-tools runtime", () => {
 		const closeDispatcher = vi.spyOn(dispatcher, "close");
 		const runtime = trackRuntime(createWebToolsRuntime({ dispatcher, searchProviders: [provider], now: () => 100 }));
 
-		const first = await runtime.search({ query: "pi", limit: 1 }, { toolCallId: "search-1" });
-		const second = await runtime.search({ query: "pi", limit: 1 }, { toolCallId: "search-2" });
+		const [first, concurrent] = await Promise.all([
+			runtime.search({ query: "pi", limit: 1 }, { toolCallId: "search-1" }),
+			runtime.search({ query: "concurrent", limit: 1 }, { toolCallId: "search-2" }),
+		]);
+		const second = await runtime.search({ query: "pi", limit: 1 }, { toolCallId: "search-3" });
 
 		expect(first.details).toMatchObject({ status: "success", cached: false });
+		expect(concurrent.details).toMatchObject({ status: "success", cached: false });
 		expect(second.details).toMatchObject({ status: "success", cached: true });
-		expect(calls).toBe(1);
+		expect(calls).toBe(2);
 		await closeRuntime(runtime);
 		expect(providerClosed).toBe(1);
 		expect(closeDispatcher).toHaveBeenCalled();

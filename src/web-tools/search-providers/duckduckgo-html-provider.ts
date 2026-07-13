@@ -1,19 +1,20 @@
 import type { Dispatcher } from "undici";
 
-import { searchDuckDuckGoHtml } from "../duckduckgo-html.js";
 import type { SearchRequestGate } from "../search-request-gate.js";
 import type { WebHttpFetch, WebSearchFailureDetails, WebToolsConfig } from "../types.js";
 import type { NormalizedSearchParams, SearchProviderContext, SearchProviderResult, WebSearchProvider } from "./types.js";
 
 export interface DuckDuckGoHtmlProviderOptions {
 	config: WebToolsConfig["websearch"]["duckduckgo_html"];
-	dispatcher: Dispatcher;
+	dispatcher: Dispatcher | (() => Promise<Dispatcher>);
 	fetchImpl: WebHttpFetch;
 	requestGate: SearchRequestGate;
 }
 
 /** 将既有 DDG HTML 后端包装成 provider；限流和 blocked 熔断只在此处生效。 */
 export function createDuckDuckGoHtmlProvider(options: DuckDuckGoHtmlProviderOptions): WebSearchProvider {
+	const backendPromise = options.config.enabled ? import("../duckduckgo-html.js") : undefined;
+	void backendPromise?.catch(() => undefined);
 	return {
 		id: "duckduckgo_html",
 		async search(params: NormalizedSearchParams, context: SearchProviderContext): Promise<SearchProviderResult> {
@@ -33,11 +34,15 @@ export function createDuckDuckGoHtmlProvider(options: DuckDuckGoHtmlProviderOpti
 
 			const timeoutSignal = AbortSignal.timeout(options.config.timeout_seconds * 1000);
 			const signal = AbortSignal.any([context.signal ?? new AbortController().signal, timeoutSignal]);
+			const [{ searchDuckDuckGoHtml }, dispatcher] = await Promise.all([
+				backendPromise ?? import("../duckduckgo-html.js"),
+				resolveDispatcher(options.dispatcher),
+			]);
 			const result = await searchDuckDuckGoHtml({
 				query: params.query,
 				limit: params.limit,
 				config: options.config,
-				dispatcher: options.dispatcher,
+				dispatcher,
 				fetchImpl: options.fetchImpl,
 				signal,
 				...(context.signal !== undefined ? { userSignal: context.signal } : {}),
@@ -67,6 +72,10 @@ export function createDuckDuckGoHtmlProvider(options: DuckDuckGoHtmlProviderOpti
 			return { status: "success", provider: "duckduckgo_html", results: result.results, downloadedBytes: result.downloadedBytes };
 		},
 	};
+}
+
+function resolveDispatcher(value: Dispatcher | (() => Promise<Dispatcher>)): Promise<Dispatcher> {
+	return typeof value === "function" ? value() : Promise.resolve(value);
 }
 
 function failed(code: WebSearchFailureDetails["error"]["code"], message: string, query: string): SearchProviderResult {
