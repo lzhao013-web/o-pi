@@ -6,6 +6,8 @@
 ~/.pi/agent/models.jsonc
 ```
 
+自动发现结果缓存于 `~/.pi/agent/.cache/openai-compatible-models.json`。缓存只包含公开模型元数据和 endpoint 哈希，不包含 API key、header 或 endpoint URL。
+
 文件可能包含 API key，不要提交到 git。建议：
 
 ```bash
@@ -71,7 +73,7 @@ chmod 600 ~/.pi/agent/models.jsonc
 | `api` | 否 | `chat` | `chat`、`responses` | `chat` 注册为 `openai-completions`；`responses` 注册为 `openai-responses`。 |
 | `compat` | 否 | `openai_compatible` | `openai`、`openai_compatible`、`local`、`qwen`、`deepseek`、`strict` | 高层兼容 preset，展开后传给每个模型的 `compat`。 |
 | `models_endpoint` | 否 | `models` | 相对路径或完整 URL | 自动发现请求的模型列表接口；默认把 `models` 拼到 `base_url` 后。 |
-| `models` | 否 | `"auto"` | `"auto"` 或非空数组 | 省略/`"auto"` 时仅使用发现结果；数组会作为手写配置并追加发现模型。同模型 id 冲突时手写配置优先。provider 内模型 id 不能重复。 |
+| `models` | 否 | `"auto"` | `"auto"` 或非空数组 | 省略/`"auto"` 时仅使用缓存/发现结果；数组立即注册并追加缓存/发现模型。同模型 id 冲突时手写配置优先。provider 内模型 id 不能重复。 |
 | `advanced` | 否 | `{}` | 对象 | provider 级高级配置。 |
 
 `api_key` 和 `advanced.headers` 的字符串值由 Pi 解析：
@@ -88,7 +90,17 @@ chmod 600 ~/.pi/agent/models.jsonc
 
 ## 自动发现模型
 
-扩展会在启动/重载时请求 provider 的 models endpoint，并把返回的模型注册进 Pi。`models` 省略或写成 `"auto"` 时，只使用发现结果：
+扩展启动时只读取本地缓存，不等待网络。进入 session 后会在后台并发请求所有 provider 的 models endpoint；成功结果原子写入缓存并更新 Pi model registry，单个 provider 失败时继续使用它的旧缓存。
+
+Pi 当前的内置 `/model` selector 打开后不会重新读取 registry，扩展也无法查询 selector 是否正在显示。后台成功刷新保持静默；如果刷新恰好发生在 selector 打开期间，下次打开时会看到新列表。也可以手动执行：
+
+```text
+/refresh-models
+```
+
+`PI_OFFLINE=1` 或 `--offline` 会跳过自动和手动刷新，只使用手写模型与现有缓存。
+
+`models` 省略或写成 `"auto"` 时，只使用缓存/发现结果。首次运行且尚无缓存时，该 provider 会在后台发现成功后出现：
 
 ```jsonc
 {
@@ -105,7 +117,7 @@ chmod 600 ~/.pi/agent/models.jsonc
 
 默认请求 URL 是 `base_url` 后拼 `models`，例如 `https://lab.example.com/v1/models`。特殊网关可用 `models_endpoint` 覆盖；相对路径按 `base_url` 解析，完整 URL 会直接使用。
 
-`models` 写成数组时，数组中的手写模型会先保留，再追加 endpoint 发现到的其他模型；如果 endpoint 返回同一个 model id，忽略 endpoint 里的那一项，手写配置完整优先：
+`models` 写成数组时，数组中的手写模型会在启动时立即可用，再追加缓存/endpoint 发现到的其他模型；如果 endpoint 返回同一个 model id，忽略 endpoint 里的那一项，手写配置完整优先：
 
 ```jsonc
 {
@@ -403,7 +415,7 @@ provider 和 model 都支持部分 `advanced` 字段。合并规则是 provider 
 }
 ```
 
-启动时会请求 `http://127.0.0.1:8000/v1/models`。
+启动后会在后台请求 `http://127.0.0.1:8000/v1/models`，后续启动先使用上次成功缓存。
 
 ### OpenRouter
 
@@ -517,5 +529,5 @@ pi --list-models lab-server --offline
 1. 确认 `~/.pi/agent/models.jsonc` 存在且 JSONC 可解析。
 2. 确认 provider 有可解析的 `api_key`，本地服务可用 `"EMPTY"`。
 3. 手写 `models` 数组时确认模型 id 未重复。
-4. 确认 `base_url`/`models_endpoint` 能访问；即使有手写 `models`，启动时也会请求并合并发现结果。返回需为 `{ "data": [{ "id": "..." }] }`、数组或 `{ "models": [...] }`。
-5. 启动时报 schema 或 models endpoint 错误时，按错误里的 `providers.<id>...` path 或 HTTP 状态修改配置。
+4. 执行 `/refresh-models`，确认 `base_url`/`models_endpoint` 能访问。返回需为 `{ "data": [{ "id": "..." }] }`、数组或 `{ "models": [...] }`。
+5. 刷新失败时检查提示中的 provider；旧缓存会继续保留。必要时重新打开 `/model` 查看刷新后的列表。

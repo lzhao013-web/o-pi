@@ -6,7 +6,7 @@
       "api_key": "my-lovely-key",
       "api": "responses",
       "compat": "openai_compatible",
-      // 启动时会请求 base_url + /models 自动发现；这里手写的同名模型配置优先。
+      // 启动先使用缓存，进入 session 后后台请求 base_url + /models；这里手写的同名模型配置优先。
       "models": [
         {
           "model": "gemma4-31b-it",

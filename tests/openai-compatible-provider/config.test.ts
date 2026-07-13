@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { AuthStorage, ModelRegistry, type ExtensionAPI, type ProviderConfig as PiProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,28 +6,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import openAICompatibleProvider from "../../agent/extensions/openai-compatible-provider.js";
 import {
 	applyRuntimePayloadConfig,
+	defaultModelsCachePath,
+	loadModelsDiscoveryCache,
 	loadModelsJsoncConfig,
 	normalizeModelsJsoncConfig,
 	redact_api_key,
 	registerOpenAICompatibleProviders,
 	resolveAutoModelsJsoncConfig,
+	resolveCachedModelsJsoncConfig,
 } from "../../src/openai-compatible-provider/index.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
 let dir: string;
 const temp = useTempDir("o-pi-models-jsonc-");
 preserveEnv("PI_CODING_AGENT_DIR");
+preserveEnv("PI_OFFLINE");
 
 beforeEach(() => {
 	dir = temp.path;
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
 
 describe("openai-compatible-provider config", () => {
-	it("扩展入口从 agent 目录加载并注册 provider", async () => {
+	it("扩展启动只注册手写与缓存模型，手动刷新后更新 registry 和私有缓存", async () => {
 		process.env.PI_CODING_AGENT_DIR = dir;
 		const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response('{ "data": [{ "id": "discovered" }] }'));
 		await writeFile(
@@ -35,14 +40,140 @@ describe("openai-compatible-provider config", () => {
 			'{ "providers": { "local": { "base_url": "http://127.0.0.1:8000/v1", "api_key": "EMPTY", "models": ["model"] } } }',
 			{ mode: 0o600 },
 		);
-		const calls: Array<{ name: string; config: PiProviderConfig }> = [];
+		const harness = createExtensionHarness();
 
-		await openAICompatibleProvider(createPi(calls));
+		await openAICompatibleProvider(harness.pi);
 
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.name).toBe("local");
-		expect(calls[0]?.config.models?.map((model) => model.id)).toEqual(["model", "discovered"]);
+		expect(harness.providerCalls).toHaveLength(1);
+		expect(harness.providerCalls[0]?.name).toBe("local");
+		expect(harness.providerCalls[0]?.config.models?.map((model) => model.id)).toEqual(["model"]);
+		expect(fetch).not.toHaveBeenCalled();
+
+		await harness.runCommand("refresh-models");
+
+		expect(harness.providerCalls).toHaveLength(2);
+		expect(harness.providerCalls[1]?.config.models?.map((model) => model.id)).toEqual(["model", "discovered"]);
 		expect(fetch).toHaveBeenCalledOnce();
+		const cachePath = defaultModelsCachePath();
+		expect(JSON.parse(await readFile(cachePath, "utf8"))).toMatchObject({
+			version: 1,
+			providers: { local: { models: [{ model: "discovered" }] } },
+		});
+		expect((await stat(cachePath)).mode & 0o777).toBe(0o600);
+
+		const restart = createExtensionHarness();
+		await openAICompatibleProvider(restart.pi);
+		expect(restart.providerCalls[0]?.config.models?.map((model) => model.id)).toEqual(["model", "discovered"]);
+		expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	it("session_start 后并发刷新所有 provider，手动命令复用进行中的请求", async () => {
+		process.env.PI_CODING_AGENT_DIR = dir;
+		await writeFile(
+			path.join(dir, "models.jsonc"),
+			'{ "providers": { "one": { "base_url": "https://one.test/v1", "api_key": "EMPTY" }, "two": { "base_url": "https://two.test/v1", "api_key": "EMPTY" } } }',
+			{ mode: 0o600 },
+		);
+		let active = 0;
+		let maxActive = 0;
+		let started = 0;
+		let release: (() => void) | undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			active++;
+			started++;
+			maxActive = Math.max(maxActive, active);
+			if (started === 2) release?.();
+			await gate;
+			active--;
+			const host = new URL(String(input)).hostname;
+			return new Response(JSON.stringify({ data: [{ id: `${host}-model` }] }));
+		});
+		const harness = createExtensionHarness();
+		await openAICompatibleProvider(harness.pi);
+
+		expect(harness.providerCalls).toHaveLength(0);
+		await harness.emit("session_start");
+		await harness.runCommand("refresh-models");
+
+		expect(fetch).toHaveBeenCalledTimes(2);
+		expect(maxActive).toBe(2);
+		expect(harness.providerCalls.map((call) => call.name)).toEqual(["one", "two"]);
+		expect(harness.notifications.some((item) => item.message.includes("Reopen /model"))).toBe(false);
+		expect(harness.notifications.at(-1)?.message).toBe("Model refresh complete: 2 updated, 0 failed.");
+	});
+
+	it("部分刷新失败时保留该 provider 的旧缓存", async () => {
+		process.env.PI_CODING_AGENT_DIR = dir;
+		await writeFile(
+			path.join(dir, "models.jsonc"),
+			'{ "providers": { "one": { "base_url": "https://one.test/v1", "api_key": "EMPTY" }, "two": { "base_url": "https://two.test/v1", "api_key": "EMPTY" } } }',
+			{ mode: 0o600 },
+		);
+		let round = 1;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			const host = new URL(String(input)).hostname;
+			if (round === 2 && host === "two.test") throw new Error("unreachable");
+			return new Response(JSON.stringify({ data: [{ id: `${host}-model-${round}` }] }));
+		});
+		const harness = createExtensionHarness();
+		await openAICompatibleProvider(harness.pi);
+		await harness.runCommand("refresh-models");
+		round = 2;
+		await harness.runCommand("refresh-models");
+
+		const latest = harness.providerCalls.slice(-2);
+		expect(latest.find((call) => call.name === "one")?.config.models?.map((model) => model.id)).toEqual(["one.test-model-2"]);
+		expect(latest.find((call) => call.name === "two")?.config.models?.map((model) => model.id)).toEqual(["two.test-model-1"]);
+		expect(harness.notifications.at(-1)).toMatchObject({ type: "warning" });
+	});
+
+	it("离线模式不启动自动或手动发现", async () => {
+		process.env.PI_CODING_AGENT_DIR = dir;
+		process.env.PI_OFFLINE = "true";
+		await writeFile(
+			path.join(dir, "models.jsonc"),
+			'{ "providers": { "local": { "base_url": "http://local.test/v1", "api_key": "EMPTY", "models": ["model"] } } }',
+			{ mode: 0o600 },
+		);
+		const fetch = vi.spyOn(globalThis, "fetch");
+		const harness = createExtensionHarness();
+		await openAICompatibleProvider(harness.pi);
+		await harness.emit("session_start");
+		await harness.runCommand("refresh-models");
+
+		expect(fetch).not.toHaveBeenCalled();
+		expect(harness.notifications.at(-1)?.message).toContain("offline mode");
+	});
+
+	it("损坏缓存按空缓存处理", async () => {
+		process.env.PI_CODING_AGENT_DIR = dir;
+		const cachePath = defaultModelsCachePath();
+		await mkdir(path.dirname(cachePath), { recursive: true });
+		await writeFile(cachePath, "not-json");
+		expect(await loadModelsDiscoveryCache(cachePath)).toEqual({ version: 1, providers: {} });
+	});
+
+	it("不复用其他 endpoint 的缓存，也不接受缓存中的请求期配置", async () => {
+		const config = await loadConfigFromText(`{
+			"providers": { "gateway": { "base_url": "https://new.test/v1", "api_key": "EMPTY" } }
+		}`);
+		const stale = {
+			version: 1 as const,
+			providers: { gateway: { source: "sha256:stale", models: [{ model: "old" }] } },
+		};
+		expect(resolveCachedModelsJsoncConfig(config, stale).providers).toEqual({});
+
+		process.env.PI_CODING_AGENT_DIR = dir;
+		const cachePath = defaultModelsCachePath();
+		await mkdir(path.dirname(cachePath), { recursive: true });
+		await writeFile(cachePath, JSON.stringify({
+			version: 1,
+			providers: { gateway: { source: "sha256:value", models: [{ model: "unsafe", defaults: { temperature: 2 } }] } },
+		}));
+		expect((await loadModelsDiscoveryCache(cachePath)).providers).toEqual({});
 	});
 
 	it("不存在 models.jsonc 时不产生 provider 注册输入", async () => {
@@ -275,6 +406,29 @@ describe("openai-compatible-provider config", () => {
 				fetch: async () => jsonResponse({ error: "unauthorized" }, { ok: false, status: 401, statusText: "Unauthorized" }),
 			}),
 		).rejects.not.toThrow("sk-secret");
+	});
+
+	it("模型发现超时覆盖响应 body 读取", async () => {
+		vi.useFakeTimers();
+		const config = await loadConfigFromText(`{
+			"providers": {
+				"gateway": { "base_url": "https://gateway.example.com/v1", "api_key": "EMPTY", "models": "auto" }
+			}
+		}`);
+		const promise = resolveAutoModelsJsoncConfig(config, path.join(dir, "models.jsonc"), {
+			timeoutMs: 10,
+			fetch: async (_url, init) => ({
+				ok: true,
+				status: 200,
+				text: () => new Promise<string>((_resolve, reject) => {
+					init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+				}),
+			}),
+		});
+		const rejected = expect(promise).rejects.toThrow("response cannot be read");
+
+		await vi.advanceTimersByTimeAsync(10);
+		await rejected;
 	});
 
 	it("api 字段映射到 Pi 当前 OpenAI-compatible API 名称", async () => {
@@ -614,6 +768,65 @@ function jsonResponse(value: unknown, init: { ok?: boolean; status?: number; sta
 		},
 	};
 	return init.statusText === undefined ? response : { ...response, statusText: init.statusText };
+}
+
+interface ExtensionHarness {
+	pi: ExtensionAPI;
+	providerCalls: Array<{ name: string; config: PiProviderConfig }>;
+	notifications: Array<{ message: string; type: string | undefined }>;
+	emit(name: string): Promise<void>;
+	runCommand(name: string): Promise<void>;
+}
+
+function createExtensionHarness(): ExtensionHarness {
+	type Handler = (event: unknown, ctx: TestExtensionContext) => unknown;
+	type CommandHandler = (args: string, ctx: TestExtensionContext) => unknown;
+	const providerCalls: Array<{ name: string; config: PiProviderConfig }> = [];
+	const notifications: Array<{ message: string; type: string | undefined }> = [];
+	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, CommandHandler>();
+	const ctx: TestExtensionContext = {
+		model: undefined,
+		ui: {
+			notify(message, type) {
+				notifications.push({ message, type });
+			},
+		},
+	};
+	const pi = {
+		registerProvider(name: string, config: PiProviderConfig) {
+			providerCalls.push({ name, config });
+		},
+		registerCommand(name: string, options: { handler: CommandHandler }) {
+			commands.set(name, options.handler);
+		},
+		on(name: string, handler: Handler) {
+			const registered = handlers.get(name) ?? [];
+			registered.push(handler);
+			handlers.set(name, registered);
+		},
+		setThinkingLevel() {},
+	} as unknown as ExtensionAPI;
+	return {
+		pi,
+		providerCalls,
+		notifications,
+		async emit(name) {
+			for (const handler of handlers.get(name) ?? []) await handler({}, ctx);
+		},
+		async runCommand(name) {
+			const handler = commands.get(name);
+			if (!handler) throw new Error(`command ${name} is not registered`);
+			await handler("", ctx);
+		},
+	};
+}
+
+interface TestExtensionContext {
+	model: undefined;
+	ui: {
+		notify(message: string, type?: string): void;
+	};
 }
 
 function createPi(calls: Array<{ name: string; config: PiProviderConfig }>): ExtensionAPI {

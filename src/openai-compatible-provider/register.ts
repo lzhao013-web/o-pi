@@ -5,12 +5,16 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { applyRuntimePayloadConfig, type NormalizedProvider, type RuntimeModelConfig } from "./normalize.js";
 
 const runtimeModels = new Map<string, RuntimeModelConfig>();
+const installedHooks = new WeakSet<ExtensionAPI>();
 const completionsApi = openAICompletionsApi();
 const responsesApi = openAIResponsesApi();
 
 /** 注册所有归一化 provider，并安装按模型生效的 OpenAI payload 注入代理。 */
 export function registerOpenAICompatibleProviders(pi: ExtensionAPI, providers: NormalizedProvider[]): void {
 	for (const provider of providers) {
+		for (const key of runtimeModels.keys()) {
+			if (key.startsWith(`${provider.id}\u0000`)) runtimeModels.delete(key);
+		}
 		for (const [modelId, runtime] of provider.runtimeModels) {
 			runtimeModels.set(runtimeKey(provider.id, modelId), runtime);
 		}
@@ -19,6 +23,8 @@ export function registerOpenAICompatibleProviders(pi: ExtensionAPI, providers: N
 			streamSimple: provider.config.api === "openai-responses" ? responsesStreamSimple : completionsStreamSimple,
 		});
 	}
+	if (installedHooks.has(pi)) return;
+	installedHooks.add(pi);
 	pi.on("session_start", (_event, ctx) => {
 		applyConfiguredReasoningEffort(pi, ctx.model);
 	});

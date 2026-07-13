@@ -26,6 +26,7 @@ export interface ResolveAutoModelsOptions {
 	fetch?: ModelsEndpointFetch;
 	env?: Record<string, string>;
 	timeoutMs?: number;
+	signal?: AbortSignal;
 }
 
 /** 请求 /models 发现模型；手写 models 作为覆盖项，冲突时优先保留手写配置。 */
@@ -34,19 +35,16 @@ export async function resolveAutoModelsJsoncConfig(
 	configPath: string,
 	options: ResolveAutoModelsOptions = {},
 ): Promise<ModelsJsoncConfig> {
-	let changed = false;
-	const providers: Record<string, ProviderConfig> = {};
-	for (const [providerId, provider] of Object.entries(config.providers)) {
+	const entries = await Promise.all(Object.entries(config.providers).map(async ([providerId, provider]) => {
 		const discoveredModels = await fetchProviderModelsFromEndpoint(providerId, provider, configPath, options);
-		changed = true;
-		providers[providerId] = {
+		return [providerId, {
 			...provider,
 			models: Array.isArray(provider.models)
 				? mergeConfiguredAndDiscoveredModels(provider.models, discoveredModels)
 				: discoveredModels,
-		};
-	}
-	return changed ? { providers } : config;
+		}] as const;
+	}));
+	return entries.length === 0 ? config : { providers: Object.fromEntries(entries) };
 }
 
 function mergeConfiguredAndDiscoveredModels(configuredModels: Array<string | ModelConfig>, discoveredModels: ModelConfig[]): Array<string | ModelConfig> {
@@ -67,7 +65,7 @@ export async function fetchProviderModelsFromEndpoint(
 	let url: string;
 	let headers: Record<string, string>;
 	try {
-		url = buildModelsEndpointUrl(provider.base_url, provider.models_endpoint);
+		url = modelsEndpointUrl(provider);
 		headers = buildModelsEndpointHeaders(providerId, provider, options.env);
 	} catch (error) {
 		throw invalidModelsJsonc(configPath, `provider "${providerId}" models endpoint configuration failed: ${stringifyError(error)}`);
@@ -75,44 +73,54 @@ export async function fetchProviderModelsFromEndpoint(
 	const fetcher = options.fetch ?? defaultFetch;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_MODELS_ENDPOINT_TIMEOUT_MS;
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	let timedOut = false;
+	const timeout = setTimeout(() => {
+		timedOut = true;
+		controller.abort();
+	}, timeoutMs);
+	const abortFromCaller = () => controller.abort();
+	if (options.signal?.aborted) abortFromCaller();
+	else options.signal?.addEventListener("abort", abortFromCaller, { once: true });
 
-	let response: ModelsEndpointResponse;
 	try {
-		response = await fetcher(url, { method: "GET", headers, signal: controller.signal });
-	} catch (error) {
-		const reason = isAbortError(error) ? `timed out after ${timeoutMs}ms` : stringifyError(error);
-		throw invalidModelsJsonc(configPath, `provider "${providerId}" models endpoint request failed: ${reason}`);
+		let response: ModelsEndpointResponse;
+		try {
+			response = await fetcher(url, { method: "GET", headers, signal: controller.signal });
+		} catch (error) {
+			const reason = isAbortError(error) ? (timedOut ? `timed out after ${timeoutMs}ms` : "cancelled") : stringifyError(error);
+			throw invalidModelsJsonc(configPath, `provider "${providerId}" models endpoint request failed: ${reason}`);
+		}
+
+		let responseText = "";
+		try {
+			responseText = await response.text();
+		} catch (error) {
+			throw invalidModelsJsonc(configPath, `provider "${providerId}" models endpoint response cannot be read: ${stringifyError(error)}`);
+		}
+
+		if (!response.ok) {
+			throw invalidModelsJsonc(
+				configPath,
+				`provider "${providerId}" models endpoint returned HTTP ${response.status}${formatStatusText(response.statusText)}${formatErrorBody(responseText)}`,
+			);
+		}
+
+		let payload: unknown;
+		try {
+			payload = JSON.parse(responseText);
+		} catch {
+			throw invalidModelsJsonc(configPath, `provider "${providerId}" models endpoint did not return valid JSON`);
+		}
+
+		return parseModelsEndpointPayload(payload, configPath, providerId);
 	} finally {
 		clearTimeout(timeout);
+		options.signal?.removeEventListener("abort", abortFromCaller);
 	}
-
-	let responseText = "";
-	try {
-		responseText = await response.text();
-	} catch (error) {
-		throw invalidModelsJsonc(configPath, `provider "${providerId}" models endpoint response cannot be read: ${stringifyError(error)}`);
-	}
-
-	if (!response.ok) {
-		throw invalidModelsJsonc(
-			configPath,
-			`provider "${providerId}" models endpoint returned HTTP ${response.status}${formatStatusText(response.statusText)}${formatErrorBody(responseText)}`,
-		);
-	}
-
-	let payload: unknown;
-	try {
-		payload = JSON.parse(responseText);
-	} catch {
-		throw invalidModelsJsonc(configPath, `provider "${providerId}" models endpoint did not return valid JSON`);
-	}
-
-	return parseModelsEndpointPayload(payload, configPath, providerId);
 }
 
-function buildModelsEndpointUrl(baseUrl: string, endpoint = DEFAULT_MODELS_ENDPOINT): string {
-	return new URL(endpoint, ensureTrailingSlash(baseUrl)).toString();
+export function modelsEndpointUrl(provider: ProviderConfig): string {
+	return new URL(provider.models_endpoint ?? DEFAULT_MODELS_ENDPOINT, ensureTrailingSlash(provider.base_url)).toString();
 }
 
 function ensureTrailingSlash(value: string): string {
