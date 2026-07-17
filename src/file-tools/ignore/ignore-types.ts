@@ -56,7 +56,7 @@ export interface IgnoreDecision {
 	ignored: boolean;
 	prune: boolean;
 	matchedRule?: MatchedIgnoreRule;
-	diagnostics?: IgnoreDiagnostic[];
+	diagnostics?: readonly IgnoreDiagnostic[];
 }
 
 export interface IgnoreTraceEntry {
@@ -74,7 +74,7 @@ export interface IgnoreExplanation {
 	prune: boolean;
 	trace: IgnoreTraceEntry[];
 	winner?: Omit<MatchedIgnoreRule, "negated" | "baseDirectory" | "priority">;
-	diagnostics?: IgnoreDiagnostic[];
+	diagnostics?: readonly IgnoreDiagnostic[];
 }
 
 export interface IgnoreEvaluateInput {
@@ -91,6 +91,8 @@ export interface IgnoreExplainInput {
 
 export interface IgnoreSnapshot {
 	readonly generation: number;
+	readonly fingerprint: string;
+	readonly diagnostics: readonly IgnoreDiagnostic[];
 	evaluate(input: IgnoreEvaluateInput): IgnoreDecision;
 	explain(input: IgnoreExplainInput): IgnoreExplanation;
 }

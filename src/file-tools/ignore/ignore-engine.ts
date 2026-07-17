@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import ignoreFactory from "ignore";
@@ -87,7 +88,7 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 		const cached = this.cache.get(cacheKey);
 		if (cached?.fingerprint === fingerprint) return cached.snapshot;
 
-		const snapshot = new IgnoreSnapshotImpl(nextGeneration, ruleSets, diagnostics, tracked.paths, config, caseInsensitive);
+		const snapshot = new IgnoreSnapshotImpl(nextGeneration, fingerprint, ruleSets, diagnostics, tracked.paths, config, caseInsensitive);
 		nextGeneration += 1;
 		this.cache.set(cacheKey, { fingerprint, snapshot });
 		return snapshot;
@@ -106,16 +107,21 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 
 class IgnoreSnapshotImpl implements IgnoreSnapshot {
 	readonly generation: number;
+	readonly fingerprint: string;
+	readonly diagnostics: readonly IgnoreDiagnostic[];
 
 	constructor(
 		generation: number,
+		fingerprint: string,
 		private readonly ruleSets: CompiledRuleSet[],
-		private readonly diagnostics: IgnoreDiagnostic[],
+		diagnostics: IgnoreDiagnostic[],
 		private readonly trackedPaths: ReadonlySet<string>,
 		private readonly config: IgnoreConfig,
 		private readonly caseInsensitive: boolean,
 	) {
 		this.generation = generation;
+		this.fingerprint = fingerprint;
+		this.diagnostics = diagnostics;
 	}
 
 	evaluate(input: IgnoreEvaluateInput): IgnoreDecision {
@@ -462,7 +468,9 @@ function buildFingerprint(
 		.join("|");
 	const trackedPart = Array.from(trackedPaths).sort().join("\0");
 	const diagnosticPart = diagnostics.map((diagnostic) => `${diagnostic.sourcePath}:${diagnostic.line}:${diagnostic.code}`).join("|");
-	return JSON.stringify({ config, caseInsensitive, filePart, trackedPart, diagnosticPart });
+	return createHash("sha256")
+		.update(JSON.stringify({ config, caseInsensitive, filePart, trackedPart, diagnosticPart }))
+		.digest("hex");
 }
 
 function compareRuleFiles(left: RuleFile, right: RuleFile): number {

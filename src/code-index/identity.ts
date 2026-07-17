@@ -2,6 +2,9 @@ import path from "node:path";
 
 import type { FileIdentity, SymbolIdentityInput } from "./types.js";
 
+/** 持久索引格式版本；导入该常量不会加载 parser runtime 或 grammar。 */
+export const CODE_INDEX_FORMAT_VERSION = "code-index-format-v1";
+
 /** 生成不依赖 cwd 或文件系统状态的索引内部路径。 */
 export function normalizeIndexPath(filePath: string): string {
 	const slashPath = filePath.replace(/\\/gu, "/");

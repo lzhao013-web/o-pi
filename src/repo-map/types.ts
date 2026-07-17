@@ -49,6 +49,7 @@ export interface RepoMapMetadata {
 	mapId: string;
 	repositoryRoot: string;
 	worktreeRoot: string;
+	gitCommonDir: string;
 	generation: string;
 	createdAt: string;
 	updatedAt: string;
@@ -57,8 +58,40 @@ export interface RepoMapMetadata {
 	indexedFileCount: number;
 	symbolCount: number;
 	edgeCount: number;
+	tooLargeFileCount: number;
+	diagnosticCount: number;
 	gitRevision?: string;
 	configFingerprint: string;
 	ignoreFingerprint: string;
 	parserFingerprint: string;
+}
+
+export type RepoMapFileStatus = "indexed" | "too_large" | "unreadable" | "unstable";
+
+export interface RepoMapFileRecord extends FileIdentity {
+	size: number;
+	mtimeMs: number;
+	status: RepoMapFileStatus;
+	contentHash?: string;
+}
+
+export interface RepoMapDiagnostic {
+	code: string;
+	message: string;
+	path?: string;
+}
+
+export interface RepoMapScanSummary {
+	discovered: number;
+	indexed: number;
+	reused: number;
+	hashed: number;
+	added: number;
+	changed: number;
+	removed: number;
+	tooLarge: number;
+	unreadable: number;
+	unstable: number;
+	skippedDirectories: number;
+	diagnostics: number;
 }

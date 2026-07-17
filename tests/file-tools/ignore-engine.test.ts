@@ -157,9 +157,12 @@ describe("ignore engine", () => {
 		await writeFile(path.join(workspace, ".gitignore"), "*.json\n");
 		await writeFile(path.join(workspace, "tracked.json"), "{}\n");
 		await writeFile(path.join(workspace, "untracked.json"), "{}\n");
+		const beforeTracking = await createIgnoreSnapshot(workspace, { builtinProfile: "none", caseSensitivity: "sensitive" });
+		expect(beforeTracking.evaluate({ path: "tracked.json", kind: "file", intent: "search" }).ignored).toBe(true);
 		await execFileAsync("git", ["add", "-f", "tracked.json"], { cwd: workspace });
 
 		let snapshot = await createIgnoreSnapshot(workspace, { builtinProfile: "none", caseSensitivity: "sensitive" });
+		expect(snapshot.fingerprint).not.toBe(beforeTracking.fingerprint);
 		expect(snapshot.evaluate({ path: "tracked.json", kind: "file", intent: "search" }).ignored).toBe(false);
 		expect(snapshot.evaluate({ path: "untracked.json", kind: "file", intent: "search" }).ignored).toBe(true);
 
@@ -173,12 +176,15 @@ describe("ignore engine", () => {
 		const first = await createIgnoreSnapshot(workspace, { builtinProfile: "none", gitignore: { enabled: false } });
 		const cached = await createIgnoreSnapshot(workspace, { builtinProfile: "none", gitignore: { enabled: false } });
 		expect(cached.generation).toBe(first.generation);
+		expect(cached.fingerprint).toBe(first.fingerprint);
+		expect(first.diagnostics).toEqual([]);
 		expect(first.evaluate({ path: "old.txt", kind: "file", intent: "search" }).ignored).toBe(true);
 
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		await writeFile(path.join(workspace, ".piignore"), "new.txt\n");
 		const second = await createIgnoreSnapshot(workspace, { builtinProfile: "none", gitignore: { enabled: false } });
 		expect(second.generation).not.toBe(first.generation);
+		expect(second.fingerprint).not.toBe(first.fingerprint);
 		expect(first.evaluate({ path: "new.txt", kind: "file", intent: "search" }).ignored).toBe(false);
 		expect(second.evaluate({ path: "new.txt", kind: "file", intent: "search" }).ignored).toBe(true);
 	});
