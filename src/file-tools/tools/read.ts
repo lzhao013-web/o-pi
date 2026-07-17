@@ -7,8 +7,9 @@ import type { ReadVersionCache } from "../core/read-cache.js";
 import { decodeTextFile, readRawFile, sha256Version, sliceTextByLineRange } from "../core/text-file.js";
 import type { FileToolLspHooks, ReadFileSuccess, ReadImageSuccess, ReadParams, ReadSuccess, ToolOutcome } from "../types.js";
 import type { RepoMapFileToolQuery } from "../../repo-map/file-tool-query.js";
+import { formatRepoMapReadContext } from "../../repo-map/tool-output.js";
 
-const REPO_MAP_CONTEXT_LINES = 1;
+const REPO_MAP_CONTEXT_LINES = 3;
 
 export interface ReadRuntime {
 	/** 会话内 read/edit 版本缓存，用于防止 stale edit。 */
@@ -89,14 +90,16 @@ export async function readWorkspaceFile(cwd: string, params: ReadParams, runtime
 		truncated: sliced.truncated || sliced.continuation !== undefined,
 	});
 	if (repoMap !== undefined) {
-		const contextBytes = Buffer.byteLength(JSON.stringify(repoMap), "utf8") * 6 + 128;
-		if (contextBytes >= config.limits.read_bytes) repoMap = undefined;
+		const renderedContext = formatRepoMapReadContext(repoMap);
+		const contextBytes = renderedContext === undefined ? config.limits.read_bytes : Buffer.byteLength(`${renderedContext}\n`, "utf8");
+		if (contextBytes >= config.limits.read_bytes || REPO_MAP_CONTEXT_LINES >= config.limits.read_lines) repoMap = undefined;
 		else {
 			const budgeted = sliceTextByLineRange(file, params.start_line, params.end_line, resolved.relativePath, {
-				maxBytes: Math.max(1, config.limits.read_bytes - contextBytes),
-				maxLines: Math.max(1, config.limits.read_lines - REPO_MAP_CONTEXT_LINES),
+				maxBytes: config.limits.read_bytes - contextBytes,
+				maxLines: config.limits.read_lines - REPO_MAP_CONTEXT_LINES,
 			});
-			if (!isFailed(budgeted)) sliced = budgeted;
+			if (isFailed(budgeted)) repoMap = undefined;
+			else sliced = budgeted;
 		}
 	}
 

@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatEditModelResult, formatWriteModelResult } from "../../src/file-tools/pi/model-output.js";
 import { createRepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
 import { analyzeRepoMapImpact } from "../../src/repo-map/impact.js";
+import { REPO_IMPACT_TOKEN_BUDGET } from "../../src/repo-map/tool-output.js";
+import { countTextTokensSync } from "../../src/token-counter.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 import { activationEntry, configureFileTools, writeSources } from "./fixtures.js";
 import { generationWithTestGraph, initializeResult, testGraphSources } from "./test-graph-fixtures.js";
@@ -63,9 +65,16 @@ describe("Repo Map change impact", () => {
 		const writeText = formatWriteModelResult({ status: "written", path: "src/user.ts", bytes: 1, diff: "", repo_map: mutation });
 		const editText = formatEditModelResult({ status: "applied", path: "src/user.ts", replacements: 1, old_version: "old", new_version: "new", diff: "", repo_map: mutation });
 		for (const text of [writeText, editText]) {
-			expect(text).toContain('<repo-impact candidate="true"');
+			expect(text).toContain('<repo-impact>\nsymbols="api changed function loadUser"');
+			expect(text).toContain("\n</repo-impact>");
+			expect(text).not.toContain('candidate="true"');
+			expect(text).not.toContain('changed="src/user.ts"');
+			expect(text).not.toContain('public-api=');
 			expect(text).toContain('tests="tests/user.test.ts"');
 			expect(text.length).toBeLessThan(1_000);
+			const tag = text.match(/<repo-impact>\n[^<]+\n<\/repo-impact>/u)?.[0];
+			expect(tag).toBeDefined();
+			expect(countTextTokensSync(tag ?? "").tokens).toBeLessThanOrEqual(REPO_IMPACT_TOKEN_BUDGET);
 		}
 
 		const analyzeImpact = vi.fn(() => { throw new Error("simulated analysis failure"); });

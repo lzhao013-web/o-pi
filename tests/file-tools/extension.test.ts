@@ -404,7 +404,7 @@ describe("file-tools extension", () => {
 			const ctx = { cwd, sessionManager: { getSessionId: () => "session-1" } };
 			delete lspFileHooks.afterWrite;
 			const clean = await executeTool(registered, "write", { path: "clean.ts", content: "export const ok = true;\n" }, ctx);
-			expect(textResult(clean)).toBe('<write path="clean.ts" lsp="clean"/>');
+			expect(textResult(clean)).toBe('<write path="clean.ts"/>');
 			expect(clean.details).toMatchObject({ status: "written", path: "clean.ts", diff: expect.stringContaining("+1 export const ok = true;") });
 
 			lspFileHooks.afterWrite = vi.fn(async () => ({

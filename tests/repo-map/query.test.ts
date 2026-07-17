@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clearGrepIndexForTests } from "../../src/file-tools/grep/indexer.js";
 import { findWorkspaceFiles } from "../../src/file-tools/tools/find.js";
-import { grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
+import { formatCompactGrepResult, grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
 import { createRepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
 import { buildRepoMapRelationships } from "../../src/repo-map/relationship-indexer.js";
 import { RepoMapQueryIndex } from "../../src/repo-map/query.js";
@@ -102,10 +102,16 @@ describe("Repo Map query and file-tool integration", () => {
 		]);
 		await writeSources(workspaceTemp.path, sources);
 		const generation = await generationFromSources(workspaceTemp.path, sources);
-		const query = createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { async readActivated() { return generation; } });
+		const readActivated = vi.fn(async () => generation);
+		const baseline = await grepWorkspaceFiles(workspaceTemp.path, { query: "target" });
+		const inactiveQuery = createRepoMapFileToolQuery(() => [], { readActivated });
+		expect(await grepWorkspaceFiles(workspaceTemp.path, { query: "target" }, undefined, { repoMap: inactiveQuery })).toEqual(baseline);
+		expect(readActivated).not.toHaveBeenCalled();
+		const query = createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { readActivated });
 		const result = await grepWorkspaceFiles(workspaceTemp.path, { query: "target" }, undefined, { repoMap: query });
 		if (result.status === "failed") throw new Error(result.error.message);
 		expect(result.strategy).toContain("repo-map");
+		expect(formatCompactGrepResult(result)).toContain('<grep repo-map="true"');
 		expect(result.regions.map((region) => region.reasons).flat()).toEqual(expect.arrayContaining(["definition", "caller"]));
 		expect(result.regions.find((region) => region.path === "b.ts")?.content).toContain("function target");
 

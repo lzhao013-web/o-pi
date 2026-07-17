@@ -11,7 +11,6 @@ export interface RankedGrepRegion extends SourceRange {
 	reasons: string[];
 	matchLines: number[];
 	unit?: IndexedCodeUnit;
-	callers: string[];
 	callees: string[];
 	imports: string[];
 }
@@ -125,7 +124,6 @@ function rankFallbackText(input: RankInput): RankedGrepRegion[] {
 				score: 500,
 				reasons: [input.match === "regex" ? "regex" : "exact literal"],
 				matchLines: [line],
-				callers: [],
 				callees: [],
 				imports: [],
 			});
@@ -172,9 +170,8 @@ function makeRegion(unit: IndexedCodeUnit, score: number, reasons: string[], mat
 		reasons: Array.from(new Set(reasons)),
 		matchLines,
 		unit,
-		callers: [],
-		callees: unit.calls.slice(0, 6),
-		imports: unit.imports.slice(0, 4),
+		callees: reasons.includes("caller") ? unit.calls.slice(0, 6) : [],
+		imports: reasons.includes("import") ? unit.imports.slice(0, 4) : [],
 	};
 }
 

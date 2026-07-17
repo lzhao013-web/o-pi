@@ -32,7 +32,7 @@ export function packGrepResults(input: GrepPackInput): GrepSuccess {
 	const state: PackState = {
 		budgetTokens: input.tokenBudget,
 		bodyCount: 0,
-		usedTokens: tokenCount(headerText(input, 0, 0, false)),
+		usedTokens: tokenCount(headerText(input, false)),
 		regions: [],
 		usedFiles: new Set(),
 	};
@@ -148,9 +148,8 @@ function baseRegion(candidate: RankedGrepRegion, detail: GrepRegion["detail"], c
 	if (candidate.signature !== undefined) region.signature = candidate.signature;
 	if (candidate.matchLines.length > 0) region.match_lines = candidate.matchLines.sort((left, right) => left - right);
 	if (content !== undefined && content.length > 0 && detail !== "signature") region.content = content;
-	if (candidate.callers.length > 0) region.callers = candidate.callers.slice(0, 4);
-	if (candidate.callees.length > 0) region.callees = candidate.callees.slice(0, 6);
-	if (candidate.imports.length > 0) region.imports = candidate.imports.slice(0, 4);
+	if (detail === "signature" && candidate.callees.length > 0) region.callees = candidate.callees.slice(0, 6);
+	if (detail === "signature" && candidate.imports.length > 0) region.imports = candidate.imports.slice(0, 4);
 	return region;
 }
 
@@ -159,7 +158,6 @@ function renderRegion(region: GrepRegion): string {
 	const header = `${region.path}:${region.start_line}${region.end_line === region.start_line ? "" : `-${region.end_line}`}`;
 	const label = headerSymbol === undefined ? `${region.kind} [${region.reasons.join(" · ")}]` : `${headerSymbol} [${region.reasons.join(" · ")}]`;
 	const lines = [`${header}`, label];
-	if (region.callers !== undefined) lines.push(`called by: ${region.callers.join(", ")}`);
 	if (region.callees !== undefined) lines.push(`calls: ${region.callees.join(", ")}`);
 	if (region.imports !== undefined) lines.push(`imports: ${region.imports.join(", ")}`);
 	if (region.content !== undefined) lines.push("", region.content);
@@ -214,14 +212,9 @@ function hasUnrepresentedCategory(
 	return regions.some((region) => !selectedIds.has(region.id) && (counts.get(relationCategory(region)) ?? 0) < cap);
 }
 
-function headerText(input: GrepPackInput, returnedRegions: number, returnedFiles: number, truncated: boolean): string {
+function headerText(input: GrepPackInput, truncated: boolean): string {
 	return grepOpenTag({
-		query: input.query,
-		path: input.path,
-		match: input.match,
 		strategy: input.strategy,
-		returned_regions: returnedRegions,
-		returned_files: returnedFiles,
 		truncated,
 	});
 }
@@ -245,23 +238,9 @@ function formatSkipped(skipped: GrepSkippedFiles): string {
 	return parts.join(", ");
 }
 
-function grepOpenTag(result: Pick<GrepSuccess, "query" | "path" | "match" | "strategy" | "returned_regions" | "returned_files" | "truncated">): string {
-	const attrs = [
-		`query="${escapeXmlAttribute(result.query)}"`,
-		`path="${escapeXmlAttribute(result.path)}"`,
-		`match="${result.match}"`,
-		`strategy="${escapeXmlAttribute(result.strategy.join("+"))}"`,
-		`regions="${result.returned_regions}"`,
-		`files="${result.returned_files}"`,
-	];
+function grepOpenTag(result: Pick<GrepSuccess, "strategy" | "truncated">): string {
+	const attrs: string[] = [];
+	if (result.strategy.includes("repo-map")) attrs.push('repo-map="true"');
 	if (result.truncated) attrs.push(`truncated="true"`);
-	return `<grep ${attrs.join(" ")}>`;
-}
-
-function escapeXmlAttribute(value: string): string {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
+	return attrs.length === 0 ? "<grep>" : `<grep ${attrs.join(" ")}>`;
 }

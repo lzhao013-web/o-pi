@@ -1,4 +1,5 @@
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import { formatRepoMapImpact, formatRepoMapReadContext } from "../../repo-map/tool-output.js";
 import type {
 	EditSuccess,
 	FailedResult,
@@ -30,8 +31,8 @@ export function formatReadModelResult(result: ReadSuccess): string {
 	if (result.bom) attrs.push(`bom="true"`);
 	if (result.newline !== "lf") attrs.push(`newline="${result.newline}"`);
 
-	const lsp = formatReadLsp(result.lsp);
-	const repoMap = formatReadRepoMap(result.repo_map);
+	const repoMap = formatRepoMapReadContext(result.repo_map);
+	const lsp = formatReadLsp(result.lsp, result.repo_map);
 	let text = `<read ${attrs.join(" ")}>\n${result.content}`;
 	if (!text.endsWith("\n")) text += "\n";
 	if (lsp !== undefined) text += `${lsp}\n`;
@@ -55,7 +56,7 @@ export function formatEditModelResult(result: EditSuccess): string {
 	];
 	if (result.firstChangedLine !== undefined) attrs.push(`first_changed_line="${result.firstChangedLine}"`);
 	if (result.repo_map?.status === "partially_stale") attrs.push('repo_map="partially_stale"');
-	const impact = formatRepoImpact(result.repo_map?.impact);
+	const impact = formatRepoMapImpact(result.repo_map?.impact);
 	return impact === undefined ? `<edit ${attrs.join(" ")}/>` : `<edit ${attrs.join(" ")}>
 ${impact}
 </edit>`;
@@ -63,13 +64,10 @@ ${impact}
 
 export function formatWriteModelResult(result: WriteSuccess): string {
 	const diagnostics = result.lsp?.diagnostics;
-	const status = diagnostics?.status ?? "clean";
-	const attrs = [
-		`path="${escapeXmlAttribute(result.path)}"`,
-		`lsp="${escapeXmlAttribute(status)}"`,
-	];
+	const attrs = [`path="${escapeXmlAttribute(result.path)}"`];
+	if (diagnostics !== undefined) attrs.push(`lsp="${escapeXmlAttribute(diagnostics.status)}"`);
 	if (result.repo_map?.status === "partially_stale") attrs.push('repo_map="partially_stale"');
-	const impact = formatRepoImpact(result.repo_map?.impact);
+	const impact = formatRepoMapImpact(result.repo_map?.impact);
 	if (diagnostics === undefined || isCleanDiagnostics(diagnostics)) {
 		return impact === undefined ? `<write ${attrs.join(" ")}/>` : `<write ${attrs.join(" ")}>
 ${impact}
@@ -84,34 +82,6 @@ ${impact}
 		"</write>",
 	];
 	return lines.join("\n");
-}
-
-function formatRepoImpact(impact: NonNullable<WriteSuccess["repo_map"]>["impact"]): string | undefined {
-	if (impact === undefined) return undefined;
-	const attrs = ['candidate="true"', `changed="${escapeXmlAttribute(compact(impact.changedPath, 100))}"`];
-	if (impact.changedSymbols.length > 0) attrs.push(`symbols="${escapeXmlAttribute(impact.changedSymbols.slice(0, 3).map((value) => compact(value, 64)).join(", "))}"`);
-	if (impact.publicApiChanges.length > 0) attrs.push(`public-api="${escapeXmlAttribute(impact.publicApiChanges.slice(0, 2).map((value) => compact(value, 64)).join(", "))}"`);
-	const affected = uniquePaths(impact.candidates.filter((candidate) => candidate.role !== "changed" && candidate.role !== "test"), 4);
-	const tests = uniquePaths(impact.candidates.filter((candidate) => candidate.role === "test"), 3);
-	if (affected.length > 0) attrs.push(`affected="${escapeXmlAttribute(affected.map((candidate) => `${compact(candidate.path, 72)}:${candidate.role}`).join(", "))}"`);
-	if (tests.length > 0) attrs.push(`tests="${escapeXmlAttribute(tests.map((candidate) => compact(candidate.path, 80)).join(", "))}"`);
-	return `<repo-impact ${attrs.join(" ")}/>`;
-}
-
-function uniquePaths<T extends { path: string }>(values: readonly T[], limit: number): T[] {
-	const paths = new Set<string>();
-	const result: T[] = [];
-	for (const value of values) {
-		if (paths.has(value.path)) continue;
-		paths.add(value.path);
-		result.push(value);
-		if (result.length === limit) break;
-	}
-	return result;
-}
-
-function compact(value: string, limit: number): string {
-	return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 3))}...`;
 }
 
 export function scrubVersions(value: unknown): unknown {
@@ -149,35 +119,23 @@ function formatDiagnosticItems(items: LspDiagnosticsSummary["items"], limit: num
 	return visible;
 }
 
-function formatReadLsp(lsp: ReadSuccess["lsp"]): string | undefined {
+function formatReadLsp(lsp: ReadSuccess["lsp"], repoMap: ReadSuccess["repo_map"]): string | undefined {
 	if (lsp === undefined) return undefined;
 	const attrs: string[] = [];
-	if (lsp.enclosing_symbol !== undefined) attrs.push(`enclosing="${escapeXmlAttribute(formatSymbolRange(lsp.enclosing_symbol))}"`);
+	if (lsp.enclosing_symbol !== undefined && !sameSymbol(lsp.enclosing_symbol, repoMap)) {
+		attrs.push(`enclosing="${escapeXmlAttribute(formatSymbolRange(lsp.enclosing_symbol))}"`);
+	}
 	if (lsp.outline !== undefined && lsp.outline.length > 0) attrs.push(`outline="${escapeXmlAttribute(lsp.outline.map(formatOutlineItem).join("; "))}"`);
 	return attrs.length === 0 ? undefined : `<lsp ${attrs.join(" ")}/>`;
 }
 
-function formatReadRepoMap(repoMap: ReadSuccess["repo_map"]): string | undefined {
-	if (repoMap === undefined) return undefined;
-	const symbolName = repoMap.symbol.qualifiedName ?? repoMap.symbol.name ?? "anonymous";
-	const attrs = [
-		`symbol="${escapeXmlAttribute(`${repoMap.symbol.kind} ${symbolName} ${repoMap.symbol.startLine}-${repoMap.symbol.endLine}`)}"`,
-	];
-	if (repoMap.exported) attrs.push('exported="true"');
-	if (repoMap.package !== undefined) attrs.push(`package="${escapeXmlAttribute(repoMap.package)}"`);
-	if (repoMap.component !== undefined) attrs.push(`component="${escapeXmlAttribute(repoMap.component)}"`);
-	if (repoMap.entrypoints !== undefined && repoMap.entrypoints.length > 0) attrs.push(`entrypoints="${escapeXmlAttribute(repoMap.entrypoints.join(", "))}"`);
-	if (repoMap.publicApi) attrs.push('public-api="true"');
-	if (repoMap.relatedTests !== undefined && repoMap.relatedTests.length > 0) attrs.push(`tests="${escapeXmlAttribute(repoMap.relatedTests.join(", "))}"`);
-	for (const [name, values] of [
-		["callers", repoMap.callers],
-		["callees", repoMap.callees],
-		["references", repoMap.references],
-		["imports", repoMap.imports],
-	] as const) {
-		if (values.length > 0) attrs.push(`${name}="${escapeXmlAttribute(values.join(", "))}"`);
-	}
-	return `<repo-map ${attrs.join(" ")}/>`;
+function sameSymbol(enclosing: LspEnclosingSymbol, repoMap: ReadSuccess["repo_map"]): boolean {
+	if (repoMap === undefined
+		|| enclosing.kind !== repoMap.symbol.kind
+		|| enclosing.line !== repoMap.symbol.startLine
+		|| enclosing.end_line !== repoMap.symbol.endLine) return false;
+	const repoName = repoMap.symbol.qualifiedName ?? repoMap.symbol.name;
+	return repoName === enclosing.name || repoName?.endsWith(`.${enclosing.name}`) === true;
 }
 
 function formatOutlineItem(item: LspOutlineItem): string {

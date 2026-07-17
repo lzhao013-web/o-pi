@@ -253,7 +253,6 @@ function lspRegionsFromCandidates(
 			score: candidate.reason === "lsp exact symbol" ? 980 : 720,
 			reasons: [candidate.reason],
 			matchLines: [candidate.start_line],
-			callers: [],
 			callees: [],
 			imports: [],
 		});
@@ -296,21 +295,36 @@ function repoMapRegionsFromCandidates(
 			reasons,
 			matchLines: [],
 			unit: liveUnit,
-			callers: [],
-			callees: liveUnit.calls.slice(0, 6),
-			imports: liveUnit.imports.slice(0, 4),
+			callees: candidate.reasons.includes("caller") ? liveUnit.calls.slice(0, 6) : [],
+			imports: candidate.reasons.includes("import") ? liveUnit.imports.slice(0, 4) : [],
 		});
 	}
 	return result;
 }
 
 function repoMapReasons(candidate: RepoMapQueryCandidate): string[] {
-	const reasons: string[] = candidate.reasons.filter((reason) => reason !== "short symbol" && reason !== "signature");
-	if (candidate.reasons.includes("short symbol")) reasons.push("exact symbol");
-	if (candidate.reasons.includes("signature")) reasons.push("symbol signature");
-	if (candidate.hop > 0) reasons.push(`repo-map hop ${candidate.hop}`);
-	for (const alias of candidate.matchedAliases.slice(0, 2)) reasons.push(`alias ${alias.term}→${alias.canonical} (${alias.source})`);
-	return Array.from(new Set(reasons));
+	const primary = primaryRepoMapReason(candidate);
+	const reasons = [primary];
+	if (candidate.hop > 0) reasons.push(`hop ${candidate.hop}`);
+	return reasons;
+}
+
+function primaryRepoMapReason(candidate: RepoMapQueryCandidate): string {
+	const relation = (["caller", "callee", "reference", "import", "test", "mock", "fixture", "snapshot"] as const)
+		.find((reason) => candidate.hop > 0 && candidate.reasons.includes(reason));
+	if (relation !== undefined) return relation;
+	const alias = candidate.matchedAliases.find((match) => match.term.toLocaleLowerCase() !== match.canonical.toLocaleLowerCase());
+	if (candidate.reasons.includes("alias")) return alias === undefined ? "alias" : `alias ${alias.term}→${alias.canonical}`;
+	for (const reason of [
+		"exact qualified symbol", "exact symbol", "short symbol", "registration", "entrypoint", "public api", "definition", "export",
+		"signature", "exact path", "exact filename", "path match", "component", "package", "test config",
+	] as const) {
+		if (!candidate.reasons.includes(reason)) continue;
+		if (reason === "short symbol") return "exact symbol";
+		if (reason === "signature") return "symbol signature";
+		return reason;
+	}
+	return candidate.reasons[0] ?? "related";
 }
 
 function repoMapGrepScore(candidate: RepoMapQueryCandidate): number {
@@ -419,7 +433,6 @@ function mergeRanked(primary: RankedGrepRegion[], lsp: RankedGrepRegion[]): Rank
 			continue;
 		}
 		for (const reason of region.reasons) if (!existing.reasons.includes(reason)) existing.reasons.push(reason);
-		for (const caller of region.callers) if (!existing.callers.includes(caller)) existing.callers.push(caller);
 		for (const callee of region.callees) if (!existing.callees.includes(callee)) existing.callees.push(callee);
 		for (const imported of region.imports) if (!existing.imports.includes(imported)) existing.imports.push(imported);
 	}

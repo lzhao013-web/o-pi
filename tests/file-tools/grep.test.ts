@@ -69,8 +69,8 @@ describe("grep", () => {
 		expect(firstRegion(result)).toMatchObject({ path: "auth.ts", symbol: "login", detail: "body" });
 		expect(firstRegion(result).content).toContain("export function login()");
 		const text = formatCompactGrepResult(result);
-		expect(text).toContain('<grep query="login" path="." match="auto"');
-		expect(text).toContain('regions="1"');
+		expect(text).toContain("<grep>");
+		expect(text).not.toContain('query="login"');
 		expect(text).toContain("</grep>");
 		expect(text).not.toContain("tokens");
 	});
@@ -90,13 +90,14 @@ describe("grep", () => {
 		expect(firstRegion(result)).toMatchObject({ path: path.join(outside, "external.ts"), symbol: "externalNeedle" });
 	});
 
-	it("exact symbol 的定义排在引用之前，并带一跳 caller/callee", async () => {
+	it("exact symbol 的定义排在引用之前，并以独立 region 表达一跳 caller/callee", async () => {
 		await writeFile(path.join(workspace, "service.ts"), "export function login() {\n  return issueToken();\n}\nfunction issueToken() { return 't'; }\n");
 		await writeFile(path.join(workspace, "route.ts"), "import { login } from './service';\nexport function handle() {\n  return login();\n}\n");
 		const result = expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "login" }));
 		expect(firstRegion(result)).toMatchObject({ path: "service.ts", symbol: "login" });
 		expect(result.regions.some((region) => region.symbol === "handle" && region.reasons.includes("caller"))).toBe(true);
-		expect(firstRegion(result).callees).toContain("issueToken");
+		expect(result.regions.some((region) => region.symbol === "issueToken" && region.reasons.includes("callee"))).toBe(true);
+		expect(formatCompactGrepResult(result)).not.toContain("calls: issueToken");
 	});
 
 	it("支持 qualified symbol", async () => {

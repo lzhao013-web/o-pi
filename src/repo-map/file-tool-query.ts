@@ -29,13 +29,11 @@ export interface RepoMapReadContext {
 	callees: string[];
 	references: string[];
 	imports: string[];
-	exported: boolean;
 	package?: string;
 	component?: string;
 	entrypoints?: string[];
 	publicApi?: boolean;
 	relatedTests?: string[];
-	related?: Array<{ path: string; reason: string; hop: 2; confidence: number }>;
 }
 
 export interface RepoMapMutationResult {
@@ -145,21 +143,11 @@ export function createRepoMapFileToolQuery(
 				}
 				const context = contextForRange(loaded.generation, file.id, input.startLine, input.endLine);
 				if (context === undefined) return undefined;
-				const seed = context.symbol.qualifiedName ?? context.symbol.name;
-				if (seed === undefined) return context;
 				const queryIndex = new RepoMapQueryIndex(loaded.generation);
 				const directTests = await verifiedCandidates(loaded.generation, queryIndex.relatedTests([file.id, context.symbol.id], 4));
-				const withTests = directTests.length === 0 ? context : { ...context, relatedTests: [...new Set(directTests.map((candidate) => candidate.path))].slice(0, 2) };
-				const projected = queryIndex.candidates(seed, 16).candidates
-					.filter((candidate) => candidate.hop === 2 && candidate.fileId !== file.id);
-				const verified = await verifiedCandidates(loaded.generation, projected);
-				const related = verified.slice(0, 2).map((candidate) => ({
-					path: candidate.path,
-					reason: candidate.reasons.at(-1) ?? "related",
-					hop: 2 as const,
-					confidence: Number(candidate.confidence.toFixed(3)),
-				}));
-				return related.length === 0 ? withTests : { ...withTests, related };
+				return directTests.length === 0
+					? context
+					: { ...context, relatedTests: [...new Set(directTests.map((candidate) => candidate.path))].slice(0, 2) };
 			} catch {
 				return undefined;
 			}
@@ -293,7 +281,6 @@ function contextForRange(generation: RepoMapGeneration, fileId: string, startLin
 		callees: relationLabels(generation.edges, (edge) => edge.kind === "calls" && edge.from === symbol.id, (edge) => edge.to, label),
 		references: relationLabels(generation.edges, (edge) => edge.kind === "references" && edge.to === symbol.id, (edge) => edge.from, label),
 		imports: relationLabels(generation.edges, (edge) => edge.kind === "imports" && edge.from === fileId, (edge) => edge.to, label),
-		exported,
 		...(packageNode?.kind === "package" ? { package: packageNode.name } : {}),
 		...(componentNode?.kind === "component" ? { component: componentNode.name } : {}),
 		...(entrypoints.length > 0 ? { entrypoints } : {}),

@@ -23,6 +23,8 @@ import {
 	readActivatedRepoMapState,
 } from "../../src/repo-map/service.js";
 import type { RepoMapGeneration } from "../../src/repo-map/storage.js";
+import { formatRepoMapReadContext, READ_REPO_MAP_TOKEN_BUDGET } from "../../src/repo-map/tool-output.js";
+import { countTextTokensSync } from "../../src/token-counter.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 import { createFileToolsExtension } from "../../agent/extensions/file-tools.js";
 import { activationEntry, configureFileTools, serviceDependencies as sharedServiceDependencies } from "./fixtures.js";
@@ -96,17 +98,72 @@ describe("Repo Map file-tool read and mutation integration", () => {
 		expect(partial.repo_map).toMatchObject({
 			symbol: { name: "Target", qualifiedName: "Target" },
 			callers: ["b.ts:Caller"],
-			exported: true,
+			publicApi: true,
 		});
-		expect(formatReadModelResult(partial)).toContain('<repo-map symbol="function Target 1-19"');
+		expect(formatReadModelResult(partial)).toContain('<repo-map>\nsymbol="function Target 1-19"');
 
 		const truncated = await readWorkspaceFile(root, { path: "a.ts" }, { repoMap: query });
 		if (!("content" in truncated) || "media_type" in truncated) throw new Error("truncated read failed");
 		expect(truncated.repo_map?.symbol.name).toBe("Target");
-		expect(truncated).toMatchObject({ truncated: true, end_line: 9, continuation: { start_line: 10 } });
+		expect(truncated).toMatchObject({ truncated: true, end_line: 7, continuation: { start_line: 8 } });
 
 		const full = await readWorkspaceFile(root, { path: "b.ts" }, { repoMap: query });
 		expect(full).not.toHaveProperty("repo_map");
+	});
+
+	it("budgets the rendered read tag exactly and keeps disabled or failed enhancement byte-identical", async () => {
+		await configureFileTools(temp.path, { read_lines: 200, read_bytes: 1024 });
+		const root = path.join(temp.path, "read-budget");
+		await mkdir(root);
+		await writeFile(path.join(root, "a.ts"), "123456789\n".repeat(150));
+		const params = { path: "a.ts", start_line: 1 } as const;
+		const baseline = await readWorkspaceFile(root, params);
+		const inactive = await readWorkspaceFile(root, params, { repoMap: { async readContext() { return undefined; } } });
+		const failed = await readWorkspaceFile(root, params, { repoMap: { async readContext() { throw new Error("unavailable"); } } });
+		expect(inactive).toEqual(baseline);
+		expect(failed).toEqual(baseline);
+
+		const enabled = await readWorkspaceFile(root, params, {
+			repoMap: {
+				async readContext() {
+					return {
+						symbol: { id: "symbol:Target", kind: "function", name: "Target", startLine: 1, endLine: 150 },
+						callers: ["src/caller.ts:Caller"],
+						callees: ["src/dependency.ts:load"],
+						references: [],
+						imports: [],
+						publicApi: true,
+						relatedTests: ["tests/target.test.ts"],
+					};
+				},
+			},
+		});
+		if (!("content" in enabled) || "media_type" in enabled || enabled.repo_map === undefined) throw new Error("enhanced read failed");
+		const tag = formatRepoMapReadContext(enabled.repo_map);
+		if (tag === undefined) throw new Error("missing rendered Repo Map context");
+		const usedBytes = Buffer.byteLength(enabled.content, "utf8") + Buffer.byteLength(`${tag}\n`, "utf8");
+		expect(usedBytes).toBeLessThanOrEqual(1024);
+		expect(usedBytes + 10).toBeGreaterThan(1024);
+		expect(countTextTokensSync(tag).tokens).toBeLessThanOrEqual(READ_REPO_MAP_TOKEN_BUDGET);
+		const saturatedTag = formatRepoMapReadContext({
+			...enabled.repo_map,
+			package: "package-".repeat(40),
+			component: "component-".repeat(40),
+			callers: Array.from({ length: 8 }, (_, index) => `src/${"caller".repeat(20)}-${index}.ts:Caller`),
+			callees: Array.from({ length: 8 }, (_, index) => `src/${"callee".repeat(20)}-${index}.ts:callee`),
+			references: Array.from({ length: 8 }, (_, index) => `src/${"reference".repeat(20)}-${index}.ts:reference`),
+			imports: Array.from({ length: 8 }, (_, index) => `src/${"import".repeat(20)}-${index}.ts`),
+		});
+		expect(saturatedTag).toContain('symbol="function Target 1-150"');
+		expect(countTextTokensSync(saturatedTag ?? "").tokens).toBeLessThanOrEqual(READ_REPO_MAP_TOKEN_BUDGET);
+
+		const withDuplicateLsp = formatReadModelResult({
+			...enabled,
+			lsp: { enclosing_symbol: { name: "Target", kind: "function", line: 1, end_line: 150 } },
+		});
+		expect(withDuplicateLsp).toContain("<repo-map>\n");
+		expect(withDuplicateLsp).toContain("\n</repo-map>");
+		expect(withDuplicateLsp).not.toContain("<lsp ");
 	});
 
 	it("refreshes after write/edit, switches activation, and removes obsolete symbols and edges", async () => {

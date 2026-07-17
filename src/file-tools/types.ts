@@ -102,7 +102,6 @@ export interface GrepRegion {
 	reasons: string[];
 	match_lines?: number[];
 	content?: string;
-	callers?: string[];
 	callees?: string[];
 	imports?: string[];
 }
