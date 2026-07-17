@@ -174,6 +174,7 @@ describe("Repo Map Phase 4 read and mutation loop", () => {
 			`repository:${generation.metadata.mapId}`,
 			...generation.files.map((file) => file.id),
 			...generation.symbols.map((symbol) => symbol.id),
+			...generation.architecture.map((node) => node.id),
 		]);
 		expect(generation.edges.every((edge) => nodeIds.has(edge.from) && (nodeIds.has(edge.to) || edge.to.startsWith("external:") || edge.to.startsWith("lexical:symbol:")))).toBe(true);
 	});

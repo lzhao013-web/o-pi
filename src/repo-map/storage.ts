@@ -6,7 +6,15 @@ import { createFileIdentity, createSymbolId } from "../code-index/identity.js";
 import { RepoMapError, throwIfAborted } from "./errors.js";
 import { compareRepoMapEdge } from "./graph-types.js";
 import { createRepoMapId, REPO_MAP_SCHEMA_VERSION } from "./identity.js";
-import type { RepoMapDiagnostic, RepoMapEdge, RepoMapEvidence, RepoMapFileRecord, RepoMapMetadata, RepoMapSymbolNode } from "./types.js";
+import type {
+	RepoMapArchitectureNode,
+	RepoMapDiagnostic,
+	RepoMapEdge,
+	RepoMapEvidence,
+	RepoMapFileRecord,
+	RepoMapMetadata,
+	RepoMapSymbolNode,
+} from "./types.js";
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 
@@ -15,6 +23,7 @@ export interface RepoMapGeneration {
 	files: RepoMapFileRecord[];
 	symbols: RepoMapSymbolNode[];
 	edges: RepoMapEdge[];
+	architecture: RepoMapArchitectureNode[];
 	diagnostics: RepoMapDiagnostic[];
 }
 
@@ -38,6 +47,7 @@ export function calculateGeneration(input: {
 	files: readonly RepoMapFileRecord[];
 	symbols: readonly RepoMapSymbolNode[];
 	edges: readonly RepoMapEdge[];
+	architecture: readonly RepoMapArchitectureNode[];
 	diagnostics: readonly RepoMapDiagnostic[];
 }): string {
 	const hash = createHash("sha256");
@@ -56,8 +66,9 @@ export function calculateGeneration(input: {
 			.map((symbol) => [
 				symbol.id, symbol.fileId, symbol.symbolKind, symbol.name ?? null, symbol.qualifiedName ?? null, symbol.signature ?? null,
 				symbol.startLine, symbol.endLine, symbol.startByte, symbol.endByte,
-				[...symbol.definitions], [...symbol.references], [...symbol.calls], [...symbol.imports],
+				[...symbol.definitions], [...symbol.references], [...symbol.calls], [...symbol.imports], symbol.visibility ?? null,
 			]),
+		[...input.architecture].sort(compareArchitecture).map(architectureSnapshot),
 		sortedEdges(input.edges)
 			.map((edge) => [
 				edge.kind, edge.from, edge.to, edge.resolution, edge.source, edge.confidence, edge.lexicalTarget ?? null,
@@ -103,17 +114,19 @@ export async function readGeneration(
 	try {
 		const directoryInfo = await lstat(directory);
 		if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) return undefined;
-		const [metadataValue, filesValue, symbolsValue, edgesValue, diagnosticsValue] = await Promise.all([
+		const [metadataValue, filesValue, symbolsValue, architectureValue, edgesValue, diagnosticsValue] = await Promise.all([
 			readJson(path.join(directory, "metadata.json")),
 			readJson(path.join(directory, "files.json")),
 			readJson(path.join(directory, "symbols.json")),
+			readJson(path.join(directory, "architecture.json")),
 			readJson(path.join(directory, "edges.json")),
 			readJson(path.join(directory, "diagnostics.json")),
 		]);
 		const metadata = validateMetadata(metadataValue, mapId, generation, expectedRoot);
 		const files = validateFiles(filesValue);
 		const symbols = validateSymbols(symbolsValue, files);
-		const edges = validateEdges(edgesValue, metadata.mapId, files, symbols);
+		const architecture = validateArchitecture(architectureValue, files);
+		const edges = validateEdges(edgesValue, metadata.mapId, files, symbols, architecture);
 		const diagnostics = validateDiagnostics(diagnosticsValue);
 		if (metadata.fileCount !== files.length) return undefined;
 		if (metadata.indexedFileCount !== files.filter((file) => file.status === "indexed").length) return undefined;
@@ -128,10 +141,11 @@ export async function readGeneration(
 			...(metadata.gitRevision !== undefined ? { headRevision: metadata.gitRevision } : {}),
 			files,
 			symbols,
+			architecture,
 			edges,
 			diagnostics,
 		}) !== generation) return undefined;
-		return { metadata, files, symbols, edges, diagnostics };
+		return { metadata, files, symbols, architecture, edges, diagnostics };
 	} catch {
 		return undefined;
 	}
@@ -155,6 +169,7 @@ export async function commitGeneration(input: CommitGenerationInput): Promise<Co
 			await writeJsonFile(path.join(temporaryDirectory, "metadata.json"), input.metadata);
 			await writeJsonFile(path.join(temporaryDirectory, "files.json"), [...input.files].sort((a, b) => compareStable(a.path, b.path)));
 			await writeJsonFile(path.join(temporaryDirectory, "symbols.json"), [...input.symbols].sort(compareSymbol));
+			await writeJsonFile(path.join(temporaryDirectory, "architecture.json"), [...input.architecture].sort(compareArchitecture));
 			await writeJsonFile(path.join(temporaryDirectory, "edges.json"), sortedEdges(input.edges));
 			await writeJsonFile(path.join(temporaryDirectory, "diagnostics.json"), [...input.diagnostics].sort(compareDiagnostic));
 			throwIfAborted(input.signal);
@@ -198,7 +213,8 @@ function validateCommitInput(input: CommitGenerationInput): void {
 	const metadata = validateMetadata(input.metadata, input.metadata.mapId, input.metadata.generation, input.metadata.repositoryRoot);
 	const files = validateFiles(input.files);
 	const symbols = validateSymbols(input.symbols, files);
-	const edges = validateEdges(input.edges, metadata.mapId, files, symbols);
+	const architecture = validateArchitecture(input.architecture, files);
+	const edges = validateEdges(input.edges, metadata.mapId, files, symbols, architecture);
 	const diagnostics = validateDiagnostics(input.diagnostics);
 	if (
 		metadata.fileCount !== files.length
@@ -340,6 +356,7 @@ function validateSymbols(value: unknown, files: readonly RepoMapFileRecord[]): R
 			|| (item["name"] !== undefined && !isNonEmptyString(item["name"]))
 			|| (item["qualifiedName"] !== undefined && !isNonEmptyString(item["qualifiedName"]))
 			|| (item["signature"] !== undefined && typeof item["signature"] !== "string")
+			|| (item["visibility"] !== undefined && item["visibility"] !== "public" && item["visibility"] !== "internal")
 			|| !isSourceRange(item)
 			|| !isStringArray(item["definitions"])
 			|| !isStringArray(item["references"])
@@ -362,6 +379,7 @@ function validateSymbols(value: unknown, files: readonly RepoMapFileRecord[]): R
 			references: item["references"],
 			calls: item["calls"],
 			imports: item["imports"],
+			...(item["visibility"] === "public" || item["visibility"] === "internal" ? { visibility: item["visibility"] } : {}),
 		};
 		if (symbol.id !== createSymbolId({
 			fileId: symbol.fileId,
@@ -377,14 +395,47 @@ function validateSymbols(value: unknown, files: readonly RepoMapFileRecord[]): R
 	return symbols;
 }
 
+function validateArchitecture(value: unknown, files: readonly RepoMapFileRecord[]): RepoMapArchitectureNode[] {
+	if (!Array.isArray(value)) throw new Error("invalid architecture");
+	const fileIds = new Set(files.map((file) => file.id));
+	const nodes: RepoMapArchitectureNode[] = [];
+	const ids = new Set<string>();
+	for (const item of value) {
+		if (!isRecord(item) || !isArchitectureKind(item["kind"]) || !isNonEmptyString(item["id"]) || ids.has(item["id"])
+			|| !isNonEmptyString(item["name"]) || !isConfidence(item["confidence"]) || !isArchitectureSource(item["source"])) throw new Error("invalid architecture node");
+		let node: RepoMapArchitectureNode;
+		if (item["kind"] === "package") {
+			if (!isRepoRootPath(item["rootPath"]) || !isPackageEcosystem(item["ecosystem"])
+				|| (item["manifestPath"] !== undefined && !isSafeRelativePath(item["manifestPath"]))) throw new Error("invalid package node");
+			node = { kind: "package", id: item["id"], name: item["name"], rootPath: item["rootPath"], ecosystem: item["ecosystem"], ...(typeof item["manifestPath"] === "string" ? { manifestPath: item["manifestPath"] } : {}), source: item["source"], confidence: item["confidence"] };
+		} else if (item["kind"] === "component") {
+			if (!isRepoRootPath(item["rootPath"]) || !isNonEmptyString(item["packageId"])) throw new Error("invalid component node");
+			node = { kind: "component", id: item["id"], name: item["name"], rootPath: item["rootPath"], packageId: item["packageId"], source: item["source"], confidence: item["confidence"] };
+		} else {
+			if (!isEntrypointType(item["entrypointType"]) || (item["packageId"] !== undefined && !isNonEmptyString(item["packageId"]))
+				|| (item["fileId"] !== undefined && (!isNonEmptyString(item["fileId"]) || !fileIds.has(item["fileId"])))
+				|| (item["declaredTarget"] !== undefined && !isNonEmptyString(item["declaredTarget"]))) throw new Error("invalid entrypoint node");
+			node = { kind: "entrypoint", id: item["id"], name: item["name"], entrypointType: item["entrypointType"], ...(typeof item["packageId"] === "string" ? { packageId: item["packageId"] } : {}), ...(typeof item["fileId"] === "string" ? { fileId: item["fileId"] } : {}), ...(typeof item["declaredTarget"] === "string" ? { declaredTarget: item["declaredTarget"] } : {}), source: item["source"], confidence: item["confidence"] };
+		}
+		ids.add(node.id);
+		nodes.push(node);
+	}
+	if (nodes.some((node) => node.kind === "component" && !ids.has(node.packageId))
+		|| nodes.some((node) => node.kind === "entrypoint" && node.packageId !== undefined && !ids.has(node.packageId))) throw new Error("dangling architecture owner");
+	const sorted = [...nodes].sort(compareArchitecture);
+	if (nodes.some((node, index) => node.id !== sorted[index]?.id)) throw new Error("invalid architecture order");
+	return nodes;
+}
+
 function validateEdges(
 	value: unknown,
 	mapId: string,
 	files: readonly RepoMapFileRecord[],
 	symbols: readonly RepoMapSymbolNode[],
+	architecture: readonly RepoMapArchitectureNode[],
 ): RepoMapEdge[] {
 	if (!Array.isArray(value)) throw new Error("invalid edges");
-	const nodes = new Set([`repository:${mapId}`, ...files.map((file) => file.id), ...symbols.map((symbol) => symbol.id)]);
+	const nodes = new Set([`repository:${mapId}`, ...files.map((file) => file.id), ...symbols.map((symbol) => symbol.id), ...architecture.map((node) => node.id)]);
 	const edges: RepoMapEdge[] = [];
 	let previous: RepoMapEdge | undefined;
 	for (const item of value) {
@@ -604,6 +655,31 @@ function isFileStatus(value: unknown): value is RepoMapFileRecord["status"] {
 	return value === "indexed" || value === "too_large" || value === "unreadable" || value === "unstable";
 }
 
+function isArchitectureKind(value: unknown): value is RepoMapArchitectureNode["kind"] {
+	return value === "package" || value === "component" || value === "entrypoint";
+}
+
+function isArchitectureSource(value: unknown): value is RepoMapArchitectureNode["source"] {
+	return value === "manifest" || value === "convention" || value === "syntactic";
+}
+
+function isPackageEcosystem(value: unknown): value is Extract<RepoMapArchitectureNode, { kind: "package" }>["ecosystem"] {
+	return value === "npm" || value === "python" || value === "go" || value === "cargo" || value === "repository";
+}
+
+function isEntrypointType(value: unknown): value is Extract<RepoMapArchitectureNode, { kind: "entrypoint" }>["entrypointType"] {
+	return value === "main" || value === "module" || value === "bin" || value === "export" || value === "script" || value === "test"
+		|| value === "command" || value === "tool" || value === "plugin";
+}
+
+function isConfidence(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function isRepoRootPath(value: unknown): value is string {
+	return value === "." || isSafeRelativePath(value);
+}
+
 function isSourceRange(value: Record<string, unknown>): value is Record<string, unknown> & {
 	startLine: number;
 	endLine: number;
@@ -624,7 +700,9 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 function isEdgeKind(value: unknown): value is RepoMapEdge["kind"] {
-	return value === "contains" || value === "imports" || value === "exports" || value === "references" || value === "calls";
+	return value === "contains" || value === "belongs-to" || value === "imports" || value === "exports" || value === "references" || value === "calls"
+		|| value === "declares-entrypoint" || value === "declares-script" || value === "registers-command" || value === "registers-tool"
+		|| value === "registers-plugin" || value === "exports-publicly" || value === "re-exports";
 }
 
 function isEdgeResolution(value: unknown): value is RepoMapEdge["resolution"] {
@@ -632,11 +710,21 @@ function isEdgeResolution(value: unknown): value is RepoMapEdge["resolution"] {
 }
 
 function isEdgeSource(value: unknown): value is RepoMapEdge["source"] {
-	return value === "tree-sitter" || value === "manifest" || value === "lsp" || value === "convention";
+	return value === "tree-sitter" || value === "syntax" || value === "manifest" || value === "lsp" || value === "convention";
 }
 
 function compareSymbol(left: RepoMapSymbolNode, right: RepoMapSymbolNode): number {
 	return compareStable(left.fileId, right.fileId) || left.startByte - right.startByte || compareStable(left.id, right.id);
+}
+
+function compareArchitecture(left: RepoMapArchitectureNode, right: RepoMapArchitectureNode): number {
+	return compareStable(left.kind, right.kind) || compareStable(left.id, right.id);
+}
+
+function architectureSnapshot(node: RepoMapArchitectureNode): unknown[] {
+	if (node.kind === "package") return [node.kind, node.id, node.name, node.rootPath, node.ecosystem, node.manifestPath ?? null, node.source, node.confidence];
+	if (node.kind === "component") return [node.kind, node.id, node.name, node.rootPath, node.packageId, node.source, node.confidence];
+	return [node.kind, node.id, node.name, node.entrypointType, node.packageId ?? null, node.fileId ?? null, node.declaredTarget ?? null, node.source, node.confidence];
 }
 
 function compareDiagnostic(left: RepoMapDiagnostic, right: RepoMapDiagnostic): number {

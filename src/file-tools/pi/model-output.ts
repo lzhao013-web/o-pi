@@ -127,6 +127,10 @@ function formatReadRepoMap(repoMap: ReadSuccess["repo_map"]): string | undefined
 		`symbol="${escapeXmlAttribute(`${repoMap.symbol.kind} ${symbolName} ${repoMap.symbol.startLine}-${repoMap.symbol.endLine}`)}"`,
 	];
 	if (repoMap.exported) attrs.push('exported="true"');
+	if (repoMap.package !== undefined) attrs.push(`package="${escapeXmlAttribute(repoMap.package)}"`);
+	if (repoMap.component !== undefined) attrs.push(`component="${escapeXmlAttribute(repoMap.component)}"`);
+	if (repoMap.entrypoints !== undefined && repoMap.entrypoints.length > 0) attrs.push(`entrypoints="${escapeXmlAttribute(repoMap.entrypoints.join(", "))}"`);
+	if (repoMap.publicApi) attrs.push('public-api="true"');
 	for (const [name, values] of [
 		["callers", repoMap.callers],
 		["callees", repoMap.callees],

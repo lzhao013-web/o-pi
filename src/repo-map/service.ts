@@ -5,6 +5,7 @@ import { isFailed } from "../file-tools/core/errors.js";
 import { createIgnoreSnapshot } from "../file-tools/ignore/ignore-engine.js";
 import type { IgnoreSnapshot } from "../file-tools/ignore/ignore-types.js";
 import { loadRepoMapConfig, repoMapCacheRoot, repoMapConfigFingerprint, type RepoMapConfig } from "./config.js";
+import type { BuildRepoMapArchitectureInput, RepoMapArchitectureIndex } from "./architecture-indexer.js";
 import { RepoMapError, throwIfAborted } from "./errors.js";
 import { createRepoMapId, REPO_MAP_SCHEMA_VERSION } from "./identity.js";
 import type { BuildRepoMapRelationshipsInput } from "./relationship-indexer.js";
@@ -21,7 +22,7 @@ import {
 	type RepoMapGeneration,
 } from "./storage.js";
 import type { RepoMapEdge, RepoMapFreshness, RepoMapMetadata, RepoMapScanSummary } from "./types.js";
-import type { RepoMapSymbolIndex } from "./graph-types.js";
+import { compareRepoMapEdge, type RepoMapSymbolIndex } from "./graph-types.js";
 import type { RepoMapActivation } from "./activation.js";
 
 export interface InitializeRepoMapInput {
@@ -46,6 +47,7 @@ export interface RepoMapServiceDependencies {
 	createIgnoreSnapshot(root: string, config: ReturnType<typeof ignoreConfigFromFileTools>): Promise<IgnoreSnapshot>;
 	scan(input: RepoMapScanInput): Promise<RepoMapScanResult>;
 	indexSymbols(input: IndexRepoMapSymbolsInput): Promise<RepoMapSymbolIndex>;
+	buildArchitecture(input: BuildRepoMapArchitectureInput): Promise<RepoMapArchitectureIndex>;
 	buildRelationships(input: BuildRepoMapRelationshipsInput): Promise<RepoMapEdge[]>;
 	readCurrent(cacheRoot: string, mapId: string, expectedRoot: string): Promise<RepoMapGeneration | undefined>;
 	commit(input: CommitGenerationInput): Promise<CommitGenerationResult>;
@@ -69,6 +71,9 @@ const defaultDependencies: RepoMapServiceDependencies = {
 	},
 	async buildRelationships(input) {
 		return (await import("./relationship-indexer.js")).buildRepoMapRelationships(input);
+	},
+	async buildArchitecture(input) {
+		return await (await import("./architecture-indexer.js")).buildRepoMapArchitecture(input);
 	},
 	readCurrent: readCurrentGeneration,
 	commit: commitGeneration,
@@ -124,15 +129,24 @@ export async function initializeRepoMap(
 		...(input.signal !== undefined ? { signal: input.signal } : {}),
 	});
 	throwIfAborted(input.signal);
-	const edges = await deps.buildRelationships({ mapId, files: scan.files, symbols: symbolIndex.symbols, imports: symbolIndex.imports });
-	const diagnostics = [...scan.diagnostics, ...symbolIndex.diagnostics];
+	const architecture = await deps.buildArchitecture({
+		root: identity.repositoryRoot,
+		mapId,
+		files: scan.files,
+		symbols: symbolIndex.symbols,
+		...(input.signal !== undefined ? { signal: input.signal } : {}),
+	});
+	throwIfAborted(input.signal);
+	const relationshipEdges = await deps.buildRelationships({ mapId, files: scan.files, symbols: architecture.symbols, imports: symbolIndex.imports });
+	const edges = [...relationshipEdges, ...architecture.edges].sort(compareRepoMapEdge);
+	const diagnostics = [...scan.diagnostics, ...symbolIndex.diagnostics, ...architecture.diagnostics];
 	const summary: RepoMapScanSummary = {
 		...scan.summary,
 		parsed: symbolIndex.parsedFileCount,
 		unsupported: symbolIndex.unsupportedFileCount,
 		parseErrors: symbolIndex.parseErrorFileCount,
 		reusedParsed: symbolIndex.reusedParsedFileCount,
-		symbols: symbolIndex.symbols.length,
+		symbols: architecture.symbols.length,
 		edges: edges.length,
 		diagnostics: diagnostics.length,
 	};
@@ -148,7 +162,8 @@ export async function initializeRepoMap(
 		parserFingerprint: CODE_INDEX_FORMAT_VERSION,
 		...(identity.headRevision !== undefined ? { headRevision: identity.headRevision } : {}),
 		files: scan.files,
-		symbols: symbolIndex.symbols,
+		symbols: architecture.symbols,
+		architecture: architecture.nodes,
 		edges,
 		diagnostics,
 	});
@@ -156,7 +171,7 @@ export async function initializeRepoMap(
 	const partial = summary.unreadable > 0
 		|| summary.unstable > 0
 		|| summary.parseErrors > 0
-		|| diagnostics.some((diagnostic) => diagnostic.code === "DIRECTORY_UNREADABLE");
+		|| diagnostics.some((diagnostic) => diagnostic.code === "DIRECTORY_UNREADABLE" || diagnostic.code.startsWith("ARCHITECTURE_"));
 	const metadata: RepoMapMetadata = {
 		schemaVersion: REPO_MAP_SCHEMA_VERSION,
 		mapId,
@@ -172,7 +187,7 @@ export async function initializeRepoMap(
 		parsedFileCount: summary.parsed,
 		unsupportedFileCount: summary.unsupported,
 		parseErrorFileCount: summary.parseErrors,
-		symbolCount: symbolIndex.symbols.length,
+		symbolCount: architecture.symbols.length,
 		edgeCount: edges.length,
 		tooLargeFileCount: summary.tooLarge,
 		diagnosticCount: diagnostics.length,
@@ -187,7 +202,8 @@ export async function initializeRepoMap(
 		maxGenerations: config.cache.max_generations,
 		metadata,
 		files: scan.files,
-		symbols: symbolIndex.symbols,
+		symbols: architecture.symbols,
+		architecture: architecture.nodes,
 		edges,
 		diagnostics,
 		...(input.signal !== undefined ? { signal: input.signal } : {}),

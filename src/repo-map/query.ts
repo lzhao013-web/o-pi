@@ -2,7 +2,7 @@ import path from "node:path";
 
 import type { SourceRange } from "../code-index/types.js";
 import type { RepoMapGeneration } from "./storage.js";
-import type { RepoMapEdge, RepoMapEvidence, RepoMapFileRecord, RepoMapSymbolNode } from "./types.js";
+import type { RepoMapArchitectureNode, RepoMapEdge, RepoMapEvidence, RepoMapFileRecord, RepoMapSymbolNode } from "./types.js";
 
 export type RepoMapMatchReason =
 	| "exact path"
@@ -17,7 +17,12 @@ export type RepoMapMatchReason =
 	| "reference"
 	| "caller"
 	| "callee"
-	| "import";
+	| "import"
+	| "package"
+	| "component"
+	| "entrypoint"
+	| "registration"
+	| "public api";
 
 export interface RepoMapRelatedEdge {
 	kind: RepoMapEdge["kind"];
@@ -66,6 +71,7 @@ export class RepoMapQueryIndex {
 	readonly #generation: RepoMapGeneration;
 	readonly #filesById: ReadonlyMap<string, RepoMapFileRecord>;
 	readonly #symbolsById: ReadonlyMap<string, RepoMapSymbolNode>;
+	readonly #architectureById: ReadonlyMap<string, RepoMapArchitectureNode>;
 	readonly #outgoing: ReadonlyMap<string, RepoMapEdge[]>;
 	readonly #incoming: ReadonlyMap<string, RepoMapEdge[]>;
 
@@ -73,6 +79,7 @@ export class RepoMapQueryIndex {
 		this.#generation = generation;
 		this.#filesById = new Map(generation.files.map((file) => [file.id, file]));
 		this.#symbolsById = new Map(generation.symbols.map((symbol) => [symbol.id, symbol]));
+		this.#architectureById = new Map(generation.architecture.map((node) => [node.id, node]));
 		this.#outgoing = groupEdges(generation.edges, (edge) => edge.from);
 		this.#incoming = groupEdges(generation.edges, (edge) => edge.to);
 	}
@@ -135,7 +142,41 @@ export class RepoMapQueryIndex {
 				const relatedFileId = edge.from === seed.symbol.fileId ? edge.to : edge.from;
 				const file = this.#filesById.get(relatedFileId);
 				if (file === undefined) continue;
-			result.push(fileCandidate(file, 260, edge.confidence, ["import"], [edgeDetails(edge, this.#filesById, this.#symbolsById)]));
+			result.push(fileCandidate(file, 260, edge.confidence, ["import"], [edgeDetails(edge, this.#filesById, this.#symbolsById, this.#architectureById)]));
+			}
+		}
+		return coalesceCandidates(result);
+	}
+
+	architecture(query: string): RepoMapQueryCandidate[] {
+		const normalized = normalize(query);
+		if (normalized.length === 0) return [];
+		const result: RepoMapQueryCandidate[] = [];
+		for (const node of this.#architectureById.values()) {
+			const fields = node.kind === "entrypoint"
+				? [node.name, node.entrypointType, node.declaredTarget]
+				: [node.name, node.rootPath];
+			const exact = fields.some((field) => field !== undefined && normalize(field) === normalized);
+			const partial = fields.some((field) => field !== undefined && normalize(field).includes(normalized));
+			if (!exact && !partial) continue;
+			const reason: RepoMapMatchReason = node.kind === "entrypoint"
+				? node.entrypointType === "command" || node.entrypointType === "tool" || node.entrypointType === "plugin" ? "registration" : "entrypoint"
+				: node.kind;
+			const score = (exact ? 820 : 560) + (node.kind === "entrypoint" ? 80 : 0);
+			const relations = [...(this.#outgoing.get(node.id) ?? []), ...(this.#incoming.get(node.id) ?? [])];
+			const fileIds = new Set<string>();
+			if (node.kind === "entrypoint" && node.fileId !== undefined) fileIds.add(node.fileId);
+			for (const relation of relations) {
+				if (this.#filesById.has(relation.from)) fileIds.add(relation.from);
+				if (this.#filesById.has(relation.to)) fileIds.add(relation.to);
+				const symbol = this.#symbolsById.get(relation.from);
+				if (symbol !== undefined) fileIds.add(symbol.fileId);
+			}
+			for (const fileId of fileIds) {
+				const file = this.#filesById.get(fileId);
+				if (file === undefined) continue;
+				const relevant = relations.filter((relation) => edgeTouchesFile(relation, fileId, this.#symbolsById, this.#architectureById)).slice(0, 4);
+				result.push(fileCandidate(file, score, node.confidence, [reason], relevant.map((relation) => edgeDetails(relation, this.#filesById, this.#symbolsById, this.#architectureById))));
 			}
 		}
 		return coalesceCandidates(result);
@@ -151,6 +192,7 @@ export class RepoMapQueryIndex {
 			...this.callers(query),
 			...this.callees(query),
 			...this.imports(query),
+			...this.architecture(query),
 		]);
 		return { root: this.#generation.metadata.repositoryRoot, candidates: combined.slice(0, Math.max(0, limit)) };
 	}
@@ -164,9 +206,9 @@ export class RepoMapQueryIndex {
 			const qualifiedName = symbol.qualifiedName?.toLocaleLowerCase();
 			const signature = symbol.signature?.toLocaleLowerCase();
 			if (qualifiedName === queryLower) {
-				result.push({ symbol, score: 980, confidence: 1, reasons: ["exact qualified symbol"] });
+				result.push({ symbol, score: 980, confidence: 1, reasons: ["exact qualified symbol", ...(symbol.visibility === "public" ? ["public api" as const] : [])] });
 			} else if (name === queryLower) {
-				result.push({ symbol, score: 930, confidence: 1, reasons: ["exact symbol"] });
+				result.push({ symbol, score: 930, confidence: 1, reasons: ["exact symbol", ...(symbol.visibility === "public" ? ["public api" as const] : [])] });
 			} else if (qualifiedName !== undefined && lastSegment(qualifiedName) === shortQuery) {
 				result.push({ symbol, score: 880, confidence: 0.92, reasons: ["short symbol"] });
 			} else if (signature?.includes(queryLower) === true) {
@@ -179,14 +221,14 @@ export class RepoMapQueryIndex {
 	#definitionCandidate(seed: SeedMatch): RepoMapQueryCandidate[] {
 		const file = this.#filesById.get(seed.symbol.fileId);
 		if (file === undefined) return [];
-		const exportEdge = (this.#incoming.get(seed.symbol.id) ?? []).find((edge) => edge.kind === "exports");
+		const exportEdge = (this.#incoming.get(seed.symbol.id) ?? []).find((edge) => edge.kind === "exports" || edge.kind === "exports-publicly");
 		return [symbolCandidate(
 			file,
 			seed.symbol,
 			seed.score - 40 + (exportEdge === undefined ? 0 : 35),
 			exportEdge?.confidence ?? seed.confidence,
-			["definition", ...(exportEdge === undefined ? [] : ["export" as const])],
-			exportEdge === undefined ? [] : [edgeDetails(exportEdge, this.#filesById, this.#symbolsById)],
+			["definition", ...(seed.symbol.visibility === "public" ? ["public api" as const] : []), ...(exportEdge === undefined ? [] : ["export" as const])],
+			exportEdge === undefined ? [] : [edgeDetails(exportEdge, this.#filesById, this.#symbolsById, this.#architectureById)],
 		)];
 	}
 
@@ -198,7 +240,7 @@ export class RepoMapQueryIndex {
 				const source = this.#symbolsById.get(edge.from);
 				const file = source === undefined ? undefined : this.#filesById.get(source.fileId);
 				if (source === undefined || file === undefined) continue;
-				result.push(symbolCandidate(file, source, score, edge.confidence, [reason], [edgeDetails(edge, this.#filesById, this.#symbolsById)]));
+				result.push(symbolCandidate(file, source, score, edge.confidence, [reason], [edgeDetails(edge, this.#filesById, this.#symbolsById, this.#architectureById)]));
 			}
 		}
 		return coalesceCandidates(result);
@@ -212,7 +254,7 @@ export class RepoMapQueryIndex {
 				const target = this.#symbolsById.get(edge.to);
 				const file = target === undefined ? undefined : this.#filesById.get(target.fileId);
 				if (target === undefined || file === undefined) continue;
-				result.push(symbolCandidate(file, target, score, edge.confidence, [reason], [edgeDetails(edge, this.#filesById, this.#symbolsById)]));
+				result.push(symbolCandidate(file, target, score, edge.confidence, [reason], [edgeDetails(edge, this.#filesById, this.#symbolsById, this.#architectureById)]));
 			}
 		}
 		return coalesceCandidates(result);
@@ -263,9 +305,11 @@ function edgeDetails(
 	edge: RepoMapEdge,
 	filesById: ReadonlyMap<string, RepoMapFileRecord>,
 	symbolsById: ReadonlyMap<string, RepoMapSymbolNode>,
+	architectureById: ReadonlyMap<string, RepoMapArchitectureNode>,
 ): RepoMapRelatedEdge {
 	const relatedFiles = [edge.from, edge.to]
-		.map((id) => filesById.get(id) ?? filesById.get(symbolsById.get(id)?.fileId ?? ""))
+		.map((id) => filesById.get(id) ?? filesById.get(symbolsById.get(id)?.fileId ?? "") ?? fileForArchitecture(id, architectureById, filesById))
+		.concat(edge.evidence.flatMap((evidence) => [...filesById.values()].find((file) => file.path === evidence.path) ?? []))
 		.filter((file): file is RepoMapFileRecord => file !== undefined)
 		.filter((file, index, files) => files.findIndex((item) => item.id === file.id) === index)
 		.map((file) => ({ path: file.path, ...(file.contentHash !== undefined ? { contentHash: file.contentHash } : {}) }));
@@ -279,6 +323,30 @@ function edgeDetails(
 		evidence: edge.evidence,
 		relatedFiles,
 	};
+}
+
+function fileForArchitecture(
+	id: string,
+	architectureById: ReadonlyMap<string, RepoMapArchitectureNode>,
+	filesById: ReadonlyMap<string, RepoMapFileRecord>,
+): RepoMapFileRecord | undefined {
+	const node = architectureById.get(id);
+	return node?.kind === "entrypoint" && node.fileId !== undefined ? filesById.get(node.fileId) : undefined;
+}
+
+function edgeTouchesFile(
+	edge: RepoMapEdge,
+	fileId: string,
+	symbolsById: ReadonlyMap<string, RepoMapSymbolNode>,
+	architectureById: ReadonlyMap<string, RepoMapArchitectureNode>,
+): boolean {
+	const fromNode = architectureById.get(edge.from);
+	const toNode = architectureById.get(edge.to);
+	return edge.from === fileId || edge.to === fileId
+		|| symbolsById.get(edge.from)?.fileId === fileId
+		|| symbolsById.get(edge.to)?.fileId === fileId
+		|| (fromNode?.kind === "entrypoint" && fromNode.fileId === fileId)
+		|| (toNode?.kind === "entrypoint" && toNode.fileId === fileId);
 }
 
 function range(value: SourceRange): SourceRange {

@@ -315,6 +315,9 @@ function repoMapGrepScore(candidate: RepoMapQueryCandidate): number {
 	if (candidate.reasons.includes("exact qualified symbol")) return 940;
 	if (candidate.reasons.includes("exact symbol") || candidate.reasons.includes("short symbol")) return 880;
 	if (candidate.reasons.includes("definition")) return candidate.reasons.includes("export") ? 840 : 800;
+	if (candidate.reasons.includes("public api")) return 780;
+	if (candidate.reasons.includes("registration") || candidate.reasons.includes("entrypoint")) return 700;
+	if (candidate.reasons.includes("component") || candidate.reasons.includes("package")) return 520;
 	if (candidate.reasons.includes("caller")) return 390;
 	if (candidate.reasons.includes("reference")) return 360;
 	if (candidate.reasons.includes("callee")) return 340;

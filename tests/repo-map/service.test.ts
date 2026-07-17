@@ -54,7 +54,8 @@ describe("Repo Map initialization service", () => {
 		delete process.env["PI_FILE_TOOLS_PROJECT_ROOT"];
 		const result = await initializeRepoMap({ cwd: root });
 		expect(result.identity.repositoryRoot).toBe(root);
-		expect(result.metadata).toMatchObject({ fileCount: 1, indexedFileCount: 1, parsedFileCount: 1, symbolCount: 1, edgeCount: 2 });
+		expect(result.metadata).toMatchObject({ fileCount: 1, indexedFileCount: 1, parsedFileCount: 1, symbolCount: 1 });
+		expect(result.metadata.edgeCount).toBeGreaterThan(2);
 	});
 	it("builds, persists, and reuses a symbol graph generation", async () => {
 		const root = path.join(temp.path, "repo");
@@ -62,7 +63,8 @@ describe("Repo Map initialization service", () => {
 		await writeFile(path.join(root, "a.ts"), "export const a = 1;\n");
 		const first = await initializeRepoMap({ cwd: root }, dependencies());
 		expect(first.reusedGeneration).toBe(false);
-		expect(first.metadata).toMatchObject({ fileCount: 1, indexedFileCount: 1, parsedFileCount: 1, symbolCount: 1, edgeCount: 2, freshness: "fresh" });
+		expect(first.metadata).toMatchObject({ fileCount: 1, indexedFileCount: 1, parsedFileCount: 1, symbolCount: 1, freshness: "fresh" });
+		expect(first.metadata.edgeCount).toBeGreaterThan(2);
 		const second = await initializeRepoMap({ cwd: root }, dependencies());
 		expect(second.reusedGeneration).toBe(true);
 		expect(second.metadata.generation).toBe(first.metadata.generation);

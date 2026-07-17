@@ -67,7 +67,7 @@ describe("/init command", () => {
 		const active = commandHarness();
 		await active.handler("", active.ctx);
 		await active.handler("status", active.ctx);
-		expect(active.notifications.at(-1)?.[0]).toContain("cache schema: 2");
+		expect(active.notifications.at(-1)?.[0]).toContain("cache schema: 3");
 		const missing = commandHarness({ readActivated: vi.fn(async () => undefined) });
 		await missing.handler("", missing.ctx);
 		await missing.handler("status", missing.ctx);
@@ -107,7 +107,7 @@ function commandHarness(overrides: Partial<RepoMapCommandDependencies> = {}) {
 	const initialize = "initialize" in overrides && overrides.initialize !== undefined ? vi.fn(overrides.initialize) : vi.fn(async () => result);
 	const readActivated = "readActivated" in overrides && overrides.readActivated !== undefined
 		? vi.fn(overrides.readActivated)
-		: vi.fn(async (): Promise<RepoMapGeneration> => ({ metadata: result.metadata, files: [], symbols: [], edges: [], diagnostics: [] }));
+		: vi.fn(async (): Promise<RepoMapGeneration> => ({ metadata: result.metadata, files: [], symbols: [], architecture: [], edges: [], diagnostics: [] }));
 	const api: Pick<ExtensionAPI, "registerCommand" | "appendEntry"> = {
 		registerCommand(name, options) { registered.push([name, options]); },
 		appendEntry(customType, data) {
@@ -132,7 +132,7 @@ function commandHarness(overrides: Partial<RepoMapCommandDependencies> = {}) {
 
 function initializeResult(root = "/repo", mapCharacter = "a"): InitializeRepoMapResult {
 	const metadata = {
-		schemaVersion: 2,
+		schemaVersion: 3,
 		mapId: mapCharacter.repeat(64),
 		repositoryRoot: root,
 		worktreeRoot: root,

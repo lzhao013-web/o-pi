@@ -13,7 +13,7 @@ import {
 import { RepoMapQueryIndex, type RepoMapQueryCandidate, type RepoMapQueryResult } from "./query.js";
 import type { InitializeRepoMapResult, RefreshActivatedRepoMapInput } from "./service.js";
 import type { RepoMapGeneration } from "./storage.js";
-import type { RepoMapEdge, RepoMapSymbolNode } from "./types.js";
+import type { RepoMapEdge, RepoMapEntrypointNode, RepoMapSymbolNode } from "./types.js";
 
 export interface RepoMapReadContext {
 	symbol: {
@@ -28,6 +28,10 @@ export interface RepoMapReadContext {
 	references: string[];
 	imports: string[];
 	exported: boolean;
+	package?: string;
+	component?: string;
+	entrypoints?: string[];
+	publicApi?: boolean;
 }
 
 export interface RepoMapMutationResult {
@@ -208,6 +212,7 @@ function contextForRange(generation: RepoMapGeneration, fileId: string, startLin
 	if (symbol === undefined) return undefined;
 	const symbolsById = new Map(generation.symbols.map((candidate) => [candidate.id, candidate]));
 	const filesById = new Map(generation.files.map((file) => [file.id, file.path]));
+	const architectureById = new Map(generation.architecture.map((node) => [node.id, node]));
 	const label = (id: string): string | undefined => {
 		const related = symbolsById.get(id);
 		if (related === undefined) return filesById.get(id);
@@ -215,6 +220,15 @@ function contextForRange(generation: RepoMapGeneration, fileId: string, startLin
 		const name = related.qualifiedName ?? related.name;
 		return compactLabel(name === undefined ? filePath : filePath === undefined ? name : `${filePath}:${name}`);
 	};
+	const ownership = generation.edges.filter((edge) => edge.kind === "belongs-to" && (edge.from === fileId || edge.from === symbol.id));
+	const packageNode = ownership.flatMap((edge) => architectureById.get(edge.to) ?? []).find((node) => node.kind === "package");
+	const componentNode = ownership.flatMap((edge) => architectureById.get(edge.to) ?? []).find((node) => node.kind === "component");
+	const entrypoints = [...architectureById.values()]
+		.filter((node): node is RepoMapEntrypointNode => node.kind === "entrypoint" && node.fileId === fileId)
+		.map((node) => `${node.entrypointType}:${node.name}`)
+		.sort()
+		.slice(0, 2);
+	const exported = symbol.visibility === "public" || generation.edges.some((edge) => (edge.kind === "exports" || edge.kind === "exports-publicly") && edge.to === symbol.id);
 	return {
 		symbol: {
 			kind: symbol.symbolKind,
@@ -227,7 +241,11 @@ function contextForRange(generation: RepoMapGeneration, fileId: string, startLin
 		callees: relationLabels(generation.edges, (edge) => edge.kind === "calls" && edge.from === symbol.id, (edge) => edge.to, label),
 		references: relationLabels(generation.edges, (edge) => edge.kind === "references" && edge.to === symbol.id, (edge) => edge.from, label),
 		imports: relationLabels(generation.edges, (edge) => edge.kind === "imports" && edge.from === fileId, (edge) => edge.to, label),
-		exported: generation.edges.some((edge) => edge.kind === "exports" && edge.to === symbol.id),
+		exported,
+		...(packageNode?.kind === "package" ? { package: packageNode.name } : {}),
+		...(componentNode?.kind === "component" ? { component: componentNode.name } : {}),
+		...(entrypoints.length > 0 ? { entrypoints } : {}),
+		...(exported ? { publicApi: true } : {}),
 	};
 }
 

@@ -26,13 +26,65 @@ export interface RepoMapSymbolNode extends SourceRange {
 	references: string[];
 	calls: string[];
 	imports: string[];
+	visibility?: "public" | "internal";
 }
 
-export type RepoMapNode = RepoMapRepositoryNode | RepoMapFileNode | RepoMapSymbolNode;
+export type RepoMapArchitectureSource = "manifest" | "convention" | "syntactic";
 
-export type RepoMapEdgeKind = "contains" | "imports" | "exports" | "references" | "calls";
+export interface RepoMapPackageNode {
+	kind: "package";
+	id: string;
+	name: string;
+	rootPath: string;
+	ecosystem: "npm" | "python" | "go" | "cargo" | "repository";
+	manifestPath?: string;
+	source: RepoMapArchitectureSource;
+	confidence: number;
+}
+
+export interface RepoMapComponentNode {
+	kind: "component";
+	id: string;
+	name: string;
+	rootPath: string;
+	packageId: string;
+	source: RepoMapArchitectureSource;
+	confidence: number;
+}
+
+export type RepoMapEntrypointType = "main" | "module" | "bin" | "export" | "script" | "test" | "command" | "tool" | "plugin";
+
+export interface RepoMapEntrypointNode {
+	kind: "entrypoint";
+	id: string;
+	name: string;
+	entrypointType: RepoMapEntrypointType;
+	packageId?: string;
+	fileId?: string;
+	declaredTarget?: string;
+	source: RepoMapArchitectureSource;
+	confidence: number;
+}
+
+export type RepoMapArchitectureNode = RepoMapPackageNode | RepoMapComponentNode | RepoMapEntrypointNode;
+export type RepoMapNode = RepoMapRepositoryNode | RepoMapFileNode | RepoMapSymbolNode | RepoMapArchitectureNode;
+
+export type RepoMapEdgeKind =
+	| "contains"
+	| "belongs-to"
+	| "imports"
+	| "exports"
+	| "references"
+	| "calls"
+	| "declares-entrypoint"
+	| "declares-script"
+	| "registers-command"
+	| "registers-tool"
+	| "registers-plugin"
+	| "exports-publicly"
+	| "re-exports";
 export type RepoMapEdgeResolution = "lexical" | "syntactic" | "semantic";
-export type RepoMapEdgeSource = "tree-sitter" | "manifest" | "lsp" | "convention";
+export type RepoMapEdgeSource = "tree-sitter" | "syntax" | "manifest" | "lsp" | "convention";
 
 export interface RepoMapEvidence extends SourceRange {
 	path: string;
