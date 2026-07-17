@@ -453,11 +453,10 @@ c/** (29 files)
 成功输出是紧凑文本，不是冗长 JSON：
 
 ```xml
-<grep query="AuthService.login" path="src" match="auto" strategy="symbol+lexical" regions="6" files="4">
+<grep>
 
 src/auth/service.ts:41-88
 AuthService.login [definition · exact symbol]
-calls: verifyPassword, issueToken
 
 async login(credentials: Credentials) {
 	...
@@ -479,7 +478,7 @@ issueToken [callee]
 * 递归时不跟随文件或目录 symlink；显式 `path` 可指向 workspace 外。
 * 二进制、非法 UTF-8、超大文件和局部权限失败在递归检索中计入 `skipped_files`；显式检索单个文件时返回对应错误。
 * 结果按相关性排序：精确 qualified symbol、精确 symbol、定义、字面量、词法相关性、关系接近度、路径相关性；测试文件默认降权，查询含 test/spec 时取消降权。
-* 输出由 `grep_output_token_budget` 控制，默认最多两个完整 body；其余候选优先输出路径、范围、symbol、signature 和少量关系。
+* 输出由 `grep_output_token_budget` 控制，默认最多两个完整 body；其余候选优先输出路径、范围、symbol 和 signature。只有关系促成命中且正文被降级为 signature 时才补充 calls/imports，避免重复正文。
 * 超大函数不会吞掉全部预算，会保留 signature、命中附近片段和省略标记。
 * 零结果是 `success`，auto 可返回少量相近 symbol 名称。
 
@@ -507,9 +506,10 @@ issueToken [callee]
 * 写入机制与 Pi 内置 `write` 相同，使用普通 UTF-8 文件写入，不提供事务或回滚。
 * `details.diff` 保存写入前后 diff，TUI 折叠态默认展示；模型可见成功结果不包含 diff。
 
-模型可见成功结果只确认写入路径和 LSP 状态：
+模型可见成功结果只确认写入路径；只有实际得到 LSP 诊断结果时才增加状态：
 
 ```xml
+<write path="src/a.ts"/>
 <write path="src/a.ts" lsp="clean"/>
 ```
 
