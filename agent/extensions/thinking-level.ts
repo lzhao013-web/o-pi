@@ -62,16 +62,30 @@ export default function thinkingLevelExtension(pi: ThinkingLevelAPI): void {
 	});
 }
 
-/** 返回 Pi 判定为可用的等级，并附加显式 provider 值映射。 */
+/** 返回 Pi 判定为可用的等级，并展示最终请求使用的布尔或字符串映射。 */
 export function getThinkingLevelOptions(model: Model<Api> | undefined): ThinkingLevelOption[] {
 	if (!model) return [];
+	const booleanThinking = usesBooleanThinking(model);
 	return getSupportedThinkingLevels(model).map((level) => {
 		const mapped = model.thinkingLevelMap?.[level];
-		return {
-			level,
-			label: typeof mapped === "string" ? `${level} → ${mapped}` : level,
-		};
+		let label: string = level;
+		if (booleanThinking) label = `${level} → ${level === "off" ? "disabled" : "enabled"}`;
+		else if (typeof mapped === "string") label = `${level} → ${mapped}`;
+		return { level, label };
 	});
+}
+
+/** 根据模型最终生效的 compat 识别 chat_template_enabled，不耦合 provider 配置。 */
+function usesBooleanThinking(model: Model<Api>): boolean {
+	const compat = model.compat;
+	if (
+		!compat
+		|| !("thinkingFormat" in compat)
+		|| compat.thinkingFormat !== "chat-template"
+		|| !("chatTemplateKwargs" in compat)
+	) return false;
+	const value = compat.chatTemplateKwargs?.enable_thinking;
+	return typeof value === "object" && value !== null && value.$var === "thinking.enabled";
 }
 
 function setThinkingLevel(

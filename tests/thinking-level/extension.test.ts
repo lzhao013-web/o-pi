@@ -11,7 +11,11 @@ type Handler = (event: unknown, ctx: CommandContext) => void;
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
-function createModel(options: { reasoning?: boolean; thinkingLevelMap?: ThinkingLevelMap } = {}): Model<"openai-completions"> {
+function createModel(options: {
+	compat?: Model<"openai-completions">["compat"];
+	reasoning?: boolean;
+	thinkingLevelMap?: ThinkingLevelMap;
+} = {}): Model<"openai-completions"> {
 	return {
 		id: "model",
 		name: "Model",
@@ -20,6 +24,7 @@ function createModel(options: { reasoning?: boolean; thinkingLevelMap?: Thinking
 		baseUrl: "http://127.0.0.1/v1",
 		reasoning: options.reasoning ?? true,
 		...(options.thinkingLevelMap !== undefined ? { thinkingLevelMap: options.thinkingLevelMap } : {}),
+		...(options.compat !== undefined ? { compat: options.compat } : {}),
 		input: ["text"],
 		cost: ZERO_COST,
 		contextWindow: 128_000,
@@ -101,6 +106,22 @@ describe("thinking level extension", () => {
 		command.handlers.get("model_select")?.({ type: "model_select", model: nextModel }, command.ctx);
 
 		expect(command.commandOptions?.getArgumentCompletions?.("")).toEqual([{ label: "off", value: "off" }]);
+	});
+
+	it("chat_template_enabled 将 off 显示为 disabled，其他支持等级显示为 enabled", () => {
+		const command = registerCommand(createModel({
+			thinkingLevelMap: { minimal: null, low: null, medium: null, high: "max", xhigh: "ultra" },
+			compat: {
+				thinkingFormat: "chat-template",
+				chatTemplateKwargs: { enable_thinking: { $var: "thinking.enabled" } },
+			},
+		}));
+
+		expect(command.commandOptions?.getArgumentCompletions?.("")).toEqual([
+			{ label: "off → disabled", value: "off" },
+			{ label: "high → enabled", value: "high" },
+			{ label: "xhigh → enabled", value: "xhigh" },
+		]);
 	});
 
 	it("带参数时只接受当前模型支持的等级", async () => {
