@@ -7,7 +7,7 @@ import { ignoreConfigFromFileTools, isBlockedPath, isIgnoredPath, loadFileToolsC
 import { fail, isAccessDenied, isFailed, protectedPathFailure } from "../core/errors.js";
 import { defaultIgnoreEngine } from "../ignore/ignore-engine.js";
 import type { IgnoreSnapshot } from "../ignore/ignore-types.js";
-import { parseCodeUnits, type ParsedFileIndex } from "./parser.js";
+import { parseCodeUnits, type ParsedFileIndex } from "../../code-index/parser.js";
 import { guardExistingPath, PathGuardBlockedError } from "../../safety/path-guard.js";
 import { normalizeToolPath } from "../core/path-resolver.js";
 import { decodeTextFile } from "../core/text-file.js";

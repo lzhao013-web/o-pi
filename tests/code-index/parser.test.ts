@@ -1,0 +1,139 @@
+import { createRequire } from "node:module";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { createFileIdentity, createSymbolId } from "../../src/code-index/identity.js";
+import { byteRangeForLines, parseCodeUnits } from "../../src/code-index/parser.js";
+import { loadTreeSitterRuntime } from "../../src/code-index/tree-sitter-runtime.js";
+
+const require = createRequire(import.meta.url);
+const treeSitterModules = {
+	runtime: require.resolve("tree-sitter"),
+	javascript: require.resolve("tree-sitter-javascript"),
+	typescript: require.resolve("tree-sitter-typescript"),
+	python: require.resolve("tree-sitter-python"),
+	go: require.resolve("tree-sitter-go"),
+	rust: require.resolve("tree-sitter-rust"),
+};
+
+afterEach(() => {
+	vi.useRealTimers();
+	vi.doUnmock("../../src/code-index/tree-sitter-runtime.js");
+});
+
+function symbols(filePath: string, text: string): Array<[string, string | undefined, string | undefined]> {
+	return parseCodeUnits(filePath, text).units.map((unit) => [unit.kind, unit.name, unit.qualifiedName]);
+}
+
+describe("shared code parser", () => {
+	it("导入 parser、grep 和 extension 预加载时不加载 grammar，首次解析仅加载对应 grammar 并复用 runtime", async () => {
+		for (const modulePath of Object.values(treeSitterModules)) expect(require.cache[modulePath]).toBeUndefined();
+
+		await import("../../src/file-tools/tools/grep.js");
+		const { default: fileTools } = await import("../../agent/extensions/file-tools.js");
+		vi.useFakeTimers();
+		const handlers = new Map<string, (...args: unknown[]) => unknown>();
+		fileTools({
+			registerTool() {},
+			on(name: string, handler: (...args: unknown[]) => unknown) {
+				handlers.set(name, handler);
+			},
+		} as unknown as ExtensionAPI);
+		expect(handlers.get("before_agent_start")?.()).toBeUndefined();
+		await vi.runOnlyPendingTimersAsync();
+
+		parseCodeUnits("notes.txt", "plain text");
+		for (const modulePath of Object.values(treeSitterModules)) expect(require.cache[modulePath]).toBeUndefined();
+
+		parseCodeUnits("first.ts", "export function first() {}\n");
+		expect(require.cache[treeSitterModules.runtime]).toBeDefined();
+		expect(require.cache[treeSitterModules.typescript]).toBeDefined();
+		expect(require.cache[treeSitterModules.javascript]).toBeUndefined();
+		expect(require.cache[treeSitterModules.python]).toBeUndefined();
+		expect(require.cache[treeSitterModules.go]).toBeUndefined();
+		expect(require.cache[treeSitterModules.rust]).toBeUndefined();
+		expect(loadTreeSitterRuntime("typescript")).toBe(loadTreeSitterRuntime("typescript"));
+		expect(handlers.get("session_shutdown")?.()).toBeUndefined();
+	});
+
+	it("提取 TypeScript、JavaScript、Python、Go 和 Rust symbol，并保留 class method scope", () => {
+		expect(symbols("auth.ts", "export class AuthService {\n  async login() { return issueToken(); }\n}\nexport const makeSession = () => null;\n")).toEqual([
+			["class", "AuthService", "AuthService"],
+			["method", "login", "AuthService.login"],
+			["declaration", "makeSession", "makeSession"],
+		]);
+		expect(symbols("auth.js", "class AuthService { login() { return true; } }\nfunction top() {}\n")).toEqual([
+			["class", "AuthService", "AuthService"],
+			["method", "login", "AuthService.login"],
+			["function", "top", "top"],
+		]);
+		expect(symbols("worker.py", "class Worker:\n  def run(self):\n    pass\ndef top():\n  pass\n")).toEqual([
+			["class", "Worker", "Worker"],
+			["function", "run", "Worker.run"],
+			["function", "top", "top"],
+		]);
+		expect(symbols("server.go", "package main\ntype Server struct{}\nfunc Start() {}\nfunc (s Server) Stop() {}\n")).toEqual([
+			["type", "Server", "Server"],
+			["function", "Start", "Start"],
+			["function", "Stop", "Stop"],
+		]);
+		expect(symbols("server.rs", "pub struct Server;\nimpl Server { pub fn start(&self) {} }\npub fn stop() {}\n")).toEqual([
+			["type", "Server", "Server"],
+			["module", "Server", "Server"],
+			["function", "start", "Server.start"],
+			["function", "stop", "stop"],
+		]);
+	});
+
+	it("函数内部局部声明不拆分为独立 region", () => {
+		const parsed = parseCodeUnits("a.ts", "export function demo() {\n  const Token = 'Token';\n  return Token;\n}\n");
+		expect(parsed.units.map((unit) => unit.qualifiedName)).toEqual(["demo"]);
+	});
+
+	it("unsupported language 返回 text 空索引，且 file identity 使用规范化内部路径", () => {
+		expect(parseCodeUnits("./docs\\notes.conf", "section=true\n")).toEqual({
+			id: "file:docs/notes.conf",
+			path: "docs/notes.conf",
+			language: "text",
+			units: [],
+			symbols: [],
+		});
+		expect(createFileIdentity("./src/feature/../auth.ts")).toEqual({ id: "file:src/auth.ts", path: "src/auth.ts" });
+	});
+
+	it("SourceRange 使用 UTF-8 byte offset、1-based inclusive line 和半开字节区间", () => {
+		const text = "// 你\nexport function demo() {\n  return '好';\n}\n";
+		const unit = parseCodeUnits("utf8.ts", text).units[0];
+		if (unit === undefined) throw new Error("missing parsed unit");
+		expect(unit).toMatchObject({ startLine: 2, endLine: 4, startByte: Buffer.byteLength("// 你\n", "utf8") });
+		expect(Buffer.from(text, "utf8").subarray(unit.startByte, unit.endByte).toString("utf8")).toBe("export function demo() {\n  return '好';\n}");
+		expect(byteRangeForLines(text, 2, 3)).toEqual({
+			startLine: 2,
+			endLine: 3,
+			startByte: Buffer.byteLength("// 你\n", "utf8"),
+			endByte: Buffer.byteLength("// 你\nexport function demo() {\n  return '好';\n", "utf8"),
+		});
+	});
+
+	it("symbol ID 由 file、kind、qualified name 和 start byte 决定，同名位置可区分且不依赖 end byte", () => {
+		const input = { fileId: "file:src/a.ts", kind: "function", qualifiedName: "demo", startByte: 12 };
+		expect(createSymbolId(input)).toBe("symbol:file%3Asrc%2Fa.ts:function:demo:12");
+		expect(createSymbolId(input)).toBe(createSymbolId({ ...input }));
+		expect(createSymbolId({ ...input, startByte: 48 })).not.toBe(createSymbolId(input));
+
+		const short = parseCodeUnits("a.ts", "export function demo() {}\n").units[0];
+		const long = parseCodeUnits("a.ts", "export function demo() { return 1; }\n").units[0];
+		expect(short?.id).toBe(long?.id);
+	});
+
+	it("runtime 或 grammar 失败时安全降级为空代码单元", async () => {
+		vi.resetModules();
+		vi.doMock("../../src/code-index/tree-sitter-runtime.js", () => ({
+			loadTreeSitterRuntime() {
+				throw new Error("simulated grammar failure");
+			},
+		}));
+		const { parseCodeUnits: parseWithFailure } = await import("../../src/code-index/parser.js");
+		expect(parseWithFailure("broken.ts", "export function demo() {}\n")).toMatchObject({ language: "typescript", units: [] });
+	});
+});

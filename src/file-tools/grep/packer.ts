@@ -1,5 +1,5 @@
 import { countTextTokensSync } from "../../token-counter.js";
-import { byteRangeForLines, extractByteRange } from "./parser.js";
+import { byteRangeForLines, extractByteRange } from "../../code-index/parser.js";
 import type { RankedGrepRegion } from "./ranker.js";
 import type { GrepMatchMode, GrepRegion, GrepSkippedFiles, GrepSuccess } from "../types.js";
 

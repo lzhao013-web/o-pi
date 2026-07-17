@@ -1,14 +1,10 @@
-import { byteRangeForLines, extractByteRange, splitTokens, tokenizeText, type IndexedCodeUnit } from "./parser.js";
+import { byteRangeForLines, extractByteRange, splitTokens, tokenizeText, type IndexedCodeUnit, type SourceRange } from "../../code-index/parser.js";
 import type { GrepMatchMode } from "../types.js";
 
-export interface RankedGrepRegion {
+export interface RankedGrepRegion extends SourceRange {
 	id: string;
 	path: string;
 	kind: string;
-	startLine: number;
-	endLine: number;
-	startByte: number;
-	endByte: number;
 	symbol?: string;
 	signature?: string;
 	score: number;

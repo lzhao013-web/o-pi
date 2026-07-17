@@ -7,7 +7,7 @@ import { getGrepIndex } from "../grep/indexer.js";
 import { decodeTextFile } from "../core/text-file.js";
 import { packGrepResults, renderGrepSuccess, selectGrepCandidatesForPacking } from "../grep/packer.js";
 import { rankGrepRegions, type RankedGrepRegion } from "../grep/ranker.js";
-import { byteRangeForLines } from "../grep/parser.js";
+import { byteRangeForLines } from "../../code-index/parser.js";
 import type { FileToolLspHooks, FileToolLspSymbolCandidate, GrepMatchMode, GrepParams, GrepSuccess, ToolOutcome } from "../types.js";
 
 interface NormalizedGrepParams {

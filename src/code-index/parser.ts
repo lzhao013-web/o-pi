@@ -1,49 +1,18 @@
-import { createRequire } from "node:module";
 import type ParserModule from "tree-sitter";
 
-const require = createRequire(import.meta.url);
-const Parser = require("tree-sitter") as typeof ParserModule;
-const JavaScript = require("tree-sitter-javascript") as TreeSitterLanguage;
-const TypeScript = require("tree-sitter-typescript") as { typescript: TreeSitterLanguage; tsx: TreeSitterLanguage };
-const Python = require("tree-sitter-python") as TreeSitterLanguage;
-const Go = require("tree-sitter-go") as TreeSitterLanguage;
-const Rust = require("tree-sitter-rust") as TreeSitterLanguage;
+import { createFileIdentity, createSymbolId } from "./identity.js";
+import { loadTreeSitterRuntime } from "./tree-sitter-runtime.js";
+import type { CodeLanguage, IndexedCodeUnit, ParsedFileIndex, SourceRange } from "./types.js";
 
-export interface IndexedCodeUnit {
-	id: string;
-	path: string;
-	language: string;
-	kind: string;
-	name?: string;
-	qualifiedName?: string;
-	signature?: string;
-	startLine: number;
-	endLine: number;
-	startByte: number;
-	endByte: number;
-	tokens: Map<string, number>;
-	definitions: string[];
-	references: string[];
-	calls: string[];
-	imports: string[];
-}
-
-export interface ParsedFileIndex {
-	path: string;
-	language: string;
-	units: IndexedCodeUnit[];
-	symbols: string[];
-}
+export type { CodeLanguage, IndexedCodeUnit, ParsedFileIndex, SourceRange } from "./types.js";
 
 interface RawUnit {
 	kind: string;
 	name?: string;
 	qualifiedName?: string;
-	startByte: number;
-	endByte: number;
+	startChar: number;
+	endChar: number;
 }
-
-type TreeSitterLanguage = ParserModule.Language;
 
 interface LineIndex {
 	lineStarts: number[];
@@ -52,16 +21,6 @@ interface LineIndex {
 
 const IDENTIFIER = /[A-Za-z_$][\w$]*|[A-Za-z_][A-Za-z0-9_]*[-_][A-Za-z0-9_-]+|\d+/g;
 type SyntaxNode = ParserModule.SyntaxNode;
-
-const TREE_SITTER_LANGUAGES: Record<string, TreeSitterLanguage | undefined> = {
-	javascript: JavaScript,
-	jsx: JavaScript,
-	typescript: TypeScript.typescript,
-	tsx: TypeScript.tsx,
-	python: Python,
-	go: Go,
-	rust: Rust,
-};
 
 const TS_UNIT_KINDS = new Set([
 	"function_declaration",
@@ -91,19 +50,20 @@ const RUST_UNIT_KINDS = new Set([
 
 /** 解析单个文件的代码单元；不支持或解析失败时返回空索引，由 grep 层退化为文本片段。 */
 export function parseCodeUnits(filePath: string, text: string): ParsedFileIndex {
+	const file = createFileIdentity(filePath);
 	const language = languageFromPath(filePath);
 	const rawUnits = parseByLanguage(language, text);
 	const lineIndex = buildLineIndex(text);
-	const units = rawUnits.map((unit, index) => buildIndexedUnit(filePath, language, text, lineIndex, unit, index));
+	const units = rawUnits.map((unit) => buildIndexedUnit(file, language, text, lineIndex, unit));
 	return {
-		path: filePath,
+		...file,
 		language,
 		units,
 		symbols: units.flatMap((unit) => [unit.name, unit.qualifiedName].filter((value): value is string => value !== undefined)),
 	};
 }
 
-export function languageFromPath(filePath: string): string {
+export function languageFromPath(filePath: string): CodeLanguage {
 	const lower = filePath.toLowerCase();
 	if (lower.endsWith(".tsx")) return "tsx";
 	if (lower.endsWith(".ts")) return "typescript";
@@ -140,23 +100,24 @@ export function lineForByte(text: string, byteOffset: number): number {
 	return lineForByteWithIndex(lineIndex, byteOffset);
 }
 
-export function byteRangeForLines(text: string, startLine: number, endLine: number): { startByte: number; endByte: number } {
+export function byteRangeForLines(text: string, startLine: number, endLine: number): SourceRange {
 	const index = buildLineIndex(text);
 	const startByte = index.lineStarts[Math.max(0, startLine - 1)] ?? 0;
 	const endByte = index.lineStarts[endLine] ?? Buffer.byteLength(text, "utf8");
-	return { startByte, endByte };
+	return { startLine, endLine, startByte, endByte };
 }
 
 export function extractByteRange(text: string, startByte: number, endByte: number): string {
 	return Buffer.from(text, "utf8").subarray(startByte, endByte).toString("utf8").replace(/\s+$/u, "");
 }
 
-function parseByLanguage(language: string, text: string): RawUnit[] {
-	const treeSitterLanguage = TREE_SITTER_LANGUAGES[language];
-	if (treeSitterLanguage === undefined) return [];
+function parseByLanguage(language: CodeLanguage, text: string): RawUnit[] {
+	if (language === "text") return [];
 	try {
-		const parser = new Parser();
-		parser.setLanguage(treeSitterLanguage);
+		const runtime = loadTreeSitterRuntime(language);
+		if (runtime === undefined) return [];
+		const parser = new runtime.Parser();
+		parser.setLanguage(runtime.language);
 		return collectTreeSitterUnits(language, parser.parse(text).rootNode).sort(compareRawUnits);
 	} catch {
 		return [];
@@ -247,8 +208,8 @@ function rawUnit(node: SyntaxNode, kind: string, name: string, scope?: string): 
 		kind,
 		name,
 		qualifiedName: scope === undefined ? name : `${scope}.${name}`,
-		startByte: range.startIndex,
-		endByte: range.endIndex,
+		startChar: range.startIndex,
+		endChar: range.endIndex,
 	};
 }
 
@@ -280,26 +241,34 @@ function firstNamedChildText(node: SyntaxNode, types: readonly string[]): string
 	return node.namedChildren.find((child) => types.includes(child.type))?.text;
 }
 
-function buildIndexedUnit(filePath: string, language: string, text: string, lineIndex: LineIndex, unit: RawUnit, index: number): IndexedCodeUnit {
-	const content = extractByteRange(text, unit.startByte, unit.endByte);
+function buildIndexedUnit(file: { id: string; path: string }, language: CodeLanguage, text: string, lineIndex: LineIndex, unit: RawUnit): IndexedCodeUnit {
+	const startByte = byteForCharWithIndex(text, lineIndex, unit.startChar);
+	const endByte = byteForCharWithIndex(text, lineIndex, unit.endChar);
+	const content = extractByteRange(text, startByte, endByte);
 	const signature = firstNonEmptyLine(content);
-	const nameText = [filePath, unit.name, unit.qualifiedName, signature, content].join("\n");
+	const nameText = [file.path, unit.name, unit.qualifiedName, signature, content].join("\n");
 	const tokens = tokenizeText(nameText);
 	const references = Array.from(new Set(splitTokens(content))).filter((token) => !/^\d+$/u.test(token));
 	const calls = Array.from(content.matchAll(/\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*\(/gu), (match) => match[1] ?? "").filter(Boolean);
 	const imports = Array.from(content.matchAll(/\b(?:from|import|require)\s*(?:\(\s*)?["']([^"']+)["']/gu), (match) => match[1] ?? "").filter(Boolean);
 	return {
-		id: `${filePath}:${unit.startByte}:${unit.endByte}:${index}`,
-		path: filePath,
+		id: createSymbolId({
+			fileId: file.id,
+			kind: unit.kind,
+			...(unit.name !== undefined ? { name: unit.name } : {}),
+			...(unit.qualifiedName !== undefined ? { qualifiedName: unit.qualifiedName } : {}),
+			startByte,
+		}),
+		path: file.path,
 		language,
 		kind: unit.kind,
 		...(unit.name !== undefined ? { name: unit.name } : {}),
 		...(unit.qualifiedName !== undefined ? { qualifiedName: unit.qualifiedName } : {}),
 		...(signature !== undefined ? { signature } : {}),
-		startLine: lineForByteWithIndex(lineIndex, unit.startByte),
-		endLine: lineForByteWithIndex(lineIndex, Math.max(unit.startByte, unit.endByte - 1)),
-		startByte: unit.startByte,
-		endByte: unit.endByte,
+		startLine: lineForByteWithIndex(lineIndex, startByte),
+		endLine: lineForByteWithIndex(lineIndex, Math.max(startByte, endByte - 1)),
+		startByte,
+		endByte,
 		tokens,
 		definitions: unit.name === undefined ? [] : [unit.name],
 		references,
@@ -316,15 +285,31 @@ function buildLineIndex(text: string): LineIndex {
 	const lineStarts = [0];
 	const lineStartChars = [0];
 	let bytes = 0;
-	for (let index = 0; index < text.length; index += 1) {
-		const char = text[index] ?? "";
+	let chars = 0;
+	for (const char of text) {
 		bytes += Buffer.byteLength(char, "utf8");
+		chars += char.length;
 		if (char === "\n") {
 			lineStarts.push(bytes);
-			lineStartChars.push(index + 1);
+			lineStartChars.push(chars);
 		}
 	}
 	return { lineStarts, lineStartChars };
+}
+
+function byteForCharWithIndex(text: string, index: LineIndex, charOffset: number): number {
+	let low = 0;
+	let high = index.lineStartChars.length - 1;
+	while (low <= high) {
+		const middle = Math.floor((low + high) / 2);
+		const start = index.lineStartChars[middle] ?? 0;
+		if (start <= charOffset) low = middle + 1;
+		else high = middle - 1;
+	}
+	const line = Math.max(0, high);
+	const lineStartChar = index.lineStartChars[line] ?? 0;
+	const lineStartByte = index.lineStarts[line] ?? 0;
+	return lineStartByte + Buffer.byteLength(text.slice(lineStartChar, charOffset), "utf8");
 }
 
 function lineForByteWithIndex(index: LineIndex, byteOffset: number): number {
@@ -348,5 +333,5 @@ function splitIdentifier(value: string): string[] {
 }
 
 function compareRawUnits(left: RawUnit, right: RawUnit): number {
-	return left.startByte - right.startByte || left.endByte - right.endByte || left.kind.localeCompare(right.kind);
+	return left.startChar - right.startChar || left.endChar - right.endChar || left.kind.localeCompare(right.kind);
 }

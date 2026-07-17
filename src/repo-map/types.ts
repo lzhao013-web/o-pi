@@ -1,0 +1,64 @@
+import type { FileIdentity, SourceRange } from "../code-index/types.js";
+
+export type RepoMapFreshness = "fresh" | "partially_stale" | "stale" | "unavailable";
+
+export interface RepoMapRepositoryNode {
+	kind: "repository";
+	id: string;
+	repositoryRoot: string;
+	worktreeRoot: string;
+}
+
+export interface RepoMapFileNode extends FileIdentity {
+	kind: "file";
+	language: string;
+}
+
+export interface RepoMapSymbolNode extends SourceRange {
+	kind: "symbol";
+	id: string;
+	fileId: string;
+	symbolKind: string;
+	name?: string;
+	qualifiedName?: string;
+}
+
+export type RepoMapNode = RepoMapRepositoryNode | RepoMapFileNode | RepoMapSymbolNode;
+
+export type RepoMapEdgeKind = "contains" | "imports" | "exports" | "references" | "calls";
+export type RepoMapEdgeResolution = "lexical" | "syntactic" | "semantic";
+export type RepoMapEdgeSource = "tree-sitter" | "manifest" | "lsp" | "convention";
+
+export interface RepoMapEvidence extends SourceRange {
+	path: string;
+	textHash?: string;
+}
+
+export interface RepoMapEdge {
+	from: string;
+	to: string;
+	kind: RepoMapEdgeKind;
+	resolution: RepoMapEdgeResolution;
+	source: RepoMapEdgeSource;
+	confidence: number;
+	evidence: RepoMapEvidence[];
+}
+
+export interface RepoMapMetadata {
+	schemaVersion: number;
+	mapId: string;
+	repositoryRoot: string;
+	worktreeRoot: string;
+	generation: string;
+	createdAt: string;
+	updatedAt: string;
+	freshness: RepoMapFreshness;
+	fileCount: number;
+	indexedFileCount: number;
+	symbolCount: number;
+	edgeCount: number;
+	gitRevision?: string;
+	configFingerprint: string;
+	ignoreFingerprint: string;
+	parserFingerprint: string;
+}
