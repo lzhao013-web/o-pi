@@ -4,6 +4,7 @@ agent/state
 agent/sessions
 agent/cookies.txt
 agent/models.jsonc
+agent/models-store.json
 
 subagents/
 .pi/
