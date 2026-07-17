@@ -60,7 +60,7 @@ describe("approval policy", () => {
 	it("非法 regex 在配置加载阶段报错", async () => {
 		const configPath = path.join(dir, "approval.jsonc");
 		process.env.PI_APPROVAL_GATE_CONFIG = configPath;
-		await writeFile(configPath, '{ "version": 1, "ask_rules": [{ "name": "bad", "tools": ["bash"], "command_regex": "(", "reason": "bad" }] }');
+		await writeFile(configPath, '{ "ask_rules": [{ "name": "bad", "tools": ["bash"], "command_regex": "(", "reason": "bad" }] }');
 		await expect(loadApprovalGateConfig()).rejects.toThrow("invalid regular expression");
 	});
 });

@@ -4,13 +4,9 @@
 	"title": "Pi bash-tool config",
 	"type": "object",
 	"additionalProperties": false,
-	"required": ["version"],
 	"properties": {
 		"$schema": {
 			"type": "string"
-		},
-		"version": {
-			"const": 1
 		},
 		"default_timeout_seconds": {
 			"type": "integer",

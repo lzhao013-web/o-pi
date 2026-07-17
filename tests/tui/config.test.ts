@@ -22,7 +22,7 @@ describe("tui config", () => {
 		const file = path.join(dir, "tui.jsonc");
 		await writeFile(
 			file,
-			'{ "version": 1, "icons": "ascii", "chrome": { "footer": false }, "footer": { "style": { "workspace_color": "warning", "git_color": "accent", "git_icon": "" } }, "banner": { "layout": "stacked", "style": "compact", "side_by_side_min_width": 120, "tiny_width": 36, "show_hints": false } }',
+			'{ "icons": "ascii", "chrome": { "footer": false }, "footer": { "style": { "workspace_color": "warning", "git_color": "accent", "git_icon": "" } }, "banner": { "layout": "stacked", "style": "compact", "side_by_side_min_width": 120, "tiny_width": 36, "show_hints": false } }',
 		);
 		process.env["PI_TUI_CONFIG"] = file;
 		const config = await loadTuiConfig();
@@ -44,7 +44,7 @@ describe("tui config", () => {
 
 	it("缺失 banner 时合并默认值", async () => {
 		const file = path.join(dir, "no-banner.jsonc");
-		await writeFile(file, '{ "version": 1, "chrome": { "header": true } }');
+		await writeFile(file, '{ "chrome": { "header": true } }');
 		process.env["PI_TUI_CONFIG"] = file;
 		const config = await loadTuiConfig();
 		expect(config.banner).toEqual(defaultTuiConfig().banner);
@@ -53,7 +53,7 @@ describe("tui config", () => {
 
 	it("加载 math 配置覆盖并合并默认值", async () => {
 		const file = path.join(dir, "math.jsonc");
-		await writeFile(file, '{ "version": 1, "math": { "inline": "source", "svg_scale": 4, "foreground": "#ffffff" } }');
+		await writeFile(file, '{ "math": { "inline": "source", "svg_scale": 4, "foreground": "#ffffff" } }');
 		process.env["PI_TUI_CONFIG"] = file;
 		const config = await loadTuiConfig();
 		expect(config.math.enabled).toBe(true);
@@ -65,26 +65,26 @@ describe("tui config", () => {
 
 	it("schema 校验失败给出错误", async () => {
 		const file = path.join(dir, "bad.jsonc");
-		await writeFile(file, '{ "version": 2 }');
+		await writeFile(file, '{ "unknown": true }');
 		process.env["PI_TUI_CONFIG"] = file;
 		await expect(loadTuiConfig()).rejects.toBeInstanceOf(TuiConfigError);
 	});
 
 	it("collapsed_lines 只能是 2", async () => {
 		const file = path.join(dir, "bad-lines.jsonc");
-		await writeFile(file, '{ "version": 1, "tools": { "collapsed_lines": 3 } }');
+		await writeFile(file, '{ "tools": { "collapsed_lines": 3 } }');
 		process.env["PI_TUI_CONFIG"] = file;
 		await expect(loadTuiConfig()).rejects.toBeInstanceOf(TuiConfigError);
 	});
 
 	it("非法 banner layout/style/width 被 schema 拒绝", async () => {
 		for (const [name, text] of [
-			["layout", '{ "version": 1, "banner": { "layout": "wide" } }'],
-			["style", '{ "version": 1, "banner": { "style": "full" } }'],
-			["side", '{ "version": 1, "banner": { "side_by_side_min_width": 40 } }'],
-			["tiny", '{ "version": 1, "banner": { "tiny_width": 12 } }'],
-			["math-inline", '{ "version": 1, "math": { "inline": "image" } }'],
-			["math-color", '{ "version": 1, "math": { "foreground": "white" } }'],
+			["layout", '{ "banner": { "layout": "wide" } }'],
+			["style", '{ "banner": { "style": "full" } }'],
+			["side", '{ "banner": { "side_by_side_min_width": 40 } }'],
+			["tiny", '{ "banner": { "tiny_width": 12 } }'],
+			["math-inline", '{ "math": { "inline": "image" } }'],
+			["math-color", '{ "math": { "foreground": "white" } }'],
 		] as const) {
 			const file = path.join(dir, `${name}.jsonc`);
 			await writeFile(file, text);

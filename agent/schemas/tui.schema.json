@@ -4,10 +4,8 @@
 	"title": "o-pi TUI config",
 	"type": "object",
 	"additionalProperties": false,
-	"required": ["version"],
 	"properties": {
 		"$schema": { "type": "string" },
-		"version": { "const": 1 },
 		"enabled": { "type": "boolean", "default": true },
 		"preset": { "enum": ["compact", "minimal"], "default": "compact" },
 		"icons": { "enum": ["unicode", "ascii", "nerd", "auto"], "default": "unicode" },

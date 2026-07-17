@@ -112,7 +112,7 @@ describe("bash tool execution", () => {
 
 	it("非法 deny_regex 在配置加载时给出清晰错误", async () => {
 		const file = path.join(workspace, "bash-tool.jsonc");
-		await writeFile(file, JSON.stringify({ version: 1, safety: { deny_regex: ["("] } }));
+		await writeFile(file, JSON.stringify({ safety: { deny_regex: ["("] } }));
 		process.env.PI_BASH_TOOL_CONFIG = file;
 		await expect(loadBashToolConfig()).rejects.toThrow("deny_regex contains an invalid regular expression");
 	});

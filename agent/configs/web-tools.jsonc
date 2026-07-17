@@ -1,6 +1,5 @@
 {
 	"$schema": "../schemas/web-tools.schema.json",
-	"version": 2,
 
 	"network": {
 		// Clash/mihomo TUN fake-ip 可填 ["198.18.0.0/15"] 或更窄范围。

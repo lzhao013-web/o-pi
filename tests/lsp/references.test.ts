@@ -22,7 +22,6 @@ describe("lsp references", () => {
 		await writeFile(
 			config,
 			JSON.stringify({
-				version: 1,
 				enabled: true,
 				exclude_paths: [workspace],
 				servers: [{ id: "fake", command: "missing-lsp", extensions: [".ts"] }],
@@ -42,7 +41,6 @@ describe("lsp references", () => {
 		await writeFile(
 			config,
 			JSON.stringify({
-				version: 1,
 				enabled: true,
 				startup_timeout_ms: 200,
 				servers: [{ id: "missing", command: "definitely-missing-o-pi-lsp", extensions: [".ts"] }],
@@ -68,7 +66,6 @@ describe("lsp references", () => {
 		await writeFile(
 			config,
 			JSON.stringify({
-				version: 1,
 				enabled: true,
 				startup_timeout_ms: 2000,
 				request_timeout_ms: 2000,

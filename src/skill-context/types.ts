@@ -28,9 +28,8 @@ export interface SkillDeactivationEntry {
 	clearedAt: string;
 }
 
-/** 当前配置文件版本固定为 1，字段保持少量且直接对应运行时行为。 */
+/** 字段保持少量且直接对应运行时行为。 */
 export interface SkillContextConfig {
-	version: 1;
 	enabled: boolean;
 	max_active: number;
 	on_load_conflict: "replace" | "stack";

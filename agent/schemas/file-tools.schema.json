@@ -4,13 +4,9 @@
 	"title": "Pi file-tools config",
 	"type": "object",
 	"additionalProperties": false,
-	"required": ["version"],
 	"properties": {
 		"$schema": {
 			"type": "string"
-		},
-		"version": {
-			"const": 1
 		},
 		"blocked_path": {
 			"type": "array",

@@ -1,6 +1,5 @@
 {
 	"$schema": "../schemas/tui.schema.json",
-	"version": 1,
 	"enabled": true,
 
 	"preset": "compact",

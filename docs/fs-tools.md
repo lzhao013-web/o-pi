@@ -99,7 +99,6 @@ ignore：路径是否应从自动发现、遍历、搜索或索引中排除。
 ```jsonc
 {
 	"$schema": "../schemas/file-tools.schema.json",
-	"version": 1,
 	"blocked_path": [".git/"],
 	"ignored_path": [],
 	"limits": {

@@ -42,7 +42,7 @@ function writeWorkspaceFile(cwd: string, params: unknown): Promise<ToolOutcome<W
 
 async function useFileToolsConfig(config: Record<string, unknown>): Promise<void> {
 	const configPath = path.join(outside, `file-tools-${Date.now()}-${Math.random()}.jsonc`);
-	await writeFile(configPath, JSON.stringify({ version: 1, ...config }, null, 2));
+	await writeFile(configPath, JSON.stringify(config, null, 2));
 	process.env.PI_FILE_TOOLS_CONFIG = configPath;
 }
 
@@ -71,7 +71,6 @@ describe("ls", () => {
 			configPath,
 			[
 				"{",
-				'  "version": 1,',
 				'  "blocked_path": ["blocked/"],',
 				'  "ignored_path": ["ignored.txt"],',
 				'  "limits": { "ls_entries": 1 }',

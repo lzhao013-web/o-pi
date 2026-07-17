@@ -4,7 +4,6 @@ import type { ApprovalGateConfig, ApprovalRule } from "./types.js";
 const CONFIG_PATH_ENV = "PI_APPROVAL_GATE_CONFIG";
 
 const defaultConfig: ApprovalGateConfig = {
-	version: 1,
 	enabled: true,
 	ui: {
 		timeout_ms: 0,
@@ -85,7 +84,6 @@ export function defaultApprovalGateConfig(): ApprovalGateConfig {
 }
 
 interface RawApprovalGateConfig {
-	version: 1;
 	enabled?: boolean;
 	ui?: Partial<ApprovalGateConfig["ui"]>;
 	remember?: Partial<ApprovalGateConfig["remember"]>;
@@ -96,7 +94,6 @@ interface RawApprovalGateConfig {
 
 function mergeConfig(raw: RawApprovalGateConfig): ApprovalGateConfig {
 	const merged: ApprovalGateConfig = {
-		version: 1,
 		enabled: raw.enabled ?? defaultConfig.enabled,
 		ui: {
 			timeout_ms: raw.ui?.timeout_ms ?? defaultConfig.ui.timeout_ms,

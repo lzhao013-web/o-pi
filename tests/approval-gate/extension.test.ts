@@ -60,7 +60,7 @@ describe("approval gate", () => {
 
 	it("config disabled 时所有请求通过 extension handler 放行", async () => {
 		const configPath = path.join(dir, "approval.jsonc");
-		await writeFile(configPath, '{ "version": 1, "enabled": false }');
+		await writeFile(configPath, '{ "enabled": false }');
 		process.env.PI_APPROVAL_GATE_CONFIG = configPath;
 		const handler = captureExtensionHandler();
 		expect(await handler(bash("git push origin main"), ctx(fakeUi(["Deny"])))).toBeUndefined();

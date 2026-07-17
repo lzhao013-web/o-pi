@@ -1,6 +1,5 @@
 {
 	"$schema": "../schemas/bash-tool.schema.json",
-	"version": 1,
 
 	"default_timeout_seconds": 300,
 

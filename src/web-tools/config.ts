@@ -8,7 +8,6 @@ const CONFIG_PATH_ENV = "PI_WEB_TOOLS_CONFIG";
 const COOKIES_PATH_ENV = "PI_WEB_TOOLS_COOKIES";
 
 const defaultConfig: WebToolsConfig = {
-	version: 2,
 	network: {
 		fake_ip_ranges: [],
 	},
@@ -81,7 +80,6 @@ export function defaultCookiePath(): string {
 }
 
 interface RawWebToolsConfig {
-	version: 2;
 	network?: Partial<WebToolsConfig["network"]>;
 	websearch?: {
 		provider_order?: WebToolsConfig["websearch"]["provider_order"];
@@ -102,7 +100,6 @@ interface RawWebToolsConfig {
 
 function mergeConfig(raw: RawWebToolsConfig): WebToolsConfig {
 	const merged: WebToolsConfig = {
-		version: 2,
 		network: {
 			fake_ip_ranges: raw.network?.fake_ip_ranges ?? [...defaultConfig.network.fake_ip_ranges],
 		},

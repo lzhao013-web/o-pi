@@ -4,7 +4,6 @@ import type { SkillContextConfig } from "./types.js";
 const CONFIG_PATH_ENV = "PI_SKILL_CONTEXT_CONFIG";
 
 const defaultConfig: SkillContextConfig = {
-	version: 1,
 	enabled: true,
 	max_active: 1,
 	on_load_conflict: "replace",
@@ -38,7 +37,6 @@ export function defaultSkillContextConfig(): SkillContextConfig {
 }
 
 interface RawSkillContextConfig {
-	version: 1;
 	enabled?: boolean;
 	max_active?: number;
 	on_load_conflict?: SkillContextConfig["on_load_conflict"];
@@ -49,7 +47,6 @@ interface RawSkillContextConfig {
 
 function mergeConfig(raw: RawSkillContextConfig): SkillContextConfig {
 	const merged: SkillContextConfig = {
-		version: 1,
 		enabled: raw.enabled ?? defaultConfig.enabled,
 		max_active: raw.max_active ?? defaultConfig.max_active,
 		on_load_conflict: raw.on_load_conflict ?? defaultConfig.on_load_conflict,

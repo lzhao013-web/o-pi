@@ -1,6 +1,5 @@
 {
 	"$schema": "../schemas/repo-map.schema.json",
-	"version": 1,
 	"scan": {
 		"max_files": 100000,
 		"max_file_bytes": 1048576,

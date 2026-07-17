@@ -26,7 +26,6 @@ describe("lsp config", () => {
 			file,
 			`{
 				"$schema": "../schemas/lsp.schema.json",
-				"version": 1,
 				"exclude_paths": ["~"],
 				"request_timeout_ms": 700,
 				"diagnostics": { "max_items": 3, "min_severity": "error", },
@@ -50,16 +49,16 @@ describe("lsp config", () => {
 	it("拒绝 schema 错误", async () => {
 		const file = path.join(dir, "bad.jsonc");
 		process.env.PI_LSP_CONFIG = file;
-		await writeFile(file, '{ "version": 1, "unknown": true }');
+		await writeFile(file, '{ "unknown": true }');
 		await expect(loadLspConfig()).rejects.toThrow("does not match schema");
 
-		await writeFile(file, '{ "version": 1, "diagnostics": { "min_severity": "fatal" } }');
+		await writeFile(file, '{ "diagnostics": { "min_severity": "fatal" } }');
 		await expect(loadLspConfig()).rejects.toThrow("does not match schema");
 	});
 
 	it("环境变量覆盖配置路径", async () => {
 		const file = path.join(dir, "override.jsonc");
-		await writeFile(file, '{ "version": 1, "enabled": false }');
+		await writeFile(file, '{ "enabled": false }');
 		process.env.PI_LSP_CONFIG = file;
 		expect(await loadLspConfig()).toMatchObject({ path: file, config: { enabled: false } });
 	});

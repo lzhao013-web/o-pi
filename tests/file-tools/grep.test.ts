@@ -32,7 +32,6 @@ async function writeConfig(configPath: string, limits: Record<string, number> = 
 		configPath,
 		JSON.stringify(
 			{
-				version: 1,
 				blocked_path: [".git/"],
 				ignored_path: [],
 				ignore: { builtin_profile: "none", gitignore: false },

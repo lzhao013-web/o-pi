@@ -13,7 +13,6 @@ export interface BashLimits {
 }
 
 export interface BashToolConfig {
-	version: 1;
 	default_timeout_seconds: number;
 	limits: BashLimits;
 	safety?: {

@@ -51,7 +51,6 @@ export interface ApprovalRule {
 }
 
 export interface ApprovalGateConfig {
-	version: 1;
 	enabled: boolean;
 	ui: {
 		timeout_ms: number;

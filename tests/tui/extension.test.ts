@@ -148,7 +148,7 @@ describe("tui extension", () => {
 
 	it("turn_start 清掉 banner 后可恢复普通 one-line header", async () => {
 		const file = path.join(dir, "tui.jsonc");
-		await writeFile(file, '{ "version": 1, "chrome": { "header": true }, "banner": { "clear_on_first_turn": true } }');
+		await writeFile(file, '{ "chrome": { "header": true }, "banner": { "clear_on_first_turn": true } }');
 		process.env["PI_TUI_CONFIG"] = file;
 		const handlers = new Map<string, Handler>();
 		const calls = createUiCalls();

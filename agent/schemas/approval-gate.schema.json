@@ -4,10 +4,8 @@
 	"title": "Pi approval-gate config",
 	"type": "object",
 	"additionalProperties": false,
-	"required": ["version"],
 	"properties": {
 		"$schema": { "type": "string" },
-		"version": { "const": 1 },
 		"enabled": { "type": "boolean", "default": true },
 		"ui": {
 			"type": "object",

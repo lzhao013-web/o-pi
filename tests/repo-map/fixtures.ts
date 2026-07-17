@@ -14,7 +14,6 @@ import type { RepoMapFileRecord, RepoMapMetadata } from "../../src/repo-map/type
 export async function configureFileTools(configRoot: string, limits: Readonly<Record<string, number>>): Promise<void> {
 	const configPath = path.join(configRoot, "file-tools.jsonc");
 	await writeFile(configPath, JSON.stringify({
-		version: 1,
 		blocked_path: [".git/"],
 		ignored_path: [],
 		ignore: { builtin_profile: "none", gitignore: false },

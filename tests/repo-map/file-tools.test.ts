@@ -322,7 +322,7 @@ describe("Repo Map freshness and rebuild modes", () => {
 		let activation = activationFromMetadata(first.metadata);
 		expect((await readActivatedRepoMapState(activation))?.metadata.freshness).toBe("fresh");
 
-		await writeFile(process.env.PI_REPO_MAP_CONFIG ?? "", JSON.stringify({ version: 1, scan: { concurrency: 2 } }));
+		await writeFile(process.env.PI_REPO_MAP_CONFIG ?? "", JSON.stringify({ scan: { concurrency: 2 } }));
 		expect((await readActivatedRepoMapState(activation))?.metadata.freshness).toBe("stale");
 		const configRefresh = await initializeRepoMap({ cwd: root, mode: "refresh" });
 		activation = activationFromMetadata(configRefresh.metadata);

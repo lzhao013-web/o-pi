@@ -1,6 +1,5 @@
 {
 	"$schema": "../schemas/file-tools.schema.json",
-	"version": 1,
 
 	// 硬阻止：不能直接访问，也不会出现在 ls 结果中。
 	"blocked_path": [

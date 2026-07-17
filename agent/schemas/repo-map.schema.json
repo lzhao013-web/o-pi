@@ -4,10 +4,8 @@
 	"title": "Pi Repo Map config",
 	"type": "object",
 	"additionalProperties": false,
-	"required": ["version"],
 	"properties": {
 		"$schema": { "type": "string" },
-		"version": { "const": 1 },
 		"scan": {
 			"type": "object",
 			"additionalProperties": false,

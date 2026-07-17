@@ -30,7 +30,6 @@ const defaultServers: LspServerConfig[] = [
 ];
 
 const defaultConfig: LspConfig = {
-	version: 1,
 	enabled: true,
 	exclude_paths: [],
 	startup_timeout_ms: 8000,
@@ -66,7 +65,6 @@ export class LspConfigError extends Error {
 }
 
 interface RawLspConfig {
-	version: 1;
 	enabled?: boolean;
 	exclude_paths?: string[];
 	startup_timeout_ms?: number;
@@ -110,7 +108,6 @@ export function resolveLspConfigPath(): string {
 function mergeConfig(raw: RawLspConfig): LspConfig {
 	const base = defaultLspConfig();
 	return {
-		version: 1,
 		enabled: raw.enabled ?? base.enabled,
 		exclude_paths: (raw.exclude_paths ?? base.exclude_paths).map(normalizeExcludePath),
 		startup_timeout_ms: raw.startup_timeout_ms ?? base.startup_timeout_ms,

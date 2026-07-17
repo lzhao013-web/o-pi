@@ -65,13 +65,13 @@ describe("Repo Map config", () => {
 	it("loads JSONC from the environment override and merges defaults", async () => {
 		const configPath = path.join(temp.path, "repo-map.jsonc");
 		process.env["PI_REPO_MAP_CONFIG"] = configPath;
-		await writeFile(configPath, `{ "version": 1, "scan": { "concurrency": 3, }, // comment\n }`);
+		await writeFile(configPath, `{ "scan": { "concurrency": 3, }, // comment\n }`);
 		expect(await loadRepoMapConfig()).toMatchObject({ scan: { concurrency: 3, max_files: 100_000 }, cache: { max_generations: 2 } });
 	});
 
 	it.each([
-		[`{ "version": 1, "scan": { "concurrency": 0 } }`, "schema"],
-		[`{ "version": 1,`, "JSONC"],
+		[`{ "scan": { "concurrency": 0 } }`, "schema"],
+		[`{ "scan":`, "JSONC"],
 	] as const)("rejects invalid config (%s)", async (content, message) => {
 		const configPath = path.join(temp.path, "bad.jsonc");
 		process.env["PI_REPO_MAP_CONFIG"] = configPath;

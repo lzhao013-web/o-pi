@@ -21,7 +21,6 @@ describe("file-tools config", () => {
 			validPath,
 			[
 				"{",
-				'  "version": 1,',
 				'  "limits": {',
 				'    "find_output_token_budget": 800,',
 				'    "find_result_limit": 50,',
@@ -44,7 +43,6 @@ describe("file-tools config", () => {
 			invalidPath,
 			[
 				"{",
-				'  "version": 1,',
 				'  "limits": {',
 				'    "find_flat_result_limit": 5,',
 				'    "find_grouped_result_limit": 40,',
@@ -66,7 +64,6 @@ describe("file-tools config", () => {
 		await writeFile(
 			userPath,
 			JSON.stringify({
-				version: 1,
 				blocked_path: ["user-block/"],
 				ignored_path: ["user-ignore/"],
 				limits: { ls_entries: 100 },
@@ -79,7 +76,6 @@ describe("file-tools config", () => {
 		await writeFile(
 			path.join(workspace, ".pi", "configs", "file-tools.jsonc"),
 			JSON.stringify({
-				version: 1,
 				blocked_path: ["project-block/"],
 				ignored_path: ["project-ignore/"],
 				limits: { ls_entries: 20, grep_result_limit: 3 },
@@ -96,7 +92,7 @@ describe("file-tools config", () => {
 
 		await writeFile(
 			path.join(workspace, ".pi", "configs", "file-tools.jsonc"),
-			JSON.stringify({ version: 1, ignore: { piignore: true } }),
+			JSON.stringify({ ignore: { piignore: true } }),
 		);
 		expect(await loadFileToolsConfig(workspace)).toMatchObject({
 			status: "failed",

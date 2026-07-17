@@ -2,10 +2,8 @@
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
 	"type": "object",
 	"additionalProperties": false,
-	"required": ["version"],
 	"properties": {
 		"$schema": { "type": "string" },
-		"version": { "const": 1 },
 		"enabled": { "type": "boolean", "default": true },
 		"exclude_paths": {
 			"type": "array",

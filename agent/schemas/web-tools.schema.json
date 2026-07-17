@@ -2,10 +2,8 @@
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
 	"type": "object",
 	"additionalProperties": false,
-	"required": ["version"],
 	"properties": {
 		"$schema": { "type": "string" },
-		"version": { "const": 2 },
 		"network": {
 			"type": "object",
 			"additionalProperties": false,

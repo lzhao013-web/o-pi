@@ -20,7 +20,6 @@ beforeEach(async () => {
 		configPath,
 		[
 			"{",
-			'  "version": 1,',
 			'  "blocked_path": [".git/"],',
 			'  "ignored_path": [],',
 			'  "ignore": { "builtin_profile": "none", "gitignore": false }',
@@ -247,7 +246,6 @@ describe("find", () => {
 			configPath,
 			[
 				"{",
-				'  "version": 1,',
 				'  "ignore": { "builtin_profile": "none", "gitignore": false },',
 				'  "limits": {',
 				'    "find_output_token_budget": 12,',
@@ -321,7 +319,7 @@ describe("find", () => {
 		await writeFile(path.join(protectedDir, "secret.ts"), "");
 		await writeFile(
 			configPath,
-			JSON.stringify({ version: 1, blocked_path: [`${protectedDir}/`], ignore: { builtin_profile: "none", gitignore: false } }),
+			JSON.stringify({ blocked_path: [`${protectedDir}/`], ignore: { builtin_profile: "none", gitignore: false } }),
 		);
 		process.env.PI_FILE_TOOLS_CONFIG = configPath;
 		try {

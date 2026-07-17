@@ -74,9 +74,8 @@ export interface TuiMathConfig {
 	foreground: string;
 }
 
-/** TUI V1 配置；缺失字段由 loader 合并默认值。 */
+/** TUI 配置；缺失字段由 loader 合并默认值。 */
 export interface TuiConfig {
-	version: 1;
 	enabled: boolean;
 	preset: TuiPreset;
 	icons: TuiIconMode;

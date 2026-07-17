@@ -17,9 +17,8 @@ export interface LspServerConfig {
 	initialization_options?: Record<string, unknown>;
 }
 
-/** LSP V1 用户配置；只从用户配置路径读取，不读取项目级配置。 */
+/** LSP 用户配置；只从用户配置路径读取，不读取项目级配置。 */
 export interface LspConfig {
-	version: 1;
 	enabled: boolean;
 	/** 精确匹配这些 workspace root 时不启动 LSP。 */
 	exclude_paths: string[];

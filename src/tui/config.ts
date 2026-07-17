@@ -4,7 +4,6 @@ import type { TuiConfig } from "./types.js";
 const CONFIG_PATH_ENV = "PI_TUI_CONFIG";
 
 const defaultConfig: TuiConfig = {
-	version: 1,
 	enabled: true,
 	preset: "compact",
 	icons: "unicode",
@@ -78,7 +77,6 @@ export function defaultTuiConfig(): TuiConfig {
 }
 
 interface RawTuiConfig {
-	version: 1;
 	enabled?: boolean;
 	preset?: TuiConfig["preset"];
 	icons?: TuiConfig["icons"];
@@ -91,7 +89,6 @@ interface RawTuiConfig {
 
 function mergeConfig(raw: RawTuiConfig): TuiConfig {
 	const merged: TuiConfig = {
-		version: 1,
 		enabled: raw.enabled ?? defaultConfig.enabled,
 		preset: raw.preset ?? defaultConfig.preset,
 		icons: raw.icons ?? defaultConfig.icons,

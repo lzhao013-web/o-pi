@@ -437,7 +437,6 @@ generation ID 是以下稳定快照的 SHA-256：
 ```jsonc
 {
   "$schema": "../schemas/repo-map.schema.json",
-  "version": 1,
   "scan": {
     "max_files": 100000,
     "max_file_bytes": 1048576,
@@ -456,7 +455,7 @@ generation ID 是以下稳定快照的 SHA-256：
 | `scan.concurrency` | 8 | 1–32 | hash、解析和源码 alias 提取并发上限。 |
 | `cache.max_generations` | 2 | 1–10 | 每个 map 保留的 generation 数量。 |
 
-未知字段、错误类型、越界数值和非 `version: 1` 配置都会报 `CONFIG_ERROR`，不会静默忽略。
+未知字段、错误类型和越界数值都会报 `CONFIG_ERROR`，不会静默忽略。
 
 ## 错误与恢复
 

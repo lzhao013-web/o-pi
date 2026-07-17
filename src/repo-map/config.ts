@@ -9,7 +9,6 @@ const USER_CONFIG_ENV = "PI_REPO_MAP_CONFIG";
 const CACHE_DIR_ENV = "PI_REPO_MAP_CACHE_DIR";
 
 export interface RepoMapConfig {
-	version: 1;
 	scan: {
 		max_files: number;
 		max_file_bytes: number;
@@ -21,13 +20,11 @@ export interface RepoMapConfig {
 }
 
 interface RawRepoMapConfig {
-	version: 1;
 	scan?: Partial<RepoMapConfig["scan"]>;
 	cache?: Partial<RepoMapConfig["cache"]>;
 }
 
 const defaults: RepoMapConfig = {
-	version: 1,
 	scan: { max_files: 100_000, max_file_bytes: 1024 * 1024, concurrency: 8 },
 	cache: { max_generations: 2 },
 };
@@ -41,11 +38,10 @@ export async function loadRepoMapConfig(): Promise<RepoMapConfig> {
 			createError: (message, details) => new RepoMapConfigError(message, details),
 		});
 		if (parsed === undefined) return defaultRepoMapConfig();
-		if (!isRawRepoMapConfig(parsed)) throw new RepoMapConfigError("repo-map config has an invalid shape.");
+		const raw = parsed as RawRepoMapConfig;
 		return {
-			version: 1,
-			scan: { ...defaults.scan, ...parsed.scan },
-			cache: { ...defaults.cache, ...parsed.cache },
+			scan: { ...defaults.scan, ...raw.scan },
+			cache: { ...defaults.cache, ...raw.cache },
 		};
 	} catch (error) {
 		if (error instanceof RepoMapConfigError) throw new RepoMapError("CONFIG_ERROR", error.message, error.details);
@@ -76,7 +72,3 @@ const loadValidator = createSchemaValidator({
 	label: "repo-map",
 	createError: (message, details) => new RepoMapConfigError(message, details),
 });
-
-function isRawRepoMapConfig(value: unknown): value is RawRepoMapConfig {
-	return typeof value === "object" && value !== null && "version" in value && value.version === 1;
-}

@@ -27,7 +27,6 @@ describe("web-tools config", () => {
 			file,
 			`{
 				"$schema": "../schemas/web-tools.schema.json",
-				"version": 2,
 				"network": { "fake_ip_ranges": ["198.18.0.0/16"], },
 				"websearch": {
 					"default_results": 5,
@@ -56,26 +55,26 @@ describe("web-tools config", () => {
 	it("拒绝未知字段、非法 enum 和语义错误", async () => {
 		const file = path.join(dir, "bad.jsonc");
 		process.env.PI_WEB_TOOLS_CONFIG = file;
-		await writeFile(file, '{ "version": 2, "webfetch": { "unknown": true } }');
+		await writeFile(file, '{ "webfetch": { "unknown": true } }');
 		await expect(loadWebToolsConfig()).rejects.toThrow("does not match schema");
 
-		await writeFile(file, '{ "version": 2, "webfetch": { "cookies": { "confirmation": "sometimes" } } }');
+		await writeFile(file, '{ "webfetch": { "cookies": { "confirmation": "sometimes" } } }');
 		await expect(loadWebToolsConfig()).rejects.toThrow("does not match schema");
 
-		await writeFile(file, '{ "version": 2, "webfetch": { "limits": { "default_output_chars": 2000, "max_output_chars": 1000 } } }');
+		await writeFile(file, '{ "webfetch": { "limits": { "default_output_chars": 2000, "max_output_chars": 1000 } } }');
 		await expect(loadWebToolsConfig()).rejects.toThrow("default_output_chars");
 
-		await writeFile(file, '{ "version": 2, "network": { "fake_ip_ranges": ["10.0.0.0/8"] } }');
+		await writeFile(file, '{ "network": { "fake_ip_ranges": ["10.0.0.0/8"] } }');
 		await expect(loadWebToolsConfig()).rejects.toThrow("does not match schema");
 
-		await writeFile(file, '{ "version": 2, "network": { "fake_ip_ranges": ["198.18.0.0/16"] } }');
+		await writeFile(file, '{ "network": { "fake_ip_ranges": ["198.18.0.0/16"] } }');
 		await expect(loadWebToolsConfig()).resolves.toMatchObject({ network: { fake_ip_ranges: ["198.18.0.0/16"] } });
 	});
 
-	it("提供 v2 搜索默认值并拒绝非法 provider 和 Exa URL", async () => {
+	it("提供搜索默认值并拒绝非法 provider 和 Exa URL", async () => {
 		const file = path.join(dir, "search.jsonc");
 		process.env.PI_WEB_TOOLS_CONFIG = file;
-		await writeFile(file, '{ "version": 2 }');
+		await writeFile(file, '{}');
 		await expect(loadWebToolsConfig()).resolves.toMatchObject({
 			websearch: {
 				provider_order: ["exa_mcp", "duckduckgo_html"],
@@ -84,10 +83,10 @@ describe("web-tools config", () => {
 		});
 		expect(JSON.stringify(await loadWebToolsConfig())).not.toContain("secret-key");
 
-		await writeFile(file, '{ "version": 2, "websearch": { "provider_order": ["bad"] } }');
+		await writeFile(file, '{ "websearch": { "provider_order": ["bad"] } }');
 		await expect(loadWebToolsConfig()).rejects.toThrow("does not match schema");
 
-		await writeFile(file, '{ "version": 2, "websearch": { "exa_mcp": { "url": "file:///tmp/key" } } }');
+		await writeFile(file, '{ "websearch": { "exa_mcp": { "url": "file:///tmp/key" } } }');
 		await expect(loadWebToolsConfig()).rejects.toThrow("does not match schema");
 	});
 
@@ -95,7 +94,7 @@ describe("web-tools config", () => {
 		const file = path.join(dir, "exa-url.jsonc");
 		process.env.PI_WEB_TOOLS_CONFIG = file;
 
-		await writeFile(file, '{ "version": 2, "websearch": { "exa_mcp": { "url": "https://mcp.exa.ai/mcp" } } }');
+		await writeFile(file, '{ "websearch": { "exa_mcp": { "url": "https://mcp.exa.ai/mcp" } } }');
 		await expect(loadWebToolsConfig()).resolves.toMatchObject({ websearch: { exa_mcp: { url: "https://mcp.exa.ai/mcp" } } });
 
 		for (const url of [
@@ -104,7 +103,7 @@ describe("web-tools config", () => {
 			"http://192.168.1.1/mcp",
 			"https://user:pass@example.com/mcp",
 		]) {
-			await writeFile(file, JSON.stringify({ version: 2, websearch: { exa_mcp: { url } } }));
+			await writeFile(file, JSON.stringify({ websearch: { exa_mcp: { url } } }));
 			await expect(loadWebToolsConfig()).rejects.toThrow("exa_mcp.url is not an allowed public HTTP URL");
 		}
 	});

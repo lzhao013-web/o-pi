@@ -28,7 +28,6 @@ export interface WebSearchItem {
 }
 
 export interface WebToolsConfig {
-	version: 2;
 	network: {
 		/** 两个 Web 工具共用的安全 DNS fake-ip 放行范围。 */
 		fake_ip_ranges: string[];

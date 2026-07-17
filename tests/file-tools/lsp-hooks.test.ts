@@ -20,7 +20,7 @@ beforeEach(async () => {
 	workspace = workspaceTemp.path;
 	outside = configTemp.path;
 	const config = path.join(outside, "file-tools.jsonc");
-	await writeFile(config, JSON.stringify({ version: 1, ignore: { builtin_profile: "none", gitignore: false } }));
+	await writeFile(config, JSON.stringify({ ignore: { builtin_profile: "none", gitignore: false } }));
 	process.env.PI_FILE_TOOLS_CONFIG = config;
 });
 

@@ -5,7 +5,6 @@ import type { BashToolConfig } from "./types.js";
 const CONFIG_PATH_ENV = "PI_BASH_TOOL_CONFIG";
 
 const defaultConfig: BashToolConfig = {
-	version: 1,
 	default_timeout_seconds: 120,
 	limits: {
 		success_output_bytes: 24_576,
@@ -50,7 +49,6 @@ export function defaultBashToolConfig(): BashToolConfig {
 }
 
 interface RawBashToolConfig {
-	version: 1;
 	default_timeout_seconds?: number;
 	limits?: Partial<BashToolConfig["limits"]>;
 	safety?: BashToolConfig["safety"];
@@ -58,7 +56,6 @@ interface RawBashToolConfig {
 
 function mergeConfig(raw: RawBashToolConfig): BashToolConfig {
 	const merged: BashToolConfig = {
-		version: 1,
 		default_timeout_seconds: raw.default_timeout_seconds ?? defaultConfig.default_timeout_seconds,
 		limits: {
 			success_output_bytes: raw.limits?.success_output_bytes ?? defaultConfig.limits.success_output_bytes,
