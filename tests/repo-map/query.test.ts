@@ -1,38 +1,29 @@
-import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clearGrepIndexForTests } from "../../src/file-tools/grep/indexer.js";
 import { findWorkspaceFiles } from "../../src/file-tools/tools/find.js";
 import { grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
-import { REPO_MAP_SESSION_ENTRY } from "../../src/repo-map/activation.js";
 import { createRepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
 import { buildRepoMapRelationships } from "../../src/repo-map/relationship-indexer.js";
 import { RepoMapQueryIndex } from "../../src/repo-map/query.js";
 import { indexRepoMapSymbols } from "../../src/repo-map/symbol-indexer.js";
 import type { RepoMapGeneration } from "../../src/repo-map/storage.js";
-import type { RepoMapFileRecord, RepoMapMetadata } from "../../src/repo-map/types.js";
+import type { RepoMapMetadata } from "../../src/repo-map/types.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
+import { activationEntry, configureFileTools, fileRecord, writeSources } from "./fixtures.js";
 
 const workspaceTemp = useTempDir("o-pi-repo-query-");
 const configTemp = useTempDir("o-pi-repo-query-config-");
 preserveEnv("PI_FILE_TOOLS_CONFIG");
 
 beforeEach(async () => {
-	await writeFile(path.join(configTemp.path, "file-tools.jsonc"), JSON.stringify({
-		version: 1,
-		blocked_path: [".git/"],
-		ignored_path: [],
-		ignore: { builtin_profile: "none", gitignore: false },
-		limits: { find_result_limit: 8, grep_result_limit: 8, grep_output_token_budget: 1600 },
-	}));
-	process.env.PI_FILE_TOOLS_CONFIG = path.join(configTemp.path, "file-tools.jsonc");
+	await configureFileTools(configTemp.path, { find_result_limit: 8, grep_result_limit: 8, grep_output_token_budget: 1600 });
 	clearGrepIndexForTests();
 });
 
-describe("Repo Map Phase 3 query and file-tool integration", () => {
+describe("Repo Map query and file-tool integration", () => {
 	it("queries paths, qualified/short symbols, definitions, exports, and only one relation hop", async () => {
 		const sources = new Map([
 			["src/a.ts", "import { second, Value } from './b';\nexport class Auth { login() { return second(); } }\nexport function first() { second(); return Value; }\n"],
@@ -68,18 +59,18 @@ describe("Repo Map Phase 3 query and file-tool integration", () => {
 		expect(await inactive.query({ requestedPath: workspaceTemp.path, query: "Target", limit: 5 })).toBeUndefined();
 		expect(readActivated).not.toHaveBeenCalled();
 
-		const active = createRepoMapFileToolQuery(() => [activationEntry(generation)], { readActivated });
+		const active = createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { readActivated });
 		expect(await active.query({ requestedPath: workspaceTemp.path, query: "Target", limit: 5 })).toMatchObject({ root: workspaceTemp.path });
 		expect(await active.query({ requestedPath: configTemp.path, query: "Target", limit: 5 })).toBeUndefined();
-		expect(await createRepoMapFileToolQuery(() => [activationEntry(generation)], { async readActivated() { return undefined; } })
+		expect(await createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { async readActivated() { return undefined; } })
 			.query({ requestedPath: workspaceTemp.path, query: "Target", limit: 5 })).toBeUndefined();
 		const mismatched = { ...generation, metadata: { ...generation.metadata, generation: "c".repeat(64) } };
-		expect(await createRepoMapFileToolQuery(() => [activationEntry(generation)], { async readActivated() { return mismatched; } })
+		expect(await createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { async readActivated() { return mismatched; } })
 			.query({ requestedPath: workspaceTemp.path, query: "Target", limit: 5 })).toBeUndefined();
 		const stale = { ...generation, metadata: { ...generation.metadata, freshness: "stale" as const } };
-		expect(await createRepoMapFileToolQuery(() => [activationEntry(generation)], { async readActivated() { return stale; } })
+		expect(await createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { async readActivated() { return stale; } })
 			.query({ requestedPath: workspaceTemp.path, query: "Target", limit: 5 })).toBeUndefined();
-		expect(await createRepoMapFileToolQuery(() => [activationEntry(generation)], { async readActivated() { throw new Error("corrupt"); } })
+		expect(await createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { async readActivated() { throw new Error("corrupt"); } })
 			.query({ requestedPath: workspaceTemp.path, query: "Target", limit: 5 })).toBeUndefined();
 	});
 
@@ -97,7 +88,7 @@ describe("Repo Map Phase 3 query and file-tool integration", () => {
 		expect(inactive).toEqual(baseline);
 		expect(readActivated).not.toHaveBeenCalled();
 
-		const activeQuery = createRepoMapFileToolQuery(() => [activationEntry(generation)], { readActivated });
+		const activeQuery = createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { readActivated });
 		const active = await findWorkspaceFiles(workspaceTemp.path, { query: "RemoteSymbol" }, undefined, { repoMap: activeQuery });
 		expect("status" in active ? [] : active.details.matches).toContainEqual({ path: "odd-name.ts", kind: "file" });
 		const outside = await findWorkspaceFiles(workspaceTemp.path, { path: configTemp.path, query: "RemoteSymbol" }, undefined, { repoMap: activeQuery });
@@ -111,7 +102,7 @@ describe("Repo Map Phase 3 query and file-tool integration", () => {
 		]);
 		await writeSources(workspaceTemp.path, sources);
 		const generation = await generationFromSources(workspaceTemp.path, sources);
-		const query = createRepoMapFileToolQuery(() => [activationEntry(generation)], { async readActivated() { return generation; } });
+		const query = createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { async readActivated() { return generation; } });
 		const result = await grepWorkspaceFiles(workspaceTemp.path, { query: "target" }, undefined, { repoMap: query });
 		if (result.status === "failed") throw new Error(result.error.message);
 		expect(result.strategy).toContain("repo-map");
@@ -134,7 +125,7 @@ describe("Repo Map Phase 3 query and file-tool integration", () => {
 		]);
 		await writeSources(workspaceTemp.path, sources);
 		const generation = await generationFromSources(workspaceTemp.path, sources);
-		const query = createRepoMapFileToolQuery(() => [activationEntry(generation)], { async readActivated() { return generation; } });
+		const query = createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { async readActivated() { return generation; } });
 		for (const [match, text] of [["literal", "literalNeedle"], ["regex", "literalN.*"]] as const) {
 			const result = await grepWorkspaceFiles(workspaceTemp.path, { query: text, match }, undefined, { repoMap: query });
 			if (result.status === "failed") throw new Error(result.error.message);
@@ -187,39 +178,4 @@ async function generationFromSources(root: string, sources: ReadonlyMap<string, 
 		parserFingerprint: "parser",
 	};
 	return { metadata, files, symbols: indexed.symbols, tests: [], architecture: [], aliases: [], edges, diagnostics: [] };
-}
-
-async function writeSources(root: string, sources: ReadonlyMap<string, string>): Promise<void> {
-	for (const [filePath, source] of sources) {
-		await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
-		await writeFile(path.join(root, filePath), source);
-	}
-}
-
-function fileRecord(filePath: string, text: string): RepoMapFileRecord {
-	return {
-		id: `file:${filePath}`,
-		path: filePath,
-		size: Buffer.byteLength(text),
-		mtimeMs: 1,
-		status: "indexed",
-		contentHash: createHash("sha256").update(text).digest("hex"),
-	};
-}
-
-function activationEntry(generation: RepoMapGeneration): SessionEntry {
-	return {
-		type: "custom",
-		id: "activation",
-		parentId: null,
-		timestamp: "t",
-		customType: REPO_MAP_SESSION_ENTRY,
-		data: {
-			kind: "activation",
-			root: generation.metadata.repositoryRoot,
-			mapId: generation.metadata.mapId,
-			generation: generation.metadata.generation,
-			activatedAt: generation.metadata.updatedAt,
-		},
-	};
 }

@@ -1,42 +1,29 @@
-import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { defaultFileToolsConfig } from "../../src/file-tools/config.js";
 import { findWorkspaceFiles } from "../../src/file-tools/tools/find.js";
 import { grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
 import { readWorkspaceFile } from "../../src/file-tools/tools/read.js";
-import { createIgnoreSnapshot, defaultIgnoreEngine } from "../../src/file-tools/ignore/ignore-engine.js";
-import { REPO_MAP_SESSION_ENTRY } from "../../src/repo-map/activation.js";
 import { buildRepoMapArchitecture } from "../../src/repo-map/architecture-indexer.js";
-import { defaultRepoMapConfig } from "../../src/repo-map/config.js";
 import { createRepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
 import { buildRepoMapRelationships } from "../../src/repo-map/relationship-indexer.js";
 import { RepoMapQueryIndex } from "../../src/repo-map/query.js";
-import { initializeRepoMap, readActivatedRepoMap, type RepoMapServiceDependencies } from "../../src/repo-map/service.js";
+import { initializeRepoMap } from "../../src/repo-map/service.js";
 import { indexRepoMapSymbols } from "../../src/repo-map/symbol-indexer.js";
 import type { RepoMapGeneration } from "../../src/repo-map/storage.js";
-import type { RepoMapFileRecord, RepoMapMetadata } from "../../src/repo-map/types.js";
+import type { RepoMapMetadata } from "../../src/repo-map/types.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
+import { activationEntry, configureFileTools, fileRecord, readGeneration, serviceDependencies, writeSources } from "./fixtures.js";
 
-const temp = useTempDir("o-pi-repo-phase5-");
+const temp = useTempDir("o-pi-repo-architecture-");
 preserveEnv("PI_FILE_TOOLS_CONFIG");
 
 beforeEach(async () => {
-	const configPath = path.join(temp.path, "file-tools.jsonc");
-	await writeFile(configPath, JSON.stringify({
-		version: 1,
-		blocked_path: [".git/"],
-		ignored_path: [],
-		ignore: { builtin_profile: "none", gitignore: false },
-		limits: { read_lines: 20, read_bytes: 8192, find_result_limit: 20, grep_result_limit: 20 },
-	}));
-	process.env.PI_FILE_TOOLS_CONFIG = configPath;
+	await configureFileTools(temp.path, { read_lines: 20, read_bytes: 8192, find_result_limit: 20, grep_result_limit: 20 });
 });
 
-describe("Repo Map Phase 5 architecture graph", () => {
+describe("Repo Map architecture graph", () => {
 	it("derives monorepo packages, components, manifest entrypoints, registrations, and public API", async () => {
 		const sources = fixtureSources();
 		const generation = await generationFromSources(temp.path, sources);
@@ -83,7 +70,7 @@ describe("Repo Map Phase 5 architecture graph", () => {
 		expect(await findWorkspaceFiles(temp.path, { query: "serve" }, undefined, { repoMap: inactive })).toEqual(baseline);
 		expect(readActivated).not.toHaveBeenCalled();
 
-		const active = createRepoMapFileToolQuery(() => [activationEntry(generation)], { readActivated });
+		const active = createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { readActivated });
 		const found = await findWorkspaceFiles(temp.path, { query: "serve" }, undefined, { repoMap: active });
 		expect("status" in found ? [] : found.details.matches).toContainEqual({ path: "agent/extensions/sample.ts", kind: "file" });
 		const grep = await grepWorkspaceFiles(temp.path, { query: "serve" }, undefined, { repoMap: active });
@@ -101,15 +88,15 @@ describe("Repo Map Phase 5 architecture graph", () => {
 		await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "single", main: "./src/index.ts" }));
 		await mkdir(path.join(root, "src"), { recursive: true });
 		await writeFile(path.join(root, "src/index.ts"), "export function oldApi() {}\nexport function extension(pi: any) { pi.registerCommand('old', {}); }\n");
-		const first = await initializeRepoMap({ cwd: root }, dependencies(root));
-		const firstGeneration = await readGeneration(root, first.metadata.mapId, first.metadata.generation);
+		const first = await initializeRepoMap({ cwd: root }, serviceDependencies(root, path.join(temp.path, "cache")));
+		const firstGeneration = await readGeneration(root, path.join(temp.path, "cache"), first.metadata.mapId, first.metadata.generation);
 		expect(firstGeneration.architecture.some((node) => node.kind === "entrypoint" && node.name === "old")).toBe(true);
 
 		await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "single", exports: "./src/new.ts" }));
 		await writeFile(path.join(root, "src/new.ts"), "export function newApi() {}\nexport function extension(pi: any) { pi.registerCommand('new', {}); }\n");
 		await rm(path.join(root, "src/index.ts"));
-		const refreshed = await initializeRepoMap({ cwd: root, mode: "refresh" }, dependencies(root));
-		const generation = await readGeneration(root, refreshed.metadata.mapId, refreshed.metadata.generation);
+		const refreshed = await initializeRepoMap({ cwd: root, mode: "refresh" }, serviceDependencies(root, path.join(temp.path, "cache")));
+		const generation = await readGeneration(root, path.join(temp.path, "cache"), refreshed.metadata.mapId, refreshed.metadata.generation);
 		expect(refreshed.metadata.generation).not.toBe(first.metadata.generation);
 		expect(generation.architecture.some((node) => node.kind === "entrypoint" && node.name === "new")).toBe(true);
 		expect(generation.architecture.some((node) => node.kind === "entrypoint" && node.name === "old")).toBe(false);
@@ -151,37 +138,4 @@ async function generationFromSources(root: string, sources: ReadonlyMap<string, 
 		diagnosticCount: architecture.diagnostics.length, configFingerprint: "config", ignoreFingerprint: "ignore", parserFingerprint: "parser",
 	};
 	return { metadata, files, symbols: architecture.symbols, tests: [], architecture: architecture.nodes, aliases: [], edges, diagnostics: architecture.diagnostics };
-}
-
-async function writeSources(root: string, sources: ReadonlyMap<string, string>): Promise<void> {
-	for (const [filePath, source] of sources) {
-		await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
-		await writeFile(path.join(root, filePath), source);
-	}
-}
-
-function fileRecord(filePath: string, text: string): RepoMapFileRecord {
-	return { id: `file:${filePath}`, path: filePath, size: Buffer.byteLength(text), mtimeMs: 1, status: "indexed", contentHash: createHash("sha256").update(text).digest("hex") };
-}
-
-function activationEntry(generation: RepoMapGeneration): SessionEntry {
-	return { type: "custom", id: "activation", parentId: null, timestamp: "t", customType: REPO_MAP_SESSION_ENTRY, data: { kind: "activation", root: generation.metadata.repositoryRoot, mapId: generation.metadata.mapId, generation: generation.metadata.generation, activatedAt: generation.metadata.updatedAt } };
-}
-
-function dependencies(root: string): Partial<RepoMapServiceDependencies> {
-	return {
-		async detectRepository() { return { repositoryRoot: root, worktreeRoot: root, gitCommonDir: path.join(root, ".git"), headRevision: "a".repeat(40) }; },
-		async readHeadRevision() { return "a".repeat(40); },
-		async loadRepoMapConfig() { return defaultRepoMapConfig(); },
-		async loadFileToolsConfig() { return defaultFileToolsConfig(); },
-		async createIgnoreSnapshot(scanRoot, config) { defaultIgnoreEngine.invalidate(); return await createIgnoreSnapshot(scanRoot, config); },
-		cacheRoot: () => path.join(temp.path, "cache"),
-		now: () => new Date("2026-07-18T00:00:00.000Z"),
-	};
-}
-
-async function readGeneration(root: string, mapId: string, generation: string): Promise<RepoMapGeneration> {
-	const value = await readActivatedRepoMap({ root, mapId, generation }, path.join(temp.path, "cache"));
-	if (value === undefined) throw new Error("missing generation");
-	return value;
 }

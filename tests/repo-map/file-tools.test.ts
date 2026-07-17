@@ -7,7 +7,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { CODE_INDEX_FORMAT_VERSION } from "../../src/code-index/identity.js";
-import { defaultFileToolsConfig } from "../../src/file-tools/config.js";
 import { ReadVersionCache } from "../../src/file-tools/core/read-cache.js";
 import { formatReadModelResult } from "../../src/file-tools/pi/model-output.js";
 import { editWorkspace } from "../../src/file-tools/tools/edit.js";
@@ -15,22 +14,20 @@ import { readWorkspaceFile } from "../../src/file-tools/tools/read.js";
 import { writeWorkspaceFile } from "../../src/file-tools/tools/write.js";
 import { grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
 import { clearGrepIndexForTests } from "../../src/file-tools/grep/indexer.js";
-import { createIgnoreSnapshot, defaultIgnoreEngine } from "../../src/file-tools/ignore/ignore-engine.js";
 import { computeRepoMapActivation, REPO_MAP_SESSION_ENTRY, type RepoMapActivationEntry } from "../../src/repo-map/activation.js";
-import { defaultRepoMapConfig } from "../../src/repo-map/config.js";
 import { createRepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
 import {
 	evaluateRepoMapFreshness,
 	initializeRepoMap,
 	readActivatedRepoMap,
 	readActivatedRepoMapState,
-	type RepoMapServiceDependencies,
 } from "../../src/repo-map/service.js";
 import type { RepoMapGeneration } from "../../src/repo-map/storage.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 import { createFileToolsExtension } from "../../agent/extensions/file-tools.js";
+import { activationEntry, configureFileTools, serviceDependencies as sharedServiceDependencies } from "./fixtures.js";
 
-const temp = useTempDir("o-pi-repo-phase4-");
+const temp = useTempDir("o-pi-repo-file-tools-");
 const execFileAsync = promisify(execFile);
 const gitAvailable = await hasGit();
 preserveEnv(
@@ -42,22 +39,14 @@ preserveEnv(
 );
 
 beforeEach(async () => {
-	const configPath = path.join(temp.path, "file-tools.jsonc");
-	await writeFile(configPath, JSON.stringify({
-		version: 1,
-		blocked_path: [".git/"],
-		ignored_path: [],
-		ignore: { builtin_profile: "none", gitignore: false },
-		limits: { read_lines: 10, read_bytes: 4096 },
-	}));
-	process.env.PI_FILE_TOOLS_CONFIG = configPath;
+	await configureFileTools(temp.path, { read_lines: 10, read_bytes: 4096 });
 	process.env.PI_REPO_MAP_CACHE_DIR = path.join(temp.path, "cache");
 	process.env.PI_REPO_MAP_CONFIG = path.join(temp.path, "repo-map.jsonc");
 	delete process.env.PI_FILE_TOOLS_PROJECT_CONFIG;
 	delete process.env.PI_FILE_TOOLS_PROJECT_ROOT;
 });
 
-describe("Repo Map Phase 4 read and mutation loop", () => {
+describe("Repo Map file-tool read and mutation integration", () => {
 	it.skipIf(!gitAvailable)("wires an activated write through the extension and exposes the new symbol to grep", async () => {
 		const root = path.join(temp.path, "extension-repo");
 		await mkdir(root);
@@ -74,7 +63,7 @@ describe("Repo Map Phase 4 read and mutation loop", () => {
 		} as unknown as ExtensionAPI);
 		const ctx = {
 			cwd: root,
-			sessionManager: { getBranch: () => branch, getSessionId: () => "phase4" },
+			sessionManager: { getBranch: () => branch, getSessionId: () => "repo-map-file-tools" },
 		};
 		const write = tools.get("write");
 		const grepTool = tools.get("grep");
@@ -217,7 +206,7 @@ describe("Repo Map Phase 4 read and mutation loop", () => {
 	});
 });
 
-describe("Repo Map Phase 4 freshness and rebuild modes", () => {
+describe("Repo Map freshness and rebuild modes", () => {
 	it("classifies HEAD/config/ignore/parser changes as stale while preserving partial state otherwise", () => {
 		const metadata = {
 			freshness: "fresh" as const,
@@ -294,32 +283,8 @@ describe("Repo Map Phase 4 freshness and rebuild modes", () => {
 	});
 });
 
-function serviceDependencies(root: string): Partial<RepoMapServiceDependencies> {
-	return {
-		async detectRepository() {
-			return { repositoryRoot: root, worktreeRoot: root, gitCommonDir: path.join(root, ".git"), headRevision: "a".repeat(40) };
-		},
-		async readHeadRevision() { return "a".repeat(40); },
-		async loadRepoMapConfig() { return defaultRepoMapConfig(); },
-		async loadFileToolsConfig() { return defaultFileToolsConfig(); },
-		async createIgnoreSnapshot(scanRoot, config) {
-			defaultIgnoreEngine.invalidate();
-			return await createIgnoreSnapshot(scanRoot, config);
-		},
-		cacheRoot: () => path.join(temp.path, "cache"),
-		now: () => new Date("2026-07-17T00:00:00.000Z"),
-	};
-}
-
-function activationEntry(metadata: { repositoryRoot: string; mapId: string; generation: string; updatedAt: string }): SessionEntry {
-	return {
-		type: "custom",
-		id: `entry-${metadata.generation}`,
-		parentId: null,
-		timestamp: metadata.updatedAt,
-		customType: REPO_MAP_SESSION_ENTRY,
-		data: activationFromMetadata(metadata),
-	};
+function serviceDependencies(root: string) {
+	return sharedServiceDependencies(root, path.join(temp.path, "cache"), new Date("2026-07-17T00:00:00.000Z"));
 }
 
 function activationFromMetadata(metadata: { repositoryRoot: string; mapId: string; generation: string; updatedAt: string }): RepoMapActivationEntry {

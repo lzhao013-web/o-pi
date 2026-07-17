@@ -1,42 +1,29 @@
-import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { defaultFileToolsConfig } from "../../src/file-tools/config.js";
 import { findWorkspaceFiles } from "../../src/file-tools/tools/find.js";
 import { grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
-import { createIgnoreSnapshot, defaultIgnoreEngine } from "../../src/file-tools/ignore/ignore-engine.js";
-import { REPO_MAP_SESSION_ENTRY } from "../../src/repo-map/activation.js";
 import { buildRepoMapArchitecture } from "../../src/repo-map/architecture-indexer.js";
-import { defaultRepoMapConfig } from "../../src/repo-map/config.js";
 import { createRepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
 import { buildRepoMapLexicalAliases } from "../../src/repo-map/lexical-indexer.js";
 import { RepoMapQueryIndex } from "../../src/repo-map/query.js";
 import { buildRepoMapRelationships } from "../../src/repo-map/relationship-indexer.js";
-import { initializeRepoMap, readActivatedRepoMap, type RepoMapServiceDependencies } from "../../src/repo-map/service.js";
+import { initializeRepoMap } from "../../src/repo-map/service.js";
 import type { RepoMapGeneration } from "../../src/repo-map/storage.js";
 import { indexRepoMapSymbols } from "../../src/repo-map/symbol-indexer.js";
 import type { RepoMapEdge, RepoMapFileRecord, RepoMapMetadata, RepoMapSymbolNode } from "../../src/repo-map/types.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
+import { activationEntry, configureFileTools, fileRecord, readGeneration, serviceDependencies, writeSources } from "./fixtures.js";
 
-const temp = useTempDir("o-pi-repo-phase6-");
+const temp = useTempDir("o-pi-repo-lexical-");
 preserveEnv("PI_FILE_TOOLS_CONFIG");
 
 beforeEach(async () => {
-	const configPath = path.join(temp.path, "file-tools.jsonc");
-	await writeFile(configPath, JSON.stringify({
-		version: 1,
-		blocked_path: [".git/"],
-		ignored_path: [],
-		ignore: { builtin_profile: "none", gitignore: false },
-		limits: { read_lines: 20, read_bytes: 8192, find_result_limit: 20, grep_result_limit: 20 },
-	}));
-	process.env.PI_FILE_TOOLS_CONFIG = configPath;
+	await configureFileTools(temp.path, { read_lines: 20, read_bytes: 8192, find_result_limit: 20, grep_result_limit: 20 });
 });
 
-describe("Repo Map Phase 6 lexical projection", () => {
+describe("Repo Map lexical projection", () => {
 	it("derives traceable camel/snake, import alias, registration, config, environment, and doc aliases", async () => {
 		const sources = new Map([
 			["package.json", JSON.stringify({ name: "repo-tools", main: "./src/repositoryClient.ts" })],
@@ -109,7 +96,7 @@ describe("Repo Map Phase 6 lexical projection", () => {
 		expect(await findWorkspaceFiles(temp.path, { query: "repo client" }, undefined, { repoMap: inactive })).toEqual(baseline);
 		expect(readActivated).not.toHaveBeenCalled();
 
-		const active = createRepoMapFileToolQuery(() => [activationEntry(generation)], { readActivated });
+		const active = createRepoMapFileToolQuery(() => [activationEntry(generation.metadata)], { readActivated });
 		const found = await findWorkspaceFiles(temp.path, { query: "repo client" }, undefined, { repoMap: active });
 		expect("status" in found ? [] : found.details.matches).toContainEqual({ path: "src/repositoryClient.ts", kind: "file" });
 		for (const match of ["literal", "regex"] as const) {
@@ -129,16 +116,16 @@ describe("Repo Map Phase 6 lexical projection", () => {
 		await mkdir(path.join(root, ".git"), { recursive: true });
 		await mkdir(path.join(root, "src"), { recursive: true });
 		await writeFile(path.join(root, "src/legacy-client.ts"), "export function legacyClient() {}\n");
-		const first = await initializeRepoMap({ cwd: root }, dependencies(root));
-		const firstGeneration = await readGeneration(root, first.metadata.mapId, first.metadata.generation);
+		const first = await initializeRepoMap({ cwd: root }, serviceDependencies(root, path.join(temp.path, "cache")));
+		const firstGeneration = await readGeneration(root, path.join(temp.path, "cache"), first.metadata.mapId, first.metadata.generation);
 		expect(firstGeneration.aliases.some((alias) => alias.term === "legacy client")).toBe(true);
 
-		const stable = await initializeRepoMap({ cwd: root, mode: "refresh" }, dependencies(root));
+		const stable = await initializeRepoMap({ cwd: root, mode: "refresh" }, serviceDependencies(root, path.join(temp.path, "cache")));
 		expect(stable.metadata.generation).toBe(first.metadata.generation);
 		await writeFile(path.join(root, "src/modern-client.ts"), "export function modernClient() {}\n");
 		await rm(path.join(root, "src/legacy-client.ts"));
-		const refreshed = await initializeRepoMap({ cwd: root, mode: "refresh" }, dependencies(root));
-		const current = await readGeneration(root, refreshed.metadata.mapId, refreshed.metadata.generation);
+		const refreshed = await initializeRepoMap({ cwd: root, mode: "refresh" }, serviceDependencies(root, path.join(temp.path, "cache")));
+		const current = await readGeneration(root, path.join(temp.path, "cache"), refreshed.metadata.mapId, refreshed.metadata.generation);
 		expect(current.aliases.some((alias) => alias.term === "modern client")).toBe(true);
 		expect(current.aliases.some((alias) => alias.term === "legacy client" || alias.target.includes("legacy-client"))).toBe(false);
 		expect(current.metadata.aliasCount).toBe(current.aliases.length);
@@ -212,38 +199,5 @@ function symbol(file: RepoMapFileRecord, name: string): RepoMapSymbolNode {
 function required(values: ReadonlyMap<string, RepoMapSymbolNode | undefined>, key: string): RepoMapSymbolNode {
 	const value = values.get(key);
 	if (value === undefined) throw new Error(`missing ${key}`);
-	return value;
-}
-
-async function writeSources(root: string, sources: ReadonlyMap<string, string>): Promise<void> {
-	for (const [filePath, source] of sources) {
-		await mkdir(path.dirname(path.join(root, filePath)), { recursive: true });
-		await writeFile(path.join(root, filePath), source);
-	}
-}
-
-function fileRecord(filePath: string, text: string): RepoMapFileRecord {
-	return { id: `file:${filePath}`, path: filePath, size: Buffer.byteLength(text), mtimeMs: 1, status: "indexed", contentHash: createHash("sha256").update(text).digest("hex") };
-}
-
-function activationEntry(generation: RepoMapGeneration): SessionEntry {
-	return { type: "custom", id: "activation", parentId: null, timestamp: "t", customType: REPO_MAP_SESSION_ENTRY, data: { kind: "activation", root: generation.metadata.repositoryRoot, mapId: generation.metadata.mapId, generation: generation.metadata.generation, activatedAt: generation.metadata.updatedAt } };
-}
-
-function dependencies(root: string): Partial<RepoMapServiceDependencies> {
-	return {
-		async detectRepository() { return { repositoryRoot: root, worktreeRoot: root, gitCommonDir: path.join(root, ".git"), headRevision: "a".repeat(40) }; },
-		async readHeadRevision() { return "a".repeat(40); },
-		async loadRepoMapConfig() { return defaultRepoMapConfig(); },
-		async loadFileToolsConfig() { return defaultFileToolsConfig(); },
-		async createIgnoreSnapshot(scanRoot, config) { defaultIgnoreEngine.invalidate(); return await createIgnoreSnapshot(scanRoot, config); },
-		cacheRoot: () => path.join(temp.path, "cache"),
-		now: () => new Date("2026-07-18T00:00:00.000Z"),
-	};
-}
-
-async function readGeneration(root: string, mapId: string, generation: string): Promise<RepoMapGeneration> {
-	const value = await readActivatedRepoMap({ root, mapId, generation }, path.join(temp.path, "cache"));
-	if (value === undefined) throw new Error("missing generation");
 	return value;
 }
