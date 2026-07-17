@@ -479,6 +479,43 @@ describe("openai-compatible-provider config", () => {
 		expect(provider?.config.models?.[0]?.thinkingLevelMap).toBeUndefined();
 	});
 
+	it("模型级 thinking 覆盖 provider preset，未配置的模型继续继承 provider", async () => {
+		const [provider] = await normalizeFromText(`{
+			"providers": {
+				"mixed": {
+					"base_url": "http://127.0.0.1:8000/v1",
+					"api_key": "EMPTY",
+					"api": "responses",
+					"thinking": "openai",
+					"models": [
+						{ "model": "inherited", "thinking_level": "high" },
+						{ "model": "boolean", "thinking": "chat_template_enabled", "thinking_level": "high" }
+					]
+				}
+			}
+		}`);
+		expect(provider?.runtimeModels.get("inherited")?.thinkingPreset).toBe("openai");
+		expect(provider?.runtimeModels.get("boolean")?.thinkingPreset).toBe("chat_template_enabled");
+		expect(provider?.config.models?.[0]?.compat).toMatchObject({
+			supportsReasoningEffort: true,
+			thinkingFormat: "openai",
+		});
+		expect(provider?.config.models?.[1]?.compat).toMatchObject({
+			supportsReasoningEffort: false,
+			thinkingFormat: "chat-template",
+			chatTemplateKwargs: { enable_thinking: { $var: "thinking.enabled" } },
+		});
+		const inherited = provider?.runtimeModels.get("inherited");
+		const overridden = provider?.runtimeModels.get("boolean");
+		if (!inherited || !overridden) throw new Error("runtime config missing");
+		expect(applyRuntimePayloadConfig({ model: "inherited", input: [], reasoning: { effort: "high" } }, inherited, "high")).toMatchObject({
+			reasoning: { effort: "high" },
+		});
+		expect(applyRuntimePayloadConfig({ model: "boolean", input: [], reasoning: { effort: "high" } }, overridden, "high")).toMatchObject({
+			chat_template_kwargs: { enable_thinking: true },
+		});
+	});
+
 	it("thinking_level 使用 Pi 模型能力并保留 off 模型的可切换 reasoning", async () => {
 		const [provider] = await normalizeFromText(`{
 			"providers": {
@@ -897,6 +934,12 @@ describe("openai-compatible-provider config", () => {
 				"providers": { "vllm": { "base_url": "http://127.0.0.1:8000/v1", "api_key": "EMPTY", "thinking": "unknown", "models": ["m"] } }
 			}`),
 		).rejects.toThrow('unknown thinking preset "unknown"');
+
+		await expect(
+			normalizeFromText(`{
+				"providers": { "vllm": { "base_url": "http://127.0.0.1:8000/v1", "api_key": "EMPTY", "models": [{ "model": "m", "thinking": "unknown" }] } }
+			}`),
+		).rejects.toThrow('models[0] has unknown thinking preset "unknown"');
 
 		await expect(
 			normalizeFromText(`{

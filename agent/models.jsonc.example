@@ -6,7 +6,7 @@
       "api_key": "my-lovely-key",
       "api": "responses",
       "compat": "openai_compatible",
-      // provider 只声明请求参数格式；模型用 Pi 原生 thinking level 声明默认档位。
+      // provider 级声明默认请求参数格式；模型可用同名 thinking 字段覆盖。
       "thinking": "openai",
       // 启动先使用缓存，进入 session 后后台请求 base_url + /models；这里手写的同名模型配置优先。
       "models": [
@@ -15,6 +15,8 @@
           "display_name": "Gemma4 31B it",
           "context_window": 131072,
           "max_tokens": 32768,
+          // 可选：覆盖 provider 的 thinking preset，以适配同一 provider 下参数格式不同的模型。
+          "thinking": "chat_template_enabled",
           "thinking_level": "off",
           "input": ["text", "image"],
 

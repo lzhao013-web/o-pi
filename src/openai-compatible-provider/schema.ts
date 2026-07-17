@@ -60,6 +60,7 @@ const ModelConfigSchema = Type.Object(
 		display_name: Type.Optional(Type.String({ minLength: 1 })),
 		context_window: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
 		max_tokens: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+		thinking: Type.Optional(ThinkingPresetNameSchema),
 		thinking_level: Type.Optional(ThinkingLevelSchema),
 		thinking_level_map: Type.Optional(ThinkingLevelMapSchema),
 		input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),

@@ -61,7 +61,7 @@ export function normalizeModelsJsoncConfig(config: ModelsJsoncConfig, configPath
 
 		const api = provider.api === "responses" ? "openai-responses" : "openai-completions";
 		const compatPreset = provider.compat ?? "openai_compatible";
-		const thinkingPreset = provider.thinking ?? "none";
+		const providerThinkingPreset = provider.thinking ?? "none";
 		const providerExtraBody = provider.advanced?.extra_body ?? {};
 		assertNoCorePayloadFields(providerExtraBody, configPath, `providers.${providerId}.advanced.extra_body`);
 
@@ -69,6 +69,7 @@ export function normalizeModelsJsoncConfig(config: ModelsJsoncConfig, configPath
 		const runtimeModels = new Map<string, RuntimeModelConfig>();
 		const models: ProviderModelConfig[] = provider.models.map((entry, index) => {
 			const model = typeof entry === "string" ? { model: entry } : entry;
+			const thinkingPreset = model.thinking ?? providerThinkingPreset;
 			if (seenModels.has(model.model)) {
 				throw invalidModelsJsonc(configPath, `provider "${providerId}" contains duplicate model "${model.model}"`);
 			}

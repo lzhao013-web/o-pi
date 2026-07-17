@@ -103,7 +103,7 @@ export function allowsNonStandardSampling(preset: CompatPresetName): boolean {
 	return NON_STANDARD_SAMPLING_PRESETS.has(preset);
 }
 
-/** 展开 compat/thinking preset，并允许模型级 advanced.compat 最后覆盖。 */
+/** 展开有效的 compat/thinking preset，并允许模型级 advanced.compat 最后覆盖。 */
 export function resolveCompat(
 	preset: CompatPresetName | undefined,
 	thinkingPreset: ThinkingPresetName,

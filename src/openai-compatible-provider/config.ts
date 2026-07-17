@@ -139,6 +139,12 @@ function prevalidateModelsJsonc(value: unknown, configPath: string): void {
 				if (isRecord(model) && "reasoning_effort" in model) {
 					throw invalidModelsJsonc(configPath, `providers.${providerId}.models[${index}].reasoning_effort is not supported; use thinking_level instead`);
 				}
+				if (isRecord(model) && typeof model.thinking === "string" && !THINKING_PRESET_NAME_SET.has(model.thinking)) {
+					throw invalidModelsJsonc(
+						configPath,
+						`providers.${providerId}.models[${index}] has unknown thinking preset "${model.thinking}"; expected one of ${expectedThinking}`,
+					);
+				}
 			}
 		}
 	}
