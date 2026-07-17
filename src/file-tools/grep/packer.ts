@@ -175,18 +175,43 @@ function addRegion(input: GrepPackInput, state: PackState, region: GrepRegion): 
 export function selectGrepCandidatesForPacking(regions: RankedGrepRegion[], limit: number): RankedGrepRegion[] {
 	const selected: RankedGrepRegion[] = [];
 	const used = new Set<string>();
+	const categoryCounts = new Map<string, number>();
+	const categoryCap = Math.max(1, Math.ceil(limit / 2));
 	for (const region of regions) {
 		if (selected.length >= limit) break;
 		if (used.has(region.path)) continue;
+		const category = relationCategory(region);
+		if ((categoryCounts.get(category) ?? 0) >= categoryCap && hasUnrepresentedCategory(regions, selected, categoryCounts, categoryCap)) continue;
 		selected.push(region);
 		used.add(region.path);
+		categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
 	}
 	for (const region of regions) {
 		if (selected.length >= limit) break;
 		if (selected.some((item) => item.id === region.id)) continue;
 		selected.push(region);
 	}
-	return selected;
+	return selected.sort((left, right) => regions.indexOf(left) - regions.indexOf(right));
+}
+
+function relationCategory(region: RankedGrepRegion): string {
+	if (region.reasons.some((reason) => reason === "exact literal" || reason === "regex" || reason === "exact symbol" || reason === "exact qualified symbol")) return "direct";
+	if (region.reasons.includes("definition") || region.reasons.includes("export")) return "definition";
+	if (region.reasons.includes("caller")) return "caller";
+	if (region.reasons.includes("callee")) return "callee";
+	if (region.reasons.includes("reference")) return "reference";
+	if (region.reasons.includes("import")) return "import";
+	return "related";
+}
+
+function hasUnrepresentedCategory(
+	regions: RankedGrepRegion[],
+	selected: RankedGrepRegion[],
+	counts: ReadonlyMap<string, number>,
+	cap: number,
+): boolean {
+	const selectedIds = new Set(selected.map((region) => region.id));
+	return regions.some((region) => !selectedIds.has(region.id) && (counts.get(relationCategory(region)) ?? 0) < cap);
 }
 
 function headerText(input: GrepPackInput, returnedRegions: number, returnedFiles: number, truncated: boolean): string {

@@ -1,4 +1,5 @@
-import { lstat, readdir, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import picomatch from "picomatch";
 
@@ -11,6 +12,8 @@ import type { IgnoreSnapshot } from "../ignore/ignore-types.js";
 import { guardExistingPath, PathGuardBlockedError } from "../../safety/path-guard.js";
 import { normalizeToolPath, resolveWorkspaceRoot } from "../core/path-resolver.js";
 import type { FindEntry, FindMatch, FindParams, FindSuccess, ToolOutcome } from "../types.js";
+import type { RepoMapFileToolQuery } from "../../repo-map/file-tool-query.js";
+import type { RepoMapQueryCandidate } from "../../repo-map/query.js";
 
 interface NormalizedFindParams {
 	query: string;
@@ -41,8 +44,17 @@ interface WalkState {
 	matchesGlob?: (candidate: string, kind: FindEntry["kind"]) => boolean;
 }
 
-/** find 是路径定位器：自动路由 exact、glob 和 fuzzy，不读取正文、不跟随 symlink。 */
-export async function findWorkspaceFiles(cwd: string, params: FindParams, signal?: AbortSignal): Promise<ToolOutcome<FindSuccess>> {
+export interface FindRuntime {
+	repoMap?: RepoMapFileToolQuery;
+}
+
+/** find 是路径定位器：自动路由 exact、glob 和 fuzzy；激活后的图候选只读取字节以复核 hash，不跟随 symlink。 */
+export async function findWorkspaceFiles(
+	cwd: string,
+	params: FindParams,
+	signal?: AbortSignal,
+	runtime: FindRuntime = {},
+): Promise<ToolOutcome<FindSuccess>> {
 	const workspaceRoot = await resolveWorkspaceRoot(cwd);
 	const validation = validateFindParams(workspaceRoot, params);
 	if (isFailed(validation)) return validation;
@@ -91,7 +103,7 @@ export async function findWorkspaceFiles(cwd: string, params: FindParams, signal
 		if (isGlobQuery(normalized.query)) {
 			return await runGlobSearch(workspaceRoot, searchRoot, normalized, config, ignoreSnapshot, signal);
 		}
-		return await runFuzzySearch(workspaceRoot, searchRoot, normalized, config, ignoreSnapshot, signal);
+		return await runFuzzySearch(workspaceRoot, searchRoot, normalized, config, ignoreSnapshot, signal, runtime);
 	} catch (error) {
 		if (error instanceof AbortFind) return fail("OPERATION_ABORTED", "find was aborted.", { path: searchRoot.relativePath });
 		if (isAccessDenied(error)) return fail("ACCESS_DENIED", "Directory cannot be searched.", { path: searchRoot.relativePath });
@@ -239,23 +251,148 @@ async function runFuzzySearch(
 	config: FileToolsConfig,
 	ignoreSnapshot: IgnoreSnapshot,
 	signal: AbortSignal | undefined,
+	runtime: FindRuntime,
 ): Promise<ToolOutcome<FindSuccess>> {
 	const state = createWalkState(workspaceRoot, searchRoot, config, ignoreSnapshot, isDirectoryIgnored(searchRoot, config, ignoreSnapshot), signal);
 	await walkDirectory(state, searchRoot.absolutePath, searchRoot.relativePath, searchRoot.workspacePath, ".");
 	const ranked = rankFindEntries(state.entries, params.query, searchRoot.relativePath);
+	const repoMapRanked = await safeRepoMapFindCandidates(runtime.repoMap, {
+		workspaceRoot,
+		searchRoot,
+		query: params.query,
+		config,
+		ignoreSnapshot,
+		ignoreBypass: state.ignoreBypass,
+		signal,
+	});
+	const merged = mergeFindCandidates(ranked.matches, repoMapRanked);
 	return renderSuccess({
 		query: params.query,
 		path: searchRoot.relativePath,
 		strategy: "fuzzy",
-		ranked: ranked.matches,
-		totalMatches: ranked.matches.length,
+		ranked: merged,
+		totalMatches: merged.length,
 		scannedEntries: state.scannedEntries,
 		ignoredCount: state.ignoredCount,
 		skippedCount: state.skippedCount,
 		truncated: state.truncated,
 		config,
-		...(ranked.matches.length === 0 ? { suggestions: ranked.suggestions.map((item) => toMatch(item.entry)) } : {}),
+		...(merged.length === 0 ? { suggestions: ranked.suggestions.map((item) => toMatch(item.entry)) } : {}),
 	});
+}
+
+async function safeRepoMapFindCandidates(
+	queryLayer: RepoMapFileToolQuery | undefined,
+	input: {
+		workspaceRoot: string;
+		searchRoot: SearchRoot;
+		query: string;
+		config: FileToolsConfig;
+		ignoreSnapshot: IgnoreSnapshot;
+		ignoreBypass: boolean;
+		signal: AbortSignal | undefined;
+	},
+): Promise<RankedFindEntry[]> {
+	if (queryLayer === undefined) return [];
+	try {
+		const queried = await queryLayer.query({
+			requestedPath: input.searchRoot.absolutePath,
+			query: input.query,
+			limit: Math.max(24, input.config.limits.find_result_limit * 4),
+		});
+		if (queried === undefined) return [];
+		const result: RankedFindEntry[] = [];
+		for (const candidate of queried.candidates) {
+			assertNotAborted(input.signal);
+			const ranked = await validateRepoMapFindCandidate(candidate, queried.root, input);
+			if (ranked !== undefined) result.push(ranked);
+		}
+		return result;
+	} catch (error) {
+		if (error instanceof AbortFind) throw error;
+		return [];
+	}
+}
+
+async function validateRepoMapFindCandidate(
+	candidate: RepoMapQueryCandidate,
+	mapRoot: string,
+	input: {
+		workspaceRoot: string;
+		searchRoot: SearchRoot;
+		config: FileToolsConfig;
+		ignoreSnapshot: IgnoreSnapshot;
+		ignoreBypass: boolean;
+		signal: AbortSignal | undefined;
+	},
+): Promise<RankedFindEntry | undefined> {
+	const absolutePath = path.resolve(mapRoot, candidate.path);
+	const searchRelative = relativeInside(input.searchRoot.absolutePath, absolutePath);
+	if (searchRelative === undefined || searchRelative === ".") return undefined;
+	const workspaceRelative = relativeInside(input.workspaceRoot, absolutePath);
+	if (workspaceRelative === undefined) return undefined;
+	const displayPath = childDisplayPath(input.searchRoot.relativePath, searchRelative);
+	const identity = toolPathIdentity(displayPath, absolutePath, workspaceRelative);
+	if (isBlockedPath(input.config, identity)) return undefined;
+	if (!input.ignoreBypass) {
+		if (isIgnoredPath(input.config, identity)) return undefined;
+		if (input.ignoreSnapshot.evaluate({ path: workspaceRelative, kind: "file", intent: "search" }).ignored) return undefined;
+	}
+	let info;
+	try {
+		info = await lstat(absolutePath);
+	} catch {
+		return undefined;
+	}
+	if (!info.isFile() || info.isSymbolicLink()) return undefined;
+	const pathOnly = candidate.reasons.every((reason) => reason === "exact path" || reason === "exact filename" || reason === "path match");
+	if (!pathOnly && !await matchesCurrentHash(absolutePath, candidate.contentHash, input.signal)) return undefined;
+	for (const related of candidate.relatedEdges.flatMap((edge) => edge.relatedFiles)) {
+		const relatedAbsolutePath = path.resolve(mapRoot, related.path);
+		if (relativeInside(input.searchRoot.absolutePath, relatedAbsolutePath) === undefined) return undefined;
+		if (!await matchesCurrentHash(relatedAbsolutePath, related.contentHash, input.signal)) return undefined;
+	}
+	return {
+		entry: createFindEntry(displayPath, "file"),
+		score: repoMapFindScore(candidate),
+	};
+}
+
+async function matchesCurrentHash(absolutePath: string, expected: string | undefined, signal: AbortSignal | undefined): Promise<boolean> {
+	if (expected === undefined) return false;
+	try {
+		const bytes = signal === undefined ? await readFile(absolutePath) : await readFile(absolutePath, { signal });
+		return createHash("sha256").update(bytes).digest("hex") === expected;
+	} catch (error) {
+		if (error instanceof Error && error.name === "AbortError") throw new AbortFind();
+		return false;
+	}
+}
+
+function repoMapFindScore(candidate: RepoMapQueryCandidate): number {
+	if (candidate.reasons.includes("exact path")) return 98_000;
+	if (candidate.reasons.includes("exact filename")) return 89_000;
+	if (candidate.reasons.some((reason) => reason === "exact qualified symbol" || reason === "exact symbol" || reason === "short symbol")) return 78_000 + candidate.score;
+	if (candidate.reasons.includes("definition")) return 74_000 + candidate.score;
+	if (candidate.reasons.includes("export")) return 70_000 + candidate.score;
+	if (candidate.reasons.includes("path match")) return 55_000 + candidate.score;
+	return 32_000 + candidate.score;
+}
+
+function mergeFindCandidates(primary: RankedFindEntry[], repoMap: RankedFindEntry[]): RankedFindEntry[] {
+	const byPath = new Map<string, RankedFindEntry>();
+	for (const candidate of [...primary, ...repoMap]) {
+		const existing = byPath.get(candidate.entry.path);
+		if (existing === undefined || candidate.score > existing.score) byPath.set(candidate.entry.path, candidate);
+	}
+	return [...byPath.values()].sort((left, right) => right.score - left.score || compareStableString(left.entry.path, right.entry.path));
+}
+
+function relativeInside(root: string, target: string): string | undefined {
+	const relative = path.relative(path.resolve(root), path.resolve(target));
+	if (relative === "") return ".";
+	if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return undefined;
+	return normalizeRelative(relative);
 }
 
 function createWalkState(

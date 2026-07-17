@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { ReadVersionCache } from "../../src/file-tools/core/read-cache.js";
@@ -33,6 +33,7 @@ import {
 	renderWriteResult,
 } from "../../src/file-tools/pi/renderers.js";
 import type { EditParams, FindParams, GrepParams, LsParams, ReadParams, WriteParams } from "../../src/file-tools/types.js";
+import { createRepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
 import { repairableTool } from "../../src/tool-repair/index.js";
 
 const lsParameters = Type.Object({ path: Type.String({ description: "Directory path." }) }, { additionalProperties: false });
@@ -149,7 +150,7 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports): v
 		parameters: findParameters,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const { findWorkspaceFiles } = await loaders.find();
-			const result = await findWorkspaceFiles(ctx.cwd, params as FindParams, signal);
+			const result = await findWorkspaceFiles(ctx.cwd, params as FindParams, signal, { repoMap: repoMapQueryFor(ctx) });
 			if (isFailedDetails(result)) {
 				return { content: [{ type: "text", text: formatErrorModelResult("find", result) }], details: result };
 			}
@@ -170,7 +171,7 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports): v
 				loaders.grep(),
 				loaders.lsp(),
 			]);
-			const result = await grepWorkspaceFiles(ctx.cwd, params as GrepParams, signal, { lsp: lspFileHooks });
+			const result = await grepWorkspaceFiles(ctx.cwd, params as GrepParams, signal, { lsp: lspFileHooks, repoMap: repoMapQueryFor(ctx) });
 			if (isFailedDetails(result)) {
 				return { content: [{ type: "text", text: formatErrorModelResult("grep", result) }], details: result };
 			}
@@ -299,6 +300,10 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports): v
 		if (searchPreloadTimer !== undefined) clearTimeout(searchPreloadTimer);
 		versionCaches.clear();
 	});
+}
+
+function repoMapQueryFor(ctx: ExtensionContext) {
+	return createRepoMapFileToolQuery(() => typeof ctx.sessionManager.getBranch === "function" ? ctx.sessionManager.getBranch() : []);
 }
 
 function createRetryableLoader<T>(load: () => Promise<T>): () => Promise<T> {

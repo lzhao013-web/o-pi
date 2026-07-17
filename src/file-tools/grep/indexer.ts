@@ -19,6 +19,7 @@ export interface GrepCandidateFile {
 	realPath: string;
 	size: number;
 	mtimeMs: number;
+	contentHash: string;
 	index: ParsedFileIndex;
 }
 
@@ -319,6 +320,7 @@ function toCandidate(cached: CachedFileIndex): GrepCandidateFile {
 		realPath: cached.realPath,
 		size: cached.size,
 		mtimeMs: cached.mtimeMs,
+		contentHash: cached.hash,
 		index: cached.index,
 	};
 }
