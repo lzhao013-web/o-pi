@@ -1,6 +1,7 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { AuthStorage, ModelRegistry, type ExtensionAPI, type ProviderConfig as PiProviderConfig } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
+import { ModelRegistry, ModelRuntime, type ExtensionAPI, type ProviderConfig as PiProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import openAICompatibleProvider from "../../agent/extensions/openai-compatible-provider.js";
@@ -301,7 +302,13 @@ describe("openai-compatible-provider config", () => {
 				}
 			}
 		}`);
-		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		const runtime = await ModelRuntime.create({
+			credentials: new InMemoryCredentialStore(),
+			modelsPath: null,
+			modelsStore: new InMemoryModelsStore(),
+			allowModelNetwork: false,
+		});
+		const registry = new ModelRegistry(runtime);
 		const builtInModelIds = registry.getAll().filter((model) => model.provider === "opencode").map((model) => model.id);
 		expect(builtInModelIds.length).toBeGreaterThan(0);
 		expect(builtInModelIds).not.toEqual(["private-opencode-model"]);
@@ -1023,11 +1030,19 @@ describe("openai-compatible-provider config", () => {
 			}`),
 		).rejects.toThrow('thinking_level "max" is not supported');
 
+		const [maxProvider] = await normalizeFromText(`{
+			"providers": { "vllm": { "base_url": "http://127.0.0.1:8000/v1", "api_key": "EMPTY", "models": [{ "model": "m", "thinking_level_map": { "max": "max" } }] } }
+		}`);
+		expect(maxProvider?.config.models?.[0]).toMatchObject({
+			reasoning: true,
+			thinkingLevelMap: { max: "max" },
+		});
+
 		await expect(
 			normalizeFromText(`{
-				"providers": { "vllm": { "base_url": "http://127.0.0.1:8000/v1", "api_key": "EMPTY", "models": [{ "model": "m", "thinking_level_map": { "max": "max" } }] } }
+				"providers": { "vllm": { "base_url": "http://127.0.0.1:8000/v1", "api_key": "EMPTY", "models": [{ "model": "m", "thinking_level_map": { "turbo": "turbo" } }] } }
 			}`),
-		).rejects.toThrow('thinking_level_map contains unknown Pi thinking level "max"');
+		).rejects.toThrow('thinking_level_map contains unknown Pi thinking level "turbo"');
 
 		await expect(
 			normalizeFromText(`{
