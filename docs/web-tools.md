@@ -46,7 +46,6 @@ Provider 是运行时配置，不暴露给模型。默认顺序：
 [1] Pi Coding Agent
 URL: https://example.com/pi
 Snippet: Search result snippet.
-Source: exa_mcp
 </websearch_results>
 ```
 

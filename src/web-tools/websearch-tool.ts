@@ -119,7 +119,6 @@ function successContent(details: WebSearchSuccessDetails): string {
 				`[${item.rank}] ${escapeXml(truncateChars(item.title, 160))}`,
 				`URL: ${escapeXml(item.url)}`,
 				item.snippet ? `Snippet: ${escapeXml(truncateChars(item.snippet, 240))}` : undefined,
-				`Source: ${escapeXml(details.provider)}`,
 			].filter((line): line is string => line !== undefined);
 			return lines.join("\n");
 		})

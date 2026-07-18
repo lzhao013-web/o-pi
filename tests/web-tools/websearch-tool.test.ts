@@ -64,14 +64,15 @@ describe("websearch tool", () => {
 		await expect(executeWebSearch({ query: "x", limit: 21 }, rt)).resolves.toMatchObject({ details: { status: "failed", error: { code: "INVALID_ARGUMENT" } } });
 	});
 
-	it("成功模型输出包含 provider、Source 且 XML 转义", async () => {
+	it("成功模型输出只在顶层包含 provider，并转义 XML", async () => {
 		const calls = { count: 0 };
 		const result = await executeWebSearch({ query: "<pi>&" }, runtime([successProvider("exa_mcp", calls)]));
 		expect(result.details).toMatchObject({ status: "success", provider: "exa_mcp", cached: false });
 		expect(result.content).toContain('query="&lt;pi&gt;&amp;"');
 		expect(result.content).toContain('provider="exa_mcp"');
 		expect(result.content).toContain("[1] &lt;Title&gt;&amp;");
-		expect(result.content).toContain("Source: exa_mcp");
+		expect(result.content).not.toContain("Source:");
+		expect(result.content.match(/exa_mcp/g)).toHaveLength(1);
 		expect(calls.count).toBe(1);
 	});
 
