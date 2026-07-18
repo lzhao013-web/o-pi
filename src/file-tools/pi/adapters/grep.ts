@@ -3,6 +3,13 @@ import { isFailedDetails } from "../guards.js";
 import type { LazyRepoMap } from "../lazy-repo-map.js";
 import { formatCompactGrepResult, grepWorkspaceFiles } from "../../tools/grep.js";
 import type { FileToolLspHooks, GrepParams } from "../../types.js";
+import { clearGrepIndex } from "../../grep/indexer.js";
+import { disposeFileToolsCaches as disposeWorkspaceCaches } from "../workspace-cache.js";
+
+export function disposeFileToolsCaches(): void {
+	clearGrepIndex();
+	disposeWorkspaceCaches();
+}
 
 export async function executeGrep(
 	params: GrepParams,

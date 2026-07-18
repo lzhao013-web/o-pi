@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeSubagent, resolveMode } from "../../src/subagent/executor.js";
 import { resetSubagentSpawnForTests, runPiProcess, setSubagentSpawnForTests } from "../../src/subagent/process.js";
 import type { AgentDefinition, ProcessRunInput, ProcessRunProgress } from "../../src/subagent/types.js";
@@ -26,6 +26,8 @@ beforeEach(async () => {
 
 afterEach(() => {
 	resetSubagentSpawnForTests();
+	vi.useRealTimers();
+	vi.restoreAllMocks();
 });
 
 describe("subagent execution", () => {
@@ -168,6 +170,30 @@ describe("subagent execution", () => {
 		expect(updates.length).toBeGreaterThanOrEqual(2);
 		expect(updates[0]?.events).toEqual([{ type: "tool", name: "read", args: { path: "src/subagent/renderer.ts" } }]);
 		expect(updates.at(-1)?.events.at(-1)).toEqual({ type: "text", text: "done" });
+	});
+
+	it("正常退出时移除复用 AbortSignal 上的监听器", async () => {
+		setOutputSpawn(() => "done");
+		const controller = new AbortController();
+		const add = vi.spyOn(controller.signal, "addEventListener");
+		const remove = vi.spyOn(controller.signal, "removeEventListener");
+
+		await runPiProcess(input(), { signal: controller.signal });
+
+		expect(add).toHaveBeenCalledWith("abort", expect.any(Function), { once: true });
+		expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+	});
+
+	it("终止导致子进程同步 close 时不遗留强杀 timer", async () => {
+		vi.useFakeTimers();
+		setOutputSpawn(() => "unused");
+		const controller = new AbortController();
+		controller.abort();
+
+		const result = await runPiProcess(input(), { signal: controller.signal });
+
+		expect(result.aborted).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
 	});
 });
 

@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import net from "node:net";
 import { createRequire } from "node:module";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 
 const REMOTE_TIMEOUT_MS = 350;
 const ESTIMATED_IMAGE_TOKENS = 1200;
+export const REMOTE_TOKEN_CACHE_MAX_ENTRIES = 128;
 const remoteCache = new Map<string, TokenCount>();
 const unavailableRemoteBases = new Set<string>();
 const require = createRequire(import.meta.url);
@@ -190,9 +192,13 @@ async function countWithLocalTokenizer(text: string, scope: TokenCounterScope): 
 	const baseUrl = normalizeTokenizerBaseUrl(scope.baseUrl);
 	if (baseUrl === undefined) return undefined;
 	if (unavailableRemoteBases.has(baseUrl)) return undefined;
-	const cacheKey = `${baseUrl}\n${scope.modelId ?? ""}\n${text}`;
+	const cacheKey = createHash("sha256").update(baseUrl).update("\0").update(scope.modelId ?? "").update("\0").update(text).digest("hex");
 	const cached = remoteCache.get(cacheKey);
-	if (cached !== undefined) return cached;
+	if (cached !== undefined) {
+		remoteCache.delete(cacheKey);
+		remoteCache.set(cacheKey, cached);
+		return cached;
+	}
 
 	for (const request of localTokenizerRequests(baseUrl, text, scope.modelId)) {
 		const tokens = await postTokenize(request.url, request.body);
@@ -203,11 +209,20 @@ async function countWithLocalTokenizer(text: string, scope: TokenCounterScope): 
 			method: "remote_tokenize",
 			note: `local tokenizer ${request.kind}`,
 		};
-		remoteCache.set(cacheKey, counted);
+		setRemoteCache(cacheKey, counted);
 		return counted;
 	}
 	unavailableRemoteBases.add(baseUrl);
 	return undefined;
+}
+
+function setRemoteCache(key: string, value: TokenCount): void {
+	remoteCache.set(key, value);
+	while (remoteCache.size > REMOTE_TOKEN_CACHE_MAX_ENTRIES) {
+		const oldest = remoteCache.keys().next().value;
+		if (oldest === undefined) return;
+		remoteCache.delete(oldest);
+	}
 }
 
 function localTokenizerRequests(baseUrl: string, text: string, modelId: string | undefined): Array<{ kind: string; url: string; body: Record<string, unknown> }> {

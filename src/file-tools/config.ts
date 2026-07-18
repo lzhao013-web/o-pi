@@ -77,6 +77,7 @@ const defaultConfig: FileToolsConfig = {
 
 const configCache = new Map<string, ConfigCacheEntry>();
 const pendingConfigs = new Map<string, Promise<ConfigCacheEntry>>();
+let configCacheEpoch = 0;
 
 class FileToolsConfigError extends Error {
 	constructor(message: string, readonly details?: Record<string, unknown>) {
@@ -96,6 +97,7 @@ export async function loadFileToolsConfig(cwd = process.cwd()): Promise<ToolOutc
 	if (cached?.fingerprint === fingerprint) return structuredClone(cached.result);
 
 	const pendingKey = `${cacheKey}\0${fingerprint}`;
+	const epoch = configCacheEpoch;
 	let pending = pendingConfigs.get(pendingKey);
 	if (pending === undefined) {
 		pending = loadStableConfig(userPath, projectPath, paths, fingerprint);
@@ -103,14 +105,15 @@ export async function loadFileToolsConfig(cwd = process.cwd()): Promise<ToolOutc
 	}
 	try {
 		const loaded = await pending;
-		configCache.set(cacheKey, loaded);
+		if (configCacheEpoch === epoch) configCache.set(cacheKey, loaded);
 		return structuredClone(loaded.result);
 	} finally {
 		if (pendingConfigs.get(pendingKey) === pending) pendingConfigs.delete(pendingKey);
 	}
 }
 
-export function clearFileToolsConfigCacheForTests(): void {
+export function clearFileToolsConfigCache(): void {
+	configCacheEpoch += 1;
 	configCache.clear();
 	pendingConfigs.clear();
 }

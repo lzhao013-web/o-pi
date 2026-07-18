@@ -99,7 +99,7 @@ export class LspClient {
 			}
 			connection.dispose();
 		}
-		if (child !== undefined && !child.killed) child.kill();
+		if (child !== undefined) await terminateChild(child);
 	}
 
 	async didOpenOrChange(filePath: string, text: string): Promise<boolean> {
@@ -242,8 +242,10 @@ export class LspClient {
 			return true;
 		} catch (error) {
 			this.markUnavailable(errorMessage(error));
+			this.connection = undefined;
+			this.process = undefined;
 			connection.dispose();
-			if (!child.killed) child.kill();
+			await terminateChild(child);
 			return false;
 		}
 	}
@@ -382,6 +384,33 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);
 	}
+}
+
+async function terminateChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+	if (hasExited(child)) return;
+	if (!child.killed) child.kill("SIGTERM");
+	if (await waitForChildExit(child, 1000)) return;
+	child.kill("SIGKILL");
+	await waitForChildExit(child, 1000);
+}
+
+async function waitForChildExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+	if (hasExited(child)) return true;
+	return new Promise((resolve) => {
+		let timer: NodeJS.Timeout | undefined;
+		const finish = (exited: boolean): void => {
+			child.off("exit", onExit);
+			if (timer !== undefined) clearTimeout(timer);
+			resolve(exited);
+		};
+		const onExit = (): void => finish(true);
+		child.once("exit", onExit);
+		timer = setTimeout(() => finish(hasExited(child)), timeoutMs);
+	});
+}
+
+function hasExited(child: ChildProcessWithoutNullStreams): boolean {
+	return child.exitCode !== null || child.signalCode !== null;
 }
 
 function errorMessage(error: unknown): string {

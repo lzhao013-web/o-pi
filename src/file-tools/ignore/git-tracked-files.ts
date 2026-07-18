@@ -20,6 +20,7 @@ interface GitCacheEntry {
 
 const cache = new Map<string, GitCacheEntry>();
 const pending = new Map<string, Promise<GitCacheEntry>>();
+let cacheEpoch = 0;
 
 /** 一次性读取 Git index，避免按路径启动 Git 子进程。非 Git 仓库安全退化为空集合。 */
 export async function loadGitTrackedFiles(workspaceRoot: string): Promise<GitTrackedFiles> {
@@ -32,15 +33,22 @@ export async function loadGitTrackedFiles(workspaceRoot: string): Promise<GitTra
 
 	const existing = pending.get(workspaceRoot);
 	if (existing !== undefined) return (await existing).result;
+	const epoch = cacheEpoch;
 	const created = refreshGitState(workspaceRoot, marker);
 	pending.set(workspaceRoot, created);
 	try {
 		const entry = await created;
-		cache.set(workspaceRoot, entry);
+		if (cacheEpoch === epoch) cache.set(workspaceRoot, entry);
 		return entry.result;
 	} finally {
 		if (pending.get(workspaceRoot) === created) pending.delete(workspaceRoot);
 	}
+}
+
+export function clearGitTrackedFilesCache(): void {
+	cacheEpoch += 1;
+	cache.clear();
+	pending.clear();
 }
 
 async function refreshGitState(workspaceRoot: string, marker: string): Promise<GitCacheEntry> {

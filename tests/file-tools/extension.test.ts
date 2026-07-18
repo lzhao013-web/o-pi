@@ -5,7 +5,7 @@ import { initTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import fileTools, { createFileToolsExtension, type FileToolsModuleImports } from "../../agent/extensions/file-tools.js";
-import { lspFileHooks } from "../../src/lsp/index.js";
+import { lspFileHooks, lspManager } from "../../src/lsp/index.js";
 
 interface ThemeStub {
 	fg(name: string, text: string): string;
@@ -48,6 +48,7 @@ describe("file-tools extension", () => {
 	});
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 	});
 
 	it("文件工具失败结果标记为错误，并按失败分支渲染", () => {
@@ -98,6 +99,7 @@ describe("file-tools extension", () => {
 	it("注册阶段零预热，首次执行按工具加载，并发复用且失败可重试", async () => {
 		const registered: Array<{ name: string; execute?: ExecuteTool }> = [];
 		const handlers = new Map<string, LifecycleHandler>();
+		const disposeFileToolsCaches = vi.fn();
 		let resolveLs: ((module: typeof import("../../src/file-tools/pi/adapters/ls.js")) => void) | undefined;
 		const pendingLs = new Promise<typeof import("../../src/file-tools/pi/adapters/ls.js")>((resolve) => {
 			resolveLs = resolve;
@@ -149,7 +151,7 @@ describe("file-tools extension", () => {
 		expect(imports.ls).toHaveBeenCalledTimes(1);
 
 		if (resolveLs === undefined) throw new Error("missing ls module resolver");
-		resolveLs(await import("../../src/file-tools/pi/adapters/ls.js"));
+		resolveLs({ ...(await import("../../src/file-tools/pi/adapters/ls.js")), disposeFileToolsCaches });
 		await expect(firstLs).resolves.toMatchObject({ details: { path: "." } });
 		await expect(secondLs).resolves.toMatchObject({ details: { path: "." } });
 		expect(imports.ls).toHaveBeenCalledTimes(1);
@@ -160,7 +162,9 @@ describe("file-tools extension", () => {
 		});
 		expect(imports.find).toHaveBeenCalledTimes(2);
 		expect(imports.repoMap).not.toHaveBeenCalled();
-		expect(handlers.get("session_shutdown")?.({}, {})).toBeUndefined();
+		await expect(Promise.resolve(handlers.get("session_shutdown")?.({}, {}))).resolves.toBeUndefined();
+		expect(imports.lsp).not.toHaveBeenCalled();
+		expect(disposeFileToolsCaches).toHaveBeenCalledTimes(1);
 	});
 
 	it("同一 session 复用 Repo Map runtime，shutdown 后释放", async () => {
@@ -209,7 +213,7 @@ describe("file-tools extension", () => {
 			await executeTool(registered, "write", { path: "one.ts", content: "one\n" }, ctx);
 			await executeTool(registered, "write", { path: "two.ts", content: "two\n" }, ctx);
 			expect(createRepoMapFileToolQuery).toHaveBeenCalledTimes(1);
-			expect(handlers.get("session_shutdown")?.({}, {})).toBeUndefined();
+			await expect(Promise.resolve(handlers.get("session_shutdown")?.({}, {}))).resolves.toBeUndefined();
 			await executeTool(registered, "write", { path: "three.ts", content: "three\n" }, ctx);
 			expect(createRepoMapFileToolQuery).toHaveBeenCalledTimes(2);
 		} finally {
@@ -219,6 +223,8 @@ describe("file-tools extension", () => {
 
 	it("完整 read 不加载 LSP，局部 read 首次请求增强时才加载并复用", async () => {
 		const registered: Array<{ name: string; execute?: ExecuteTool }> = [];
+		const handlers = new Map<string, LifecycleHandler>();
+		const reload = vi.spyOn(lspManager, "reload").mockResolvedValue();
 		const enhanceRead = vi.fn(async () => ({
 			enclosing_symbol: { name: "value", kind: "declaration", line: 1, end_line: 3 },
 		}));
@@ -236,7 +242,9 @@ describe("file-tools extension", () => {
 			registerTool(tool: { name: string; execute?: ExecuteTool }) {
 				registered.push(tool);
 			},
-			on() {},
+			on(name: string, handler: LifecycleHandler) {
+				handlers.set(name, handler);
+			},
 		} as unknown as ExtensionAPI);
 
 		const cwd = await mkdtemp(join(tmpdir(), "o-pi-lazy-read-"));
@@ -253,6 +261,11 @@ describe("file-tools extension", () => {
 			expect(enhanceRead).toHaveBeenCalledTimes(1);
 			expect(partial.details).toMatchObject({ lsp: { enclosing_symbol: { name: "value" } } });
 			expect(imports.repoMap).not.toHaveBeenCalled();
+
+			await expect(Promise.resolve(handlers.get("session_shutdown")?.({}, {}))).resolves.toBeUndefined();
+			expect(reload).toHaveBeenCalledTimes(1);
+			await expect(Promise.resolve(handlers.get("session_shutdown")?.({}, {}))).resolves.toBeUndefined();
+			expect(reload).toHaveBeenCalledTimes(1);
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}

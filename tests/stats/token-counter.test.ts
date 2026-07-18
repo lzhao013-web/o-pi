@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { countTextTokens, countTextTokensSync, isLocalOrPrivateHttpUrl } from "../../src/token-counter.js";
+import { countTextTokens, countTextTokensSync, isLocalOrPrivateHttpUrl, REMOTE_TOKEN_CACHE_MAX_ENTRIES } from "../../src/token-counter.js";
 
 describe("stats token counter", () => {
 	it("只允许本地或私网 tokenizer endpoint", () => {
@@ -13,18 +13,29 @@ describe("stats token counter", () => {
 	});
 
 	it("本地 /tokenize 可用时优先使用 endpoint", async () => {
+		let requests = 0;
 		const server = createServer((request, response) => {
 			if (request.url !== "/tokenize") {
 				response.writeHead(404).end();
 				return;
 			}
+			requests += 1;
 			response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ tokens: [1, 2, 3, 4] }));
 		});
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const { port } = server.address() as AddressInfo;
 		try {
-			const counted = await countTextTokens("hello world", { baseUrl: `http://127.0.0.1:${port}/v1`, modelId: "local" });
+			const scope = { baseUrl: `http://127.0.0.1:${port}/v1`, modelId: "local" };
+			const counted = await countTextTokens("hello world", scope);
 			expect(counted).toMatchObject({ tokens: 4, method: "remote_tokenize", confidence: "high" });
+			await countTextTokens("hello world", scope);
+			expect(requests).toBe(1);
+
+			for (let index = 0; index < REMOTE_TOKEN_CACHE_MAX_ENTRIES; index += 1) {
+				await countTextTokens(`entry-${index}`, scope);
+			}
+			await countTextTokens("hello world", scope);
+			expect(requests).toBe(REMOTE_TOKEN_CACHE_MAX_ENTRIES + 2);
 		} finally {
 			await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 		}

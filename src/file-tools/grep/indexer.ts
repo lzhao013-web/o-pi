@@ -207,7 +207,7 @@ async function consumePendingIndex(
 	}
 }
 
-export function clearGrepIndexForTests(): void {
+export function clearGrepIndex(): void {
 	workspaceCaches.clear();
 	for (const pending of pendingIndexes.values()) {
 		if (pending.abortTimer !== undefined) clearImmediate(pending.abortTimer);

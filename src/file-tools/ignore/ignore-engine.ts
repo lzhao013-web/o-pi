@@ -5,7 +5,7 @@ import path from "node:path";
 import ignoreFactory from "ignore";
 import { isWorkspaceMetadataPath } from "../core/path-resolver.js";
 import { resolveIgnoreConfig } from "./ignore-config.js";
-import { loadGitTrackedFiles } from "./git-tracked-files.js";
+import { clearGitTrackedFilesCache, loadGitTrackedFiles } from "./git-tracked-files.js";
 import type {
 	IgnoreConfig,
 	IgnoreDecision,
@@ -94,6 +94,7 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 	private readonly cache = new Map<string, SnapshotCacheEntry>();
 	private readonly pending = new Map<string, Promise<IgnoreSnapshot>>();
 	private readonly epochs = new Map<string, number>();
+	private generation = 0;
 
 	async createSnapshot(root: string, overrides: PartialIgnoreConfig = {}): Promise<IgnoreSnapshot> {
 		const config = resolveIgnoreConfig(overrides);
@@ -101,7 +102,7 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 		const pendingKey = `${root}:${JSON.stringify(config)}`;
 		const existing = this.pending.get(pendingKey);
 		if (existing !== undefined) return existing;
-		const epoch = this.epochs.get(root) ?? 0;
+		const epoch = { generation: this.generation, workspace: this.epochs.get(root) ?? 0 };
 		const created = this.buildSnapshot(root, config, epoch);
 		this.pending.set(pendingKey, created);
 		try {
@@ -111,7 +112,7 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 		}
 	}
 
-	private async buildSnapshot(root: string, config: IgnoreConfig, epoch: number): Promise<IgnoreSnapshot> {
+	private async buildSnapshot(root: string, config: IgnoreConfig, epoch: { generation: number; workspace: number }): Promise<IgnoreSnapshot> {
 		const tracked = await loadGitTrackedFiles(root);
 		const caseInsensitive = resolveCaseInsensitive(config, tracked.ignoreCase);
 		const cacheKey = `${root}:${JSON.stringify(config)}:${caseInsensitive}`;
@@ -124,7 +125,7 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 		const { ruleSets, diagnostics } = await compileRuleSets(ruleFiles, config, caseInsensitive, discoveryDiagnostics);
 		const fingerprint = buildFingerprint(config, caseInsensitive, ruleFiles, tracked.paths, diagnostics);
 		if (cached?.fingerprint === fingerprint) {
-			if ((this.epochs.get(root) ?? 0) === epoch) {
+			if (this.isCurrent(root, epoch)) {
 				this.cache.set(cacheKey, { fingerprint, snapshot: cached.snapshot, directories, ruleFiles, trackedFingerprint: tracked.fingerprint });
 			}
 			return cached.snapshot;
@@ -132,7 +133,7 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 
 		const snapshot = new IgnoreSnapshotImpl(nextGeneration, fingerprint, ruleSets, diagnostics, tracked.paths, config, caseInsensitive);
 		nextGeneration += 1;
-		if ((this.epochs.get(root) ?? 0) === epoch) {
+		if (this.isCurrent(root, epoch)) {
 			this.cache.set(cacheKey, { fingerprint, snapshot, directories, ruleFiles, trackedFingerprint: tracked.fingerprint });
 		}
 		return snapshot;
@@ -140,9 +141,11 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 
 	invalidate(root?: string): void {
 		if (root === undefined) {
+			this.generation += 1;
 			this.cache.clear();
 			this.pending.clear();
-			for (const workspaceRoot of this.epochs.keys()) this.epochs.set(workspaceRoot, (this.epochs.get(workspaceRoot) ?? 0) + 1);
+			this.epochs.clear();
+			clearGitTrackedFilesCache();
 			return;
 		}
 		this.epochs.set(root, (this.epochs.get(root) ?? 0) + 1);
@@ -152,6 +155,10 @@ class WorkspaceIgnoreEngine implements IgnoreEngine {
 		for (const key of this.pending.keys()) {
 			if (key.startsWith(`${root}:`)) this.pending.delete(key);
 		}
+	}
+
+	private isCurrent(root: string, epoch: { generation: number; workspace: number }): boolean {
+		return this.generation === epoch.generation && (this.epochs.get(root) ?? 0) === epoch.workspace;
 	}
 }
 

@@ -5,6 +5,8 @@ import type { LazyRepoMap } from "../lazy-repo-map.js";
 import { editWorkspace } from "../../tools/edit.js";
 import type { EditParams, FileToolLspHooks } from "../../types.js";
 
+export { disposeFileToolsCaches } from "../workspace-cache.js";
+
 export async function executeEdit(
 	params: EditParams,
 	runtime: {

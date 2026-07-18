@@ -13,7 +13,7 @@ import { editWorkspace } from "../../src/file-tools/tools/edit.js";
 import { readWorkspaceFile } from "../../src/file-tools/tools/read.js";
 import { writeWorkspaceFile } from "../../src/file-tools/tools/write.js";
 import { grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
-import { clearGrepIndexForTests } from "../../src/file-tools/grep/indexer.js";
+import { clearGrepIndex } from "../../src/file-tools/grep/indexer.js";
 import { computeRepoMapActivation, REPO_MAP_SESSION_ENTRY, type RepoMapActivationEntry } from "../../src/repo-map/activation.js";
 import { createRepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
 import { RepoMapQueryIndex } from "../../src/repo-map/query.js";
@@ -209,7 +209,7 @@ describe("Repo Map file-tool read and mutation integration", () => {
 		expect(afterWrite?.generation).not.toBe(initialized.metadata.generation);
 		let generation = await activatedGeneration(branch);
 		expect(generation.symbols.map((symbol) => symbol.name)).toContain("Added");
-		clearGrepIndexForTests();
+		clearGrepIndex();
 		const grep = await grepWorkspaceFiles(root, { query: "Added" }, undefined, { repoMap: query });
 		if (grep.status === "failed") throw new Error(grep.error.message);
 		expect(grep.strategy).toContain("repo-map");

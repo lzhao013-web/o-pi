@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { clearGrepIndexForTests } from "../../src/file-tools/grep/indexer.js";
+import { clearGrepIndex } from "../../src/file-tools/grep/indexer.js";
 import { countTextTokensSync } from "../../src/token-counter.js";
 import { formatCompactGrepResult, grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
 import type { GrepSuccess, ToolOutcome } from "../../src/file-tools/types.js";
@@ -20,11 +20,11 @@ beforeEach(async () => {
 	const configPath = path.join(outside, "file-tools.jsonc");
 	await writeConfig(configPath);
 	process.env.PI_FILE_TOOLS_CONFIG = configPath;
-	clearGrepIndexForTests();
+	clearGrepIndex();
 });
 
 afterEach(async () => {
-	clearGrepIndexForTests();
+	clearGrepIndex();
 });
 
 async function writeConfig(configPath: string, limits: Record<string, number> = {}): Promise<void> {
@@ -260,7 +260,7 @@ describe("grep", () => {
 		raw.blocked_path = [`${outside}/`];
 		await writeFile(configPath, JSON.stringify(raw, null, 2));
 		process.env.PI_FILE_TOOLS_CONFIG = configPath;
-		clearGrepIndexForTests();
+		clearGrepIndex();
 		expect(await grepWorkspaceFiles(workspace, { path: "link.txt", query: "needle" })).toMatchObject({
 			status: "failed",
 			error: { code: "PROTECTED_PATH" },

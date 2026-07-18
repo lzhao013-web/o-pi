@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { clearGrepIndexForTests } from "../../src/file-tools/grep/indexer.js";
+import { clearGrepIndex } from "../../src/file-tools/grep/indexer.js";
 import { findWorkspaceFiles } from "../../src/file-tools/tools/find.js";
 import { formatCompactGrepResult, grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
 import { createRepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
@@ -20,7 +20,7 @@ preserveEnv("PI_FILE_TOOLS_CONFIG");
 
 beforeEach(async () => {
 	await configureFileTools(configTemp.path, { find_result_limit: 8, grep_result_limit: 8, grep_output_token_budget: 1600 });
-	clearGrepIndexForTests();
+	clearGrepIndex();
 });
 
 describe("Repo Map query and file-tool integration", () => {
@@ -116,7 +116,7 @@ describe("Repo Map query and file-tool integration", () => {
 		expect(result.regions.find((region) => region.path === "b.ts")?.content).toContain("function target");
 
 		await writeFile(path.join(workspaceTemp.path, "b.ts"), "export function replacement() { return 2; }\n");
-		clearGrepIndexForTests();
+		clearGrepIndex();
 		const staleResult = await grepWorkspaceFiles(workspaceTemp.path, { path: "b.ts", query: "target" }, undefined, { repoMap: query });
 		if (staleResult.status === "failed") throw new Error(staleResult.error.message);
 		expect(staleResult.strategy).not.toContain("repo-map");

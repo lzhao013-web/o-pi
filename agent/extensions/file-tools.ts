@@ -95,21 +95,22 @@ const defaultModuleImports: FileToolsModuleImports = {
 };
 
 export function createFileToolsExtension(imports: FileToolsModuleImports = defaultModuleImports): (pi: ExtensionAPI) => void {
+	const cacheDisposers = new Set<() => void>();
 	const loaders: FileToolsModuleImports = {
-		ls: createRetryableLoader(imports.ls),
-		find: createRetryableLoader(imports.find),
-		grep: createRetryableLoader(imports.grep),
-		read: createRetryableLoader(imports.read),
-		write: createRetryableLoader(imports.write),
-		edit: createRetryableLoader(imports.edit),
+		ls: createRetryableLoader(async () => registerCacheDisposer(await imports.ls(), cacheDisposers)),
+		find: createRetryableLoader(async () => registerCacheDisposer(await imports.find(), cacheDisposers)),
+		grep: createRetryableLoader(async () => registerCacheDisposer(await imports.grep(), cacheDisposers)),
+		read: createRetryableLoader(async () => registerCacheDisposer(await imports.read(), cacheDisposers)),
+		write: createRetryableLoader(async () => registerCacheDisposer(await imports.write(), cacheDisposers)),
+		edit: createRetryableLoader(async () => registerCacheDisposer(await imports.edit(), cacheDisposers)),
 		lsp: createRetryableLoader(imports.lsp),
 		repoMap: createRetryableLoader(imports.repoMap),
 	};
-	return (pi) => registerFileTools(pi, loaders);
+	return (pi) => registerFileTools(pi, loaders, cacheDisposers);
 }
 
 /** 注册覆盖版 ls/find/grep/read/write/edit；扩展层只适配 Pi，工具实现和渲染细节在 src/file-tools。 */
-function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports): void {
+function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, cacheDisposers: Set<() => void>): void {
 	const versionCaches = new Map<string, ReadVersionCache>();
 	const repoMaps = new Map<string, LazyRepoMap>();
 	const lsp = createLazyLspFileHooks(loaders.lsp);
@@ -264,10 +265,17 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports): v
 		if (isFileToolName(event.toolName) && isFailedDetails(event.details)) return { isError: true };
 		return undefined;
 	});
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async () => {
 		versionCaches.clear();
 		repoMaps.clear();
+		await lsp.shutdown();
+		for (const dispose of cacheDisposers) dispose();
 	});
+}
+
+function registerCacheDisposer<T extends { disposeFileToolsCaches(): void }>(module: T, disposers: Set<() => void>): T {
+	disposers.add(module.disposeFileToolsCaches);
+	return module;
 }
 
 function createRetryableLoader<T>(load: () => Promise<T>): () => Promise<T> {

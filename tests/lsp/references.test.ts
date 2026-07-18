@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -83,6 +83,33 @@ describe("lsp references", () => {
 			expect.objectContaining({ path: "src/def.ts", symbol: "target", exact: true }),
 			expect.objectContaining({ path: "src/use.ts", symbol: "target", exact: false }),
 		]));
+	});
+
+	it.skipIf(process.platform === "win32")("reload 等待顽固 language server 退出并在超时后强杀", async () => {
+		const pidPath = path.join(configDir, "stubborn-lsp.pid");
+		const server = path.join(configDir, "stubborn-lsp.mjs");
+		await writeFile(server, [
+			'import { writeFileSync } from "node:fs";',
+			`writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));`,
+			'process.on("SIGTERM", () => {});',
+			fakeServerSource(workspace),
+		].join("\n"));
+		const config = path.join(configDir, "lsp.jsonc");
+		await writeFile(config, JSON.stringify({
+			enabled: true,
+			startup_timeout_ms: 2000,
+			request_timeout_ms: 2000,
+			servers: [{ id: "stubborn", command: process.execPath, args: [server], extensions: [".ts"] }],
+		}));
+		process.env.PI_LSP_CONFIG = config;
+
+		const manager = new LspManager();
+		await manager.workspaceSymbols(workspace, "target");
+		const pid = Number(await readFile(pidPath, "utf8"));
+		await manager.reload();
+
+		expect(Number.isInteger(pid)).toBe(true);
+		expect(() => process.kill(pid, 0)).toThrow();
 	});
 });
 

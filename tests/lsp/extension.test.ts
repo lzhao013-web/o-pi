@@ -3,12 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import lspExtension from "../../agent/extensions/lsp.js";
 import { registerLspCommands } from "../../src/lsp/commands.js";
+import { lspManager } from "../../src/lsp/index.js";
 import { LspManager } from "../../src/lsp/manager.js";
 
 describe("lsp extension", () => {
-	it("只注册 /lsp 命令，不注册模型工具", () => {
+	it("只注册 /lsp 命令，并在 session shutdown 释放 manager", async () => {
 		const commands: string[] = [];
 		const tools: string[] = [];
+		let shutdown: (() => Promise<void>) | undefined;
+		const reload = vi.spyOn(lspManager, "reload").mockResolvedValue();
 		lspExtension({
 			registerCommand(name) {
 				commands.push(name);
@@ -16,10 +19,16 @@ describe("lsp extension", () => {
 			registerTool(tool) {
 				tools.push(tool.name);
 			},
-		} as Pick<ExtensionAPI, "registerCommand" | "registerTool"> as ExtensionAPI);
+			on(name, handler) {
+				if (name === "session_shutdown") shutdown = handler as () => Promise<void>;
+			},
+		} as Pick<ExtensionAPI, "registerCommand" | "registerTool" | "on"> as ExtensionAPI);
 
 		expect(commands).toEqual(["lsp"]);
 		expect(tools).toEqual([]);
+		await expect(shutdown?.()).resolves.toBeUndefined();
+		expect(reload).toHaveBeenCalledTimes(1);
+		reload.mockRestore();
 	});
 
 	it("/lsp 合并 status、reload、diagnostics 和 usage 分支", async () => {

@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { clearFileToolsConfigCacheForTests, loadFileToolsConfig } from "../../src/file-tools/config.js";
+import { clearFileToolsConfigCache, loadFileToolsConfig } from "../../src/file-tools/config.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
 let workspace: string;
@@ -12,7 +12,7 @@ beforeEach(() => {
 	workspace = temp.path;
 	delete process.env.PI_FILE_TOOLS_PROJECT_CONFIG;
 	delete process.env.PI_FILE_TOOLS_PROJECT_ROOT;
-	clearFileToolsConfigCacheForTests();
+	clearFileToolsConfigCache();
 });
 
 describe("file-tools config", () => {

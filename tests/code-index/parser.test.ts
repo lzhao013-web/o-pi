@@ -51,7 +51,11 @@ describe("shared code parser", () => {
 		expect(require.cache[treeSitterModules.go]).toBeUndefined();
 		expect(require.cache[treeSitterModules.rust]).toBeUndefined();
 		expect(loadTreeSitterRuntime("typescript")).toBe(loadTreeSitterRuntime("typescript"));
-		expect(handlers.get("session_shutdown")?.()).toBeUndefined();
+		await expect(Promise.resolve(handlers.get("session_shutdown")?.())).resolves.toBeUndefined();
+		expect(require.cache[treeSitterModules.javascript]).toBeUndefined();
+		expect(require.cache[treeSitterModules.python]).toBeUndefined();
+		expect(require.cache[treeSitterModules.go]).toBeUndefined();
+		expect(require.cache[treeSitterModules.rust]).toBeUndefined();
 	});
 
 	it("提取 TypeScript、JavaScript、Python、Go 和 Rust symbol，并保留 class method scope", () => {

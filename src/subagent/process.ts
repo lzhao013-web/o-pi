@@ -72,16 +72,16 @@ export async function runPiProcess(input: ProcessRunInput, options: { signal?: A
 			});
 			proc.stdin.end();
 			let settled = false;
+			let terminating = false;
 			let graceTimer: NodeJS.Timeout | undefined;
-			const timeout = setTimeout(() => {
-				timedOut = true;
-				terminateProcess(proc);
-			}, input.timeoutMs);
+			let abortListener: (() => void) | undefined;
+			let timeout: NodeJS.Timeout | undefined;
 			const finish = (code: number) => {
 				if (settled) return;
 				settled = true;
-				clearTimeout(timeout);
+				if (timeout !== undefined) clearTimeout(timeout);
 				if (graceTimer !== undefined) clearTimeout(graceTimer);
+				if (abortListener !== undefined) options.signal?.removeEventListener("abort", abortListener);
 				if (stdoutBuffer.trim() !== "") processJsonLine(stdoutBuffer);
 				resolve(code);
 			};
@@ -90,11 +90,18 @@ export async function runPiProcess(input: ProcessRunInput, options: { signal?: A
 				terminateProcess(proc);
 			};
 			const terminateProcess = (procToKill: SpawnedProcess) => {
+				if (terminating || settled) return;
+				terminating = true;
 				procToKill.kill("SIGTERM");
+				if (settled || procToKill.exitCode !== null) return;
 				graceTimer = setTimeout(() => {
 					if (procToKill.exitCode === null) procToKill.kill("SIGKILL");
 				}, 2_000);
 			};
+			timeout = setTimeout(() => {
+				timedOut = true;
+				terminateProcess(proc);
+			}, input.timeoutMs);
 			const processJsonLine = (line: string) => {
 				if (line.trim() === "") return;
 				const parsed = parseJsonObject(line);
@@ -174,7 +181,10 @@ export async function runPiProcess(input: ProcessRunInput, options: { signal?: A
 			proc.on("close", (code) => finish(code ?? 0));
 			if (options.signal !== undefined) {
 				if (options.signal.aborted) abort();
-				else options.signal.addEventListener("abort", abort, { once: true });
+				else {
+					abortListener = abort;
+					options.signal.addEventListener("abort", abortListener, { once: true });
+				}
 			}
 		});
 		providerError = detectProviderError(stderr) ?? detectProviderError(error ?? "");

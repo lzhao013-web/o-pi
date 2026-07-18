@@ -4,6 +4,8 @@ import type { LazyRepoMap } from "../lazy-repo-map.js";
 import { findWorkspaceFiles } from "../../tools/find.js";
 import type { FindParams } from "../../types.js";
 
+export { disposeFileToolsCaches } from "../workspace-cache.js";
+
 export async function executeFind(params: FindParams, runtime: { cwd: string; signal?: AbortSignal; repoMap: LazyRepoMap }) {
 	const result = await findWorkspaceFiles(runtime.cwd, params, runtime.signal, { repoMap: runtime.repoMap.query });
 	if (isFailedDetails(result)) {

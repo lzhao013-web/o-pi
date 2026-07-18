@@ -4,6 +4,8 @@ import { withNativeLsDetails } from "../native.js";
 import { formatCompactLsResult, listWorkspaceDirectory } from "../../tools/ls.js";
 import type { LsParams } from "../../types.js";
 
+export { disposeFileToolsCaches } from "../workspace-cache.js";
+
 export async function executeLs(params: LsParams, cwd: string) {
 	const result = await listWorkspaceDirectory(cwd, params);
 	if (isFailedDetails(result)) {

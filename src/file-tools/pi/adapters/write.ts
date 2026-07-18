@@ -4,6 +4,8 @@ import type { LazyRepoMap } from "../lazy-repo-map.js";
 import { writeWorkspaceFile } from "../../tools/write.js";
 import type { FileToolLspHooks, WriteParams } from "../../types.js";
 
+export { disposeFileToolsCaches } from "../workspace-cache.js";
+
 export async function executeWrite(
 	params: WriteParams,
 	runtime: { cwd: string; signal?: AbortSignal; lsp: FileToolLspHooks; repoMap: LazyRepoMap },

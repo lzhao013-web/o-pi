@@ -5,6 +5,8 @@ import type { LazyRepoMap } from "../lazy-repo-map.js";
 import { readWorkspaceFile } from "../../tools/read.js";
 import type { FileToolLspHooks, ReadParams } from "../../types.js";
 
+export { disposeFileToolsCaches } from "../workspace-cache.js";
+
 export async function executeRead(
 	params: ReadParams,
 	runtime: {
