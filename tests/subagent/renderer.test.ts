@@ -103,7 +103,7 @@ describe("subagent renderer", () => {
 		};
 
 		const rendered = renderSubagentResult(
-			{ content: [{ type: "text", text: "Subagent result saved to:\n/workspace/.pi/subagents/runs/run-1/scout-1.md\nRead the file for the full result." }], details },
+			{ content: [{ type: "text", text: "Subagent scout produced too much output for inline return; full output saved to /workspace/.pi/subagents/runs/run-1/scout-1.md." }], details },
 			{ expanded: true, isPartial: false },
 			theme as never,
 		).render(160).join("\n");

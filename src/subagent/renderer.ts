@@ -40,12 +40,11 @@ export function renderSubagentResult(result: { content: Array<{ type: string; te
 
 function formatSubagentCall(record: Record<string, unknown>, theme: Pick<Theme, "fg" | "bold">): string {
 	const tasks = Array.isArray(record["tasks"]) ? record["tasks"] : [];
-	const mode = record["mode"] === "chain" ? "chain" : "parallel";
 	const agents = tasks.map((task) => isRecord(task) && typeof task["agent"] === "string" ? task["agent"] : undefined).filter((agent): agent is string => agent !== undefined);
 	return formatToolCard({
 		tool: "subagent",
 		status: "running",
-		target: agents.length > 0 ? formatAgentNames(agents) : `${mode} · ${tasks.length} tasks`,
+		target: agents.length > 0 ? formatAgentNames(agents) : `${tasks.length} tasks`,
 		summary: formatTaskSummary(tasks.map(taskPreviewFromRecord)),
 	}, theme);
 }

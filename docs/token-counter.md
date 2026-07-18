@@ -4,6 +4,7 @@
 
 * `/stats` 的 context breakdown 分项估算；
 * `find` / `grep` 模型可见输出预算；
+* `subagent` inline 与 chain handoff 输出预算；
 * 测试中验证输出是否落在 token budget 内。
 
 ## 原则

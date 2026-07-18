@@ -1,11 +1,12 @@
 import { EventEmitter } from "node:events";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { executeSubagent } from "../../src/subagent/executor.js";
+import { executeSubagent, resolveMode } from "../../src/subagent/executor.js";
 import { resetSubagentSpawnForTests, runPiProcess, setSubagentSpawnForTests } from "../../src/subagent/process.js";
 import type { AgentDefinition, ProcessRunInput, ProcessRunProgress } from "../../src/subagent/types.js";
+import { countTextTokensSync } from "../../src/token-counter.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
 let workspace: string;
@@ -28,6 +29,12 @@ afterEach(() => {
 });
 
 describe("subagent execution", () => {
+	it("仅在 task 包含 {previous} 时推导 chain", () => {
+		expect(resolveMode([{ agent: "scout", task: "inspect" }])).toBe("parallel");
+		expect(resolveMode([{ agent: "scout", task: "inspect {previous}" }])).toBe("chain");
+		expect(resolveMode([{ agent: "scout", task: "inspect {previous_result}" }])).toBe("parallel");
+	});
+
 	it("并行执行汇总结果并持续发送进度", async () => {
 		setOutputSpawn((task) => `done: ${task}`);
 		const updates: number[] = [];
@@ -38,25 +45,76 @@ describe("subagent execution", () => {
 		);
 
 		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("Subagents: 2/2 succeeded") });
+		expect(result.details.mode).toBe("parallel");
+		expect(result.details.results.map((item) => item.cwd)).toEqual([workspace, workspace]);
 		expect(result.details.results.map((item) => item.output)).toEqual(["done: inspect auth", "done: inspect tests"]);
 		expect(updates).toContain(2);
+	});
+
+	it("task 级 cwd 覆盖 workspace 默认值", async () => {
+		await mkdir(path.join(workspace, "pkg"));
+		setOutputSpawn(() => "done");
+
+		const result = await executeSubagent({ tasks: [{ agent: "scout", task: "inspect", cwd: "pkg" }] }, context());
+
+		expect(result.details.results[0]?.cwd).toBe(path.join(workspace, "pkg"));
+	});
+
+	it("输出超过 inline token 边界时只返回一行文件提示", async () => {
+		const output = "alpha beta gamma delta ".repeat(200);
+		const tokenLimit = countTextTokensSync(output, { modelId: "test-model" }).tokens - 1;
+		expect(tokenLimit).toBeGreaterThanOrEqual(250);
+		const configPath = process.env.PI_SUBAGENT_USER_CONFIG;
+		if (configPath === undefined) throw new Error("subagent config path missing");
+		await writeFile(configPath, JSON.stringify({ retry_delay_ms: 0, max_inline_output_tokens: tokenLimit }));
+		setOutputSpawn(() => output);
+
+		const result = await executeSubagent({ tasks: [{ agent: "scout", task: "large" }] }, context());
+		const persisted = result.details.results[0];
+		if (persisted?.outputFile === undefined) throw new Error("subagent output file missing");
+
+		expect(resultText(result)).toBe(`Subagent scout produced too much output for inline return; full output saved to ${persisted.outputFile}.`);
+		expect(resultText(result)).not.toContain("\n");
+		expect(resultText(result)).not.toContain(output);
+		expect(await readFile(persisted.outputFile, "utf8")).toBe(output);
 	});
 
 	it("chain 将上一步输出传入 {previous}，失败时停止后续步骤", async () => {
 		setOutputSpawn((task) => task === "seed" ? "handoff" : task.includes("stop") ? undefined : `received ${task}`);
 		const success = await executeSubagent(
-			{ mode: "chain", tasks: [{ agent: "scout", task: "seed" }, { agent: "scout", task: "use {previous}" }] },
+			{ tasks: [{ agent: "scout", task: "seed" }, { agent: "scout", task: "use {previous}" }] },
 			context(),
 		);
+		expect(success.details.mode).toBe("chain");
 		expect(success.details.results.map((item) => item.task)).toEqual(["seed", "use handoff"]);
 		expect(success.content[0]).toMatchObject({ text: "received use handoff" });
 
 		const failed = await executeSubagent(
-			{ mode: "chain", tasks: [{ agent: "scout", task: "stop" }, { agent: "scout", task: "never" }] },
+			{ tasks: [{ agent: "scout", task: "stop" }, { agent: "scout", task: "never {previous}" }] },
 			context(),
 		);
 		expect(failed.details.results).toHaveLength(1);
 		expect(failed.content[0]).toMatchObject({ text: expect.stringContaining("Chain stopped at step 1") });
+	});
+
+	it("chain 自动把超限的上一步输出替换为文件引用", async () => {
+		const configPath = process.env.PI_SUBAGENT_USER_CONFIG;
+		if (configPath === undefined) throw new Error("subagent config path missing");
+		const largeOutput = "alpha beta gamma delta ".repeat(200);
+		const tokenLimit = countTextTokensSync(largeOutput, { modelId: "test-model" }).tokens - 1;
+		expect(tokenLimit).toBeGreaterThanOrEqual(250);
+		await writeFile(configPath, JSON.stringify({ retry_delay_ms: 0, max_inline_output_tokens: tokenLimit }));
+		setOutputSpawn((task) => task === "seed" ? largeOutput : `received ${task}`);
+
+		const result = await executeSubagent(
+			{ tasks: [{ agent: "scout", task: "seed" }, { agent: "scout", task: "use {previous}" }] },
+			context(),
+		);
+		const handoffTask = result.details.results[1]?.task ?? "";
+
+		expect(handoffTask).toContain("output exceeded the handoff limit");
+		expect(handoffTask).toContain(path.join(".pi", "subagents", "runs"));
+		expect(handoffTask).not.toContain(largeOutput);
 	});
 
 	it("只读失败会重试，成功后保留实际 attempts", async () => {

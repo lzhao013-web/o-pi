@@ -2,7 +2,6 @@ import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 
 export type SubagentMode = "parallel" | "chain";
 export type SubagentSource = "user" | "project";
-export type OutputMode = "inline" | "file";
 
 export interface UsageStats {
 	input: number;
@@ -28,9 +27,8 @@ export interface SubagentConfig {
 	retryDelayMs: number;
 	retryOnEmptyOutput: boolean;
 	retryOnTimeout: boolean;
-	maxInlineOutputChars: number;
-	maxHandoffChars: number;
-	outputMode: OutputMode;
+	maxInlineOutputTokens: number;
+	maxHandoffTokens: number;
 	agentScope: "user";
 	allowProjectAgents: boolean;
 	projectAgentsOverrideUser: boolean;
@@ -44,7 +42,6 @@ export interface AgentDefinition {
 	description: string;
 	model?: string;
 	tools: string[];
-	outputMode?: OutputMode;
 	timeoutMs?: number;
 	retries?: number;
 	systemPrompt: string;
@@ -67,10 +64,7 @@ export interface SubagentTask {
 }
 
 export interface SubagentToolParams {
-	mode?: "chain";
 	tasks: SubagentTask[];
-	cwd?: string;
-	outputMode?: OutputMode;
 }
 
 export interface SubagentRunResult {
@@ -88,7 +82,6 @@ export interface SubagentRunResult {
 	error?: string;
 	output?: string;
 	outputFile?: string;
-	outputMode?: OutputMode;
 	stderr?: string;
 	durationMs: number;
 	usage: UsageStats;

@@ -1,7 +1,8 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { countTextTokensSync, type TokenCounterScope } from "../token-counter.js";
 import { findNearestProjectRoot } from "./config.js";
-import type { OutputMode, SubagentRunResult } from "./types.js";
+import type { SubagentRunResult } from "./types.js";
 
 const RUNS_DIR = path.join(".pi", "subagents", "runs");
 
@@ -9,23 +10,6 @@ export interface OutputFormatOptions {
 	cwd: string;
 	runId: string;
 	index: number;
-	outputMode: OutputMode;
-	maxInlineOutputChars: number;
-}
-
-/** 按 Unicode code point 截断，避免把代理对切坏。 */
-export function truncateText(input: string, maxChars: number): { text: string; truncated: boolean } {
-	const chars = [...input];
-	if (chars.length <= maxChars) return { text: input, truncated: false };
-	const kept = chars.slice(0, Math.max(0, maxChars)).join("");
-	return {
-		text: `${kept}\n\n[Subagent output truncated: ${chars.length - maxChars} chars omitted. Full output saved in run files.]`,
-		truncated: true,
-	};
-}
-
-export function limitHandoff(input: string, maxChars: number): string {
-	return truncateText(input, maxChars).text;
 }
 
 export async function persistResult(result: SubagentRunResult, options: OutputFormatOptions): Promise<SubagentRunResult> {
@@ -39,25 +23,22 @@ export async function persistResult(result: SubagentRunResult, options: OutputFo
 	return { ...result, outputFile };
 }
 
-export function formatResultForContext(result: SubagentRunResult, mode: OutputMode, maxInlineOutputChars: number): string {
+export function formatResultForContext(result: SubagentRunResult, maxInlineOutputTokens: number, tokenScope: TokenCounterScope = {}): string {
 	const output = result.output ?? "";
-	if (mode === "file" && result.outputFile !== undefined) {
-		return [
-			"Subagent result saved to:",
-			result.outputFile,
-			"",
-			`Agent: ${result.agent}`,
-			`Size: ${formatBytes(Buffer.byteLength(output, "utf8"))}`,
-			"Read the file for the full result.",
-		].join("\n");
-	}
-	return truncateText(output, maxInlineOutputChars).text;
+	if (!exceedsTokenLimit(output, maxInlineOutputTokens, tokenScope)) return output;
+	return result.outputFile === undefined
+		? `Subagent ${result.agent} produced too much output for inline return; full output file is unavailable.`
+		: `Subagent ${result.agent} produced too much output for inline return; full output saved to ${result.outputFile}.`;
 }
 
 export function formatFileHandoff(result: SubagentRunResult): string {
-	if (result.outputFile === undefined) return limitHandoff(result.output ?? "", 2000);
-	const size = Buffer.byteLength(result.output ?? "", "utf8");
-	return [`Previous subagent result: ${result.outputFile}`, `Agent: ${result.agent}`, `Size: ${formatBytes(size)}`, "Read the file for the full result."].join("\n");
+	return result.outputFile === undefined
+		? `Previous subagent ${result.agent} output exceeded the handoff limit; full output file is unavailable.`
+		: `Previous subagent ${result.agent} output exceeded the handoff limit; full output saved to ${result.outputFile}. Read that file for the complete result.`;
+}
+
+export function exceedsTokenLimit(input: string, maxTokens: number, tokenScope: TokenCounterScope = {}): boolean {
+	return countTextTokensSync(input, tokenScope).tokens > maxTokens;
 }
 
 export function getRunDir(cwd: string, runId: string): string {
@@ -74,10 +55,4 @@ async function atomicWrite(filePath: string, content: string): Promise<void> {
 	const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
 	await writeFile(tempPath, content, { encoding: "utf8", mode: 0o600 });
 	await rename(tempPath, filePath);
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }

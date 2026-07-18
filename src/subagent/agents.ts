@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { collectAncestorDirs, isPathInside, safeRealpath, uniqueResolvedPaths } from "../resource-paths.js";
-import type { AgentDefinition, AgentDiscovery, OutputMode, SubagentConfig, SubagentSource } from "./types.js";
+import type { AgentDefinition, AgentDiscovery, SubagentConfig, SubagentSource } from "./types.js";
 
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 
@@ -120,14 +120,13 @@ function loadAgentsFromDir(
 function parseAgentFile(filePath: string, source: SubagentSource, config: SubagentConfig, warnings: string[]): AgentDefinition {
 	const content = readFileSync(filePath, "utf8");
 	const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
-	const known = new Set(["name", "description", "model", "tools", "output_mode", "timeout_ms", "retries"]);
+	const known = new Set(["name", "description", "model", "tools", "timeout_ms", "retries"]);
 	for (const key of Object.keys(frontmatter)) {
 		if (!known.has(key)) warnings.push(`${filePath}: ignored unknown frontmatter field "${key}"`);
 	}
 	const name = requireString(frontmatter["name"], "name");
 	const description = requireString(frontmatter["description"], "description");
 	const tools = parseTools(frontmatter["tools"], config.defaultTools, filePath);
-	const outputMode = frontmatter["output_mode"] === undefined ? undefined : parseOutputMode(frontmatter["output_mode"], "output_mode");
 	const model = optionalString(frontmatter["model"], "model");
 	const timeoutMs = optionalInteger(frontmatter["timeout_ms"], "timeout_ms");
 	const retries = optionalInteger(frontmatter["retries"], "retries");
@@ -136,7 +135,6 @@ function parseAgentFile(filePath: string, source: SubagentSource, config: Subage
 		description,
 		...(model !== undefined ? { model } : {}),
 		tools,
-		...(outputMode !== undefined ? { outputMode } : {}),
 		...(timeoutMs !== undefined ? { timeoutMs } : {}),
 		...(retries !== undefined ? { retries } : {}),
 		systemPrompt: body.trim(),
@@ -181,11 +179,6 @@ function isDirectory(filePath: string): boolean {
 	} catch {
 		return false;
 	}
-}
-
-function parseOutputMode(value: unknown, field: string): OutputMode {
-	if (value === "inline" || value === "file") return value;
-	throw new Error(`${field} must be inline or file.`);
 }
 
 function optionalString(value: unknown, field: string): string | undefined {

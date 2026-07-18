@@ -2,7 +2,8 @@ import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parsePipeline, tokenize } from "../../src/subagent/commands.js";
-import { formatFileHandoff, formatResultForContext, getRunDir, limitHandoff, persistResult, sanitizeFileName, truncateText } from "../../src/subagent/output.js";
+import { exceedsTokenLimit, formatFileHandoff, formatResultForContext, getRunDir, persistResult, sanitizeFileName } from "../../src/subagent/output.js";
+import { countTextTokensSync } from "../../src/token-counter.js";
 import type { SubagentRunResult } from "../../src/subagent/types.js";
 import { useTempDir } from "../helpers/lifecycle.js";
 
@@ -26,32 +27,26 @@ describe("subagent commands", () => {
 });
 
 describe("subagent output", () => {
-	it("Unicode 截断安全且标记截断", () => {
-		const result = truncateText("a😀b😀c", 4);
-		expect(result.text).toContain("a😀b😀");
-		expect(result.text).toContain("truncated");
-	});
-
-	it("handoff 限制和文件名清理", () => {
-		expect(limitHandoff("abcdef", 3)).toContain("abc");
+	it("清理输出文件名", () => {
 		expect(sanitizeFileName('a/b:c*"d')).toBe("a_b_c_d");
 	});
 
-	it("file 输出只给路径和读取指引", () => {
-		const result = { ...runResult(), output: "secret full output", outputFile: "/workspace/.pi/subagents/runs/run-1/scout-1.md" };
+	it("自动 inline 短输出，超限时只给一行文件路径", () => {
+		const outputFile = "/workspace/.pi/subagents/runs/run-1/scout-1.md";
+		const result = { ...runResult(), output: "secret full output", outputFile };
+		const outputTokens = countTextTokensSync(result.output).tokens;
 
-		const contextText = formatResultForContext(result, "file", 1200);
-		expect(contextText).toContain("Subagent result saved to:");
-		expect(contextText).toContain(result.outputFile);
-		expect(contextText).toContain("Read the file for the full result.");
-		expect(contextText).not.toContain("Preview:");
+		expect(formatResultForContext(result, outputTokens)).toBe(result.output);
+		const contextText = formatResultForContext(result, outputTokens - 1);
+		expect(contextText).toBe(`Subagent scout produced too much output for inline return; full output saved to ${outputFile}.`);
+		expect(contextText).not.toContain("\n");
 		expect(contextText).not.toContain("secret full output");
+		expect(exceedsTokenLimit(result.output, outputTokens)).toBe(false);
+		expect(exceedsTokenLimit(result.output, outputTokens - 1)).toBe(true);
 
 		const handoffText = formatFileHandoff(result);
-		expect(handoffText).toContain("Previous subagent result:");
-		expect(handoffText).toContain(result.outputFile);
-		expect(handoffText).toContain("Read the file for the full result.");
-		expect(handoffText).not.toContain("Preview:");
+		expect(handoffText).toContain(outputFile);
+		expect(handoffText).not.toContain("\n");
 		expect(handoffText).not.toContain("secret full output");
 	});
 
@@ -66,8 +61,6 @@ describe("subagent output", () => {
 			cwd: dir,
 			runId: "run-1",
 			index: 0,
-			outputMode: "file",
-			maxInlineOutputChars: 1200,
 		});
 		const outputFile = result.outputFile;
 		if (outputFile === undefined) throw new Error("persistResult did not return outputFile");

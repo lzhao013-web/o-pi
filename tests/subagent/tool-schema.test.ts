@@ -20,18 +20,37 @@ function validateParams(value: unknown): boolean {
 }
 
 describe("subagent tool schema", () => {
-	it("使用 tasks 数组，只有 chain 需要显式 mode", () => {
+	it("只注册 agents、run 和 subagent-config 命令", () => {
+		const commands: string[] = [];
+		subagentExtension({
+			registerTool() {},
+			registerCommand(name: string) {
+				commands.push(name);
+			},
+			on() {},
+		} as never);
+
+		expect(commands).toEqual(["agents", "run", "subagent-config"]);
+	});
+
+	it("只暴露 tasks，并在 task 描述提示 {previous} 与 cwd 默认值", () => {
 		expect(validateParams({ tasks: [{ agent: "scout", task: "inspect" }] })).toBe(true);
-		expect(validateParams({ tasks: [{ agent: "scout", task: "inspect" }], outputMode: "file" })).toBe(true);
-		expect(validateParams({ mode: "chain", tasks: [{ agent: "scout", task: "inspect" }], outputMode: "inline" })).toBe(true);
+		expect(validateParams({ tasks: [{ agent: "scout", task: "use {previous}", cwd: "." }] })).toBe(true);
+		const schemaText = JSON.stringify(subagentSchema());
+		expect(schemaText).toContain("Use {previous}");
+		expect(schemaText).toContain("defaults to the workspace");
 	});
 
 	it("拒绝旧模式字段、未知字段和空任务数组", () => {
 		expect(validateParams({ mode: "single", agent: "scout", task: "inspect" })).toBe(false);
 		expect(validateParams({ mode: "parallel", tasks: [{ agent: "scout", task: "inspect" }] })).toBe(false);
+		expect(validateParams({ mode: "chain", tasks: [{ agent: "scout", task: "use {previous}" }] })).toBe(false);
 		expect(validateParams({ agent: "scout", task: "inspect" })).toBe(false);
 		expect(validateParams({ tasks: [{ agent: "scout", task: "inspect" }], model: "other-model" })).toBe(false);
-		expect(validateParams({ mode: "chain", tasks: [] })).toBe(false);
+		expect(validateParams({ tasks: [{ agent: "scout", task: "inspect" }], cwd: "." })).toBe(false);
+		expect(validateParams({ tasks: [{ agent: "scout", task: "inspect" }], outputMode: "file" })).toBe(false);
+		expect(validateParams({ tasks: [{ agent: "scout", task: "inspect" }], output_mode: "file" })).toBe(false);
+		expect(validateParams({ tasks: [] })).toBe(false);
 		expect(validateParams({ tasks: [{ agent: "scout", task: "inspect", extra: true }] })).toBe(false);
 	});
 
@@ -41,5 +60,7 @@ describe("subagent tool schema", () => {
 		expect(schemaText).not.toContain("allowProjectAgents");
 		expect(schemaText).not.toContain("maxConcurrency");
 		expect(schemaText).not.toContain("retries");
+		expect(schemaText).not.toContain("outputMode");
+		expect(schemaText).not.toContain('"mode"');
 	});
 });

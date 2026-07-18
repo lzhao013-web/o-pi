@@ -16,7 +16,7 @@ beforeEach(() => {
 
 describe("subagent config", () => {
 	it("加载默认配置且默认并发为 1", async () => {
-		expect(await loadSubagentConfig(dir)).toMatchObject({ maxConcurrency: 1, allowProjectAgents: false });
+		expect(await loadSubagentConfig(dir)).toMatchObject({ maxConcurrency: 1, allowProjectAgents: false, agentOverrides: {} });
 	});
 
 	it("支持 JSONC 注释和 trailing comma", async () => {
@@ -25,10 +25,11 @@ describe("subagent config", () => {
 			`{
 				// local GPU default
 				"max_concurrency": 2,
-				"output_mode": "file",
+				"max_inline_output_tokens": 2500,
+				"max_handoff_tokens": 3500,
 			}`,
 		);
-		expect(await loadSubagentConfig(dir)).toMatchObject({ maxConcurrency: 2, outputMode: "file" });
+		expect(await loadSubagentConfig(dir)).toMatchObject({ maxConcurrency: 2, maxInlineOutputTokens: 2500, maxHandoffTokens: 3500 });
 	});
 
 	it("非法 JSONC 和数值范围报错", async () => {

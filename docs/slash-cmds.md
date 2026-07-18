@@ -204,7 +204,7 @@
 
 - 读取 `~/.pi/agent/agents/*.md` 和 `~/.agents/agents/*.md`。
 - 仅在用户配置允许时读取项目 `.pi/agents/*.md` 和祖先 `.agents/agents/*.md`。
-- 展示名称、描述、来源、文件路径、模型、实际可用工具、输出模式和是否有写能力。
+- 展示名称、描述、来源、文件路径、模型、实际可用工具和是否有写能力。
 - 工具列表是 subagent 配置工具与 `pi.getAllTools()` 的交集；被 `/tools` 从主 Agent 停用的工具仍可显示并传给子进程。
 - 结果只显示在 UI 中，不写入会话历史，不消耗模型 token。
 
@@ -224,6 +224,7 @@
 
 ```text
 /run scout "inspect backend auth" | reviewer "inspect auth tests"
+/run scout "inspect auth" | planner "create a plan from {previous}"
 ```
 
 行为：
@@ -231,33 +232,10 @@
 - 支持单引号和双引号。
 - `|` 分隔任务段。
 - 直接调用 subagent executor。
+- 任一任务包含 `{previous}` 时自动串行，否则并行。
 - 并发数来自 `agent/configs/subagent.jsonc`，默认 `1`。
 - 单个任务失败默认不取消其他任务。
 - 写能力工具需要确认；无 UI 时拒绝执行。
-
-## `/chain`
-
-来源：`agent/extensions/subagent.ts`
-
-用途：串行运行多个 subagent，后一步可用 `{previous}` 引用前一步结果。
-
-用法：
-
-```text
-/chain <agent> "task" | <agent> "task with {previous}"
-```
-
-示例：
-
-```text
-/chain scout "inspect auth" | planner "create a plan from {previous}"
-```
-
-行为：
-
-- 严格串行。
-- 某一步失败后停止。
-- `{previous}` 受 handoff 字符上限控制；file 输出只传路径、大小和短预览。
 
 ## `/subagent-config`
 

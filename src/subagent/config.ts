@@ -1,5 +1,5 @@
 import { findNearestProjectRoot as findNearestProjectRootBase, projectAgentConfigPath, readOptionalJsoncConfig, userAgentConfigPath } from "../config-loader.js";
-import type { AgentOverride, OutputMode, SubagentConfig } from "./types.js";
+import type { AgentOverride, SubagentConfig } from "./types.js";
 
 const USER_CONFIG_ENV = "PI_SUBAGENT_USER_CONFIG";
 const PROJECT_CONFIG_ENV = "PI_SUBAGENT_PROJECT_CONFIG";
@@ -11,8 +11,8 @@ const NUMBER_RANGES = {
 	timeoutMs: [1_000, 3_600_000],
 	retries: [0, 5],
 	retryDelayMs: [0, 60_000],
-	maxInlineOutputChars: [1_000, 200_000],
-	maxHandoffChars: [1_000, 200_000],
+	maxInlineOutputTokens: [250, 50_000],
+	maxHandoffTokens: [250, 50_000],
 } as const;
 
 const defaultConfig: SubagentConfig = {
@@ -23,20 +23,14 @@ const defaultConfig: SubagentConfig = {
 	retryDelayMs: 1_000,
 	retryOnEmptyOutput: true,
 	retryOnTimeout: false,
-	maxInlineOutputChars: 12_000,
-	maxHandoffChars: 16_000,
-	outputMode: "inline",
+	maxInlineOutputTokens: 3_000,
+	maxHandoffTokens: 4_000,
 	agentScope: "user",
 	allowProjectAgents: false,
 	projectAgentsOverrideUser: false,
 	confirmWriteAgents: true,
 	defaultTools: ["read", "grep", "find", "ls"],
-	agentOverrides: {
-		scout: { tools: ["read", "grep", "find", "ls"] },
-		planner: { tools: ["read", "grep", "find", "ls"] },
-		reviewer: { tools: ["read", "grep", "find", "ls", "bash"] },
-		worker: { tools: ["read", "grep", "find", "ls", "bash", "edit", "write"] },
-	},
+	agentOverrides: {},
 };
 
 export const findNearestProjectRoot = findNearestProjectRootBase;
@@ -108,11 +102,10 @@ function assignCommon(target: SubagentConfig, record: Record<string, unknown>): 
 	if ("retry_delay_ms" in record) target.retryDelayMs = requireInteger(record["retry_delay_ms"], "retry_delay_ms");
 	if ("retry_on_empty_output" in record) target.retryOnEmptyOutput = requireBoolean(record["retry_on_empty_output"], "retry_on_empty_output");
 	if ("retry_on_timeout" in record) target.retryOnTimeout = requireBoolean(record["retry_on_timeout"], "retry_on_timeout");
-	if ("max_inline_output_chars" in record) {
-		target.maxInlineOutputChars = requireInteger(record["max_inline_output_chars"], "max_inline_output_chars");
+	if ("max_inline_output_tokens" in record) {
+		target.maxInlineOutputTokens = requireInteger(record["max_inline_output_tokens"], "max_inline_output_tokens");
 	}
-	if ("max_handoff_chars" in record) target.maxHandoffChars = requireInteger(record["max_handoff_chars"], "max_handoff_chars");
-	if ("output_mode" in record) target.outputMode = requireOutputMode(record["output_mode"], "output_mode");
+	if ("max_handoff_tokens" in record) target.maxHandoffTokens = requireInteger(record["max_handoff_tokens"], "max_handoff_tokens");
 }
 
 export function validateConfig(config: SubagentConfig, sourcePath?: string): void {
@@ -166,11 +159,6 @@ function requireToolList(value: unknown, field: string): string[] {
 		throw new SubagentConfigError(`${field} must be a non-empty string array.`);
 	}
 	return value.map((item) => item.trim());
-}
-
-function requireOutputMode(value: unknown, field: string): OutputMode {
-	if (value === "inline" || value === "file") return value;
-	throw new SubagentConfigError(`${field} must be inline or file.`);
 }
 
 function optionalString(value: unknown, field: string): string | undefined {

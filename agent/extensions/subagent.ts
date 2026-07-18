@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
 	executeSubagent,
@@ -12,24 +11,13 @@ import { repairableTool } from "../../src/tool-repair/index.js";
 
 const taskItem = Type.Object({
 	agent: Type.String({ minLength: 1, description: "Agent name." }),
-	task: Type.String({ minLength: 1, description: "Task text." }),
-	cwd: Type.Optional(Type.String({ description: "Workspace-relative working directory." })),
+	task: Type.String({ minLength: 1, description: "Task text. Use {previous} to insert the preceding result and run tasks sequentially." }),
+	cwd: Type.Optional(Type.String({ description: "Workspace-relative working directory; defaults to the workspace." })),
 }, { additionalProperties: false });
-
-const commonSubagentFields = {
-	cwd: Type.Optional(Type.String({ description: "Workspace-relative working directory." })),
-	outputMode: Type.Optional(
-		StringEnum(["inline", "file"] as const, {
-			description: "inline for short results; file for long or multi-task results.",
-		}),
-	),
-};
 
 const subagentParams = Type.Object(
 	{
 		tasks: Type.Array(taskItem, { minItems: 1, description: "Agent tasks." }),
-		mode: Type.Optional(Type.Literal("chain", { description: "Run tasks sequentially; task may use {previous}." })),
-		...commonSubagentFields,
 	},
 	{ additionalProperties: false },
 );
@@ -57,10 +45,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		renderCall: renderSubagentCall,
 		renderResult: renderSubagentResult,
 	}, {
-		pathFields: ["cwd", "tasks.*.cwd"],
-		aliases: {
-			output_mode: "outputMode",
-		},
+		pathFields: ["tasks.*.cwd"],
 	}));
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "subagent") return undefined;

@@ -33,19 +33,6 @@ export function registerSubagentCommands(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("chain", {
-		description: 'Run chained subagents: /chain scout "task" | planner "from {previous}"',
-		getArgumentCompletions: (prefix) => completeAgents(prefix),
-		handler: async (args, ctx) => {
-			const parsed = parsePipeline(args);
-			if ("error" in parsed) {
-				ctx.ui.notify(parsed.error, "error");
-				return;
-			}
-			await runAndNotify(pi, ctx, parsed.tasks, "chain");
-		},
-	});
-
 	pi.registerCommand("subagent-config", {
 		description: "Show subagent config summary",
 		handler: async (_args, ctx) => {
@@ -56,7 +43,8 @@ export function registerSubagentCommands(pi: ExtensionAPI): void {
 					`max_concurrency: ${config.maxConcurrency}`,
 					`timeout_ms: ${config.timeoutMs}`,
 					`retries: ${config.retries}`,
-					`output_mode: ${config.outputMode}`,
+					`max_inline_output_tokens: ${config.maxInlineOutputTokens}`,
+					`max_handoff_tokens: ${config.maxHandoffTokens}`,
 					`allow_project_agents: ${config.allowProjectAgents}`,
 					`confirm_write_agents: ${config.confirmWriteAgents}`,
 					`default_tools: ${config.defaultTools.join(", ")}`,
@@ -118,13 +106,9 @@ async function runAndNotify(
 	pi: Pick<ExtensionAPI, "getAllTools">,
 	ctx: ExtensionCommandContext,
 	tasks: SubagentTask[],
-	mode?: "chain",
 ): Promise<void> {
 	const result = await executeSubagent(
-		{
-			tasks,
-			...(mode !== undefined ? { mode } : {}),
-		},
+		{ tasks },
 		{
 			cwd: ctx.cwd,
 			hasUI: ctx.hasUI,
@@ -158,7 +142,6 @@ export function formatAgents(agents: AgentDefinition[], config: SubagentConfig, 
 				`  source: ${agent.source} (${agent.filePath})`,
 				`  model: ${agent.model ?? "(current)"}`,
 				`  tools: ${tools.length > 0 ? tools.join(", ") : "(none)"}`,
-				`  output: ${agent.outputMode ?? "inline"}`,
 				`  write: ${hasWriteCapability(tools) ? "yes" : "no"}`,
 			].join("\n");
 		})

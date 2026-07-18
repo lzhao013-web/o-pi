@@ -7,7 +7,7 @@ export {
 export { defaultSubagentConfig, loadSubagentConfig, mergeProjectConfig, mergeUserConfig, SubagentConfigError } from "./config.js";
 export { registerSubagentCommands } from "./commands.js";
 export { executeSubagent, resolveMode, SubagentExecutionError } from "./executor.js";
-export { formatResultForContext, limitHandoff, sanitizeFileName, truncateText } from "./output.js";
+export { exceedsTokenLimit, formatResultForContext, sanitizeFileName } from "./output.js";
 export { resetSubagentSpawnForTests, runPiProcess, setSubagentSpawnForTests } from "./process.js";
 export { renderSubagentCall, renderSubagentResult } from "./renderer.js";
 export type {
@@ -15,7 +15,6 @@ export type {
 	AgentDiscovery,
 	AgentOverride,
 	ExecutorContext,
-	OutputMode,
 	SubagentConfig,
 	SubagentDetails,
 	SubagentMode,

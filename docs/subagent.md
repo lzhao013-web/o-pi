@@ -34,7 +34,6 @@
 name: scout
 description: Fast read-only codebase reconnaissance
 tools: read, grep, find, ls
-output_mode: inline
 ---
 
 You are a focused codebase scout.
@@ -46,7 +45,6 @@ You are a focused codebase scout.
 * `description`：必填，会展示给主 Agent。
 * `model`：可选。
 * `tools`：逗号分隔工具列表；缺省时使用只读默认工具。
-* `output_mode`：`inline` 或 `file`。
 * `timeout_ms`：可选。
 * `retries`：可选。
 
@@ -106,13 +104,10 @@ Agent 配置工具 ∩ pi.getAllTools()
 ```ts
 {
 	tasks: Array<{ agent: string; task: string; cwd?: string }>;
-	mode?: "chain";
-	cwd?: string;
-	outputMode?: "inline" | "file";
 }
 ```
 
-`tasks` 是必填非空数组。默认按配置的并发限制调度任务；只有 `mode: "chain"` 会串行执行，并允许后续 task 使用 `{previous}`。`outputMode` 中 `inline` 用于短结果，`file` 用于长结果或多任务结果。
+`tasks` 是必填非空数组。每个 task 可单独设置 workspace 内的 `cwd`，缺省时使用 workspace。所有 task 默认并行调度；任一 `task` 包含 `{previous}` 时自动切换为 chain，后续任务会把它替换为上一步结果。输出形式也由工具按长度自动决定，模型不能指定。
 
 工具参数不包含模型选择、安全策略、Agent 搜索范围、并发、重试或权限开关。子 Agent 模型只由 Agent 定义和 subagent 配置决定。
 
@@ -123,7 +118,6 @@ Agent 配置工具 ∩ pi.getAllTools()
 ```text
 /agents
 /run <agent> "task" | <agent> "task"
-/chain <agent> "task" | <agent> "task with {previous}"
 /subagent-config
 ```
 
@@ -183,21 +177,12 @@ parallel 或 chain 的多任务会在第一行合并 Agent 名称，并保留完
 
 ## 输出
 
-`inline`：
-
-* 返回最多 `max_inline_output_chars`。
-* 超出时按 Unicode 字符边界截断并标记。
-* 完整结果仍写入运行目录。
-
-`file`：
-
-* 完整结果保存到 `.pi/subagents/runs/<run-id>/`。
-* 主上下文只收到路径、大小和读取指引，不包含正文预览。
+完整结果始终保存到 `.pi/subagents/runs/<run-id>/`。工具使用同步本地 token counter 计算输出预算，不发起网络请求。未超过 `max_inline_output_tokens` 时，主上下文直接收到完整正文；超过边界时只收到一行简短提示，说明输出过长并给出完整结果文件路径，不包含正文预览。
 
 chain handoff：
 
-* inline 结果受 `max_handoff_chars` 限制。
-* file 结果只传路径、大小和读取指引。
+* 未超过 inline 与 handoff 边界的结果直接传递。
+* 超过任一边界的结果只传文件路径和读取指引。
 * 后续 Agent 如需完整内容，应主动使用 `read` 读取文件。
 
 ## 配置
@@ -223,9 +208,8 @@ chain handoff：
 * `retry_delay_ms`
 * `retry_on_empty_output`
 * `retry_on_timeout`
-* `max_inline_output_chars`
-* `max_handoff_chars`
-* `output_mode`
+* `max_inline_output_tokens`
+* `max_handoff_tokens`
 
 项目配置不能修改 `allow_project_agents`、`project_agents_override_user`、`confirm_write_agents`、`default_tools` 或 `agent_overrides`，避免项目扩大用户级能力边界。
 
@@ -245,7 +229,8 @@ agent/configs/subagent.jsonc
 	"max_concurrency": 1,
 	"retries": 1,
 	"retry_on_empty_output": true,
-	"output_mode": "inline",
+	"max_inline_output_tokens": 3000,
+	"max_handoff_tokens": 4000,
 	"allow_project_agents": false,
 	"confirm_write_agents": true,
 	"default_tools": ["read", "grep", "find", "ls"]

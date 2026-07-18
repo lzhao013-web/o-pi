@@ -116,7 +116,7 @@ describe("tool-input repair", () => {
 		})).toEqual({ path: "src/a.ts", edits: [{ old: " old ", new: " new " }] });
 	});
 
-	it("实际 subagent 注册支持 tasks 单对象、嵌套 cwd 路径和 output_mode 别名", () => {
+	it("实际 subagent 注册支持 tasks 单对象和嵌套 cwd 路径", () => {
 		let registered: ToolDefinition | undefined;
 		subagentExtension({
 			registerTool(tool: ToolDefinition) {
@@ -128,12 +128,8 @@ describe("tool-input repair", () => {
 
 		expect(registered?.prepareArguments?.({
 			tasks: { agent: "scout", task: "inspect", cwd: "@pkg" },
-			output_mode: "file",
-			cwd: "@.",
 		})).toEqual({
 			tasks: [{ agent: "scout", task: "inspect", cwd: "pkg" }],
-			outputMode: "file",
-			cwd: ".",
 		});
 	});
 });
