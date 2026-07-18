@@ -2,14 +2,14 @@ import { constants } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { Ajv, type ErrorObject, type ValidateFunction } from "ajv/dist/ajv.js";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 
 import { isNotFound } from "../config-loader.js";
+import { compileSchemaValidator, type SchemaValidationError } from "../schema-validator.js";
 import { invalidModelsJsonc } from "./errors.js";
 import { COMPAT_PRESET_NAMES, ModelsJsoncConfigSchema, THINKING_PRESET_NAMES, type ModelsJsoncConfig } from "./schema.js";
 
-let validateModelsJsonc: ValidateFunction | undefined;
+const validateModelsJsonc = compileSchemaValidator(ModelsJsoncConfigSchema);
 
 /** models.jsonc 的默认位置；扩展只读取该 JSONC 文件，不触碰 Pi 原生 models.json。 */
 export function defaultModelsJsoncPath(): string {
@@ -35,9 +35,8 @@ export async function loadModelsJsoncConfig(configPath = defaultModelsJsoncPath(
 	}
 	prevalidateModelsJsonc(parsed, configPath);
 
-	const validate = getValidator();
-	if (!validate(parsed)) {
-		throw invalidModelsJsonc(configPath, formatSchemaError(validate.errors?.[0]));
+	if (!validateModelsJsonc(parsed)) {
+		throw invalidModelsJsonc(configPath, formatSchemaError(validateModelsJsonc.errors?.[0]));
 	}
 	return parsed as ModelsJsoncConfig;
 }
@@ -56,14 +55,7 @@ export async function ensure_private_config_permissions(configPath = defaultMode
 	return `Warning: ${configPath} may contain API keys and is readable or writable by group/others. Run: chmod 600 ${configPath}`;
 }
 
-function getValidator() {
-	if (!validateModelsJsonc) {
-		validateModelsJsonc = new Ajv({ allErrors: false }).compile(ModelsJsoncConfigSchema);
-	}
-	return validateModelsJsonc;
-}
-
-function formatSchemaError(error: ErrorObject | undefined): string {
+function formatSchemaError(error: SchemaValidationError | undefined): string {
 	if (!error) return "schema validation failed";
 	const pathText = formatInstancePath(error.instancePath);
 	if (error.keyword === "required") {

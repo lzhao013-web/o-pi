@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Stats } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import picomatch from "picomatch";
@@ -355,7 +356,7 @@ async function indexFile(
 		if (state.contentFilter !== undefined && cached.misses.has(state.contentFilter.key)) return;
 	}
 
-	const loaded = await readStableText(absolutePath, displayPath, state.signal);
+	const loaded = await readStableText(absolutePath, displayPath, info, state.signal);
 	if (isFailed(loaded)) {
 		if (explicit) return loaded;
 		if (loaded.error.code === "BINARY_FILE_UNSUPPORTED") state.skipped.binary += 1;
@@ -394,11 +395,12 @@ async function indexFile(
 async function readStableText(
 	absolutePath: string,
 	displayPath: string,
+	initialInfo: Stats,
 	signal: AbortSignal | undefined,
 ): Promise<ToolOutcome<{ text: string; size: number; mtimeMs: number }>> {
+	let before = initialInfo;
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		assertNotAborted(signal);
-		const before = await stat(absolutePath);
 		let bytes: Buffer;
 		try {
 			bytes = signal === undefined ? await readFile(absolutePath) : await readFile(absolutePath, { signal });
@@ -407,7 +409,10 @@ async function readStableText(
 			return fail(isAccessDenied(error) ? "ACCESS_DENIED" : "FILE_NOT_FOUND", "File cannot be read.", { path: displayPath });
 		}
 		const after = await stat(absolutePath);
-		if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) continue;
+		if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+			before = after;
+			continue;
+		}
 		const decoded = decodeTextFile(bytes, displayPath);
 		if (isFailed(decoded)) return decoded;
 		return { text: decoded.text, size: after.size, mtimeMs: after.mtimeMs };

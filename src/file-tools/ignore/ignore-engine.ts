@@ -38,6 +38,8 @@ const BUILTIN_RULES: Record<IgnoreConfig["builtinProfile"], string[]> = {
 	performance: ["node_modules/", "target/", ".venv/", "__pycache__/", ".pytest_cache/", ".gradle/", ".next/cache/"],
 };
 
+const RULE_DISCOVERY_CONCURRENCY = 32;
+
 interface RuleFile {
 	sourceType: IgnoreSourceType;
 	sourcePath: string;
@@ -65,6 +67,7 @@ interface CompiledRuleSet {
 	sourcePath?: string | undefined;
 	baseDirectory: string;
 	priority: number;
+	matcher: ReturnType<typeof ignoreFactory>;
 	rules: CompiledRule[];
 	hasNegatedRule: boolean;
 }
@@ -78,6 +81,11 @@ interface CompiledRule {
 interface SourceMatch {
 	state: Exclude<IgnoreMatchState, "none">;
 	rule: MatchedIgnoreRule;
+}
+
+interface CompiledSource {
+	sourceType: IgnoreSourceType;
+	ruleSets: CompiledRuleSet[];
 }
 
 interface SnapshotCacheEntry {
@@ -166,39 +174,56 @@ class IgnoreSnapshotImpl implements IgnoreSnapshot {
 	readonly generation: number;
 	readonly fingerprint: string;
 	readonly diagnostics: readonly IgnoreDiagnostic[];
+	private readonly sources: CompiledSource[];
+	private readonly negatedRuleSets: CompiledRuleSet[];
+	private readonly trackedLookup: ReadonlySet<string>;
+	private readonly trackedBypassEnabled: boolean;
+	private readonly caseInsensitive: boolean;
 
 	constructor(
 		generation: number,
 		fingerprint: string,
-		private readonly ruleSets: CompiledRuleSet[],
+		ruleSets: CompiledRuleSet[],
 		diagnostics: IgnoreDiagnostic[],
-		private readonly trackedPaths: ReadonlySet<string>,
-		private readonly config: IgnoreConfig,
-		private readonly caseInsensitive: boolean,
+		trackedPaths: ReadonlySet<string>,
+		config: IgnoreConfig,
+		caseInsensitive: boolean,
 	) {
 		this.generation = generation;
 		this.fingerprint = fingerprint;
 		this.diagnostics = diagnostics;
+		this.sources = groupRuleSetsBySource(ruleSets);
+		this.negatedRuleSets = ruleSets.filter((ruleSet) => ruleSet.hasNegatedRule);
+		this.trackedLookup = caseInsensitive
+			? new Set(Array.from(trackedPaths, (trackedPath) => trackedPath.toLowerCase()))
+			: trackedPaths;
+		this.trackedBypassEnabled = config.gitignore.trackedFilesBypass
+			&& this.sources.some((source) => source.sourceType === "gitignore");
+		this.caseInsensitive = caseInsensitive;
 	}
 
 	evaluate(input: IgnoreEvaluateInput): IgnoreDecision {
 		const normalized = normalizeIgnorePath(input.path);
-		const tracked = input.tracked ?? this.isTracked(normalized);
-		const trace = this.matchTrace(normalized, input.kind, tracked);
-		const winner = trace[trace.length - 1];
-		const state: IgnoreMatchState = winner === undefined ? "none" : winner.result;
-		const matchedRule = winner === undefined ? undefined : traceRuleToMatched(winner);
+		const tracked = this.trackedBypassEnabled && (input.tracked ?? this.isTracked(normalized));
+		let winner: SourceMatch | undefined;
+		for (const source of this.sources) {
+			const sourceMatch = this.matchSource(source, normalized, input.kind);
+			if (sourceMatch === undefined || this.isBypassedTrackedIgnore(source.sourceType, sourceMatch, tracked)) continue;
+			winner = sourceMatch;
+		}
+		const state: IgnoreMatchState = winner?.state ?? "none";
 		const ignored = state === "ignore";
 		const prune = ignored && input.kind === "directory" && !this.hasNegatedRuleForDescendant(normalized);
 		const decision: IgnoreDecision = { state, ignored, prune };
-		if (matchedRule !== undefined) decision.matchedRule = matchedRule;
+		if (winner !== undefined) decision.matchedRule = decisionRule(winner.rule);
 		if (this.diagnostics.length > 0) decision.diagnostics = this.diagnostics;
 		return decision;
 	}
 
 	explain(input: IgnoreExplainInput): IgnoreExplanation {
 		const normalized = normalizeIgnorePath(input.path);
-		const trace = this.matchTrace(normalized, input.kind, this.isTracked(normalized));
+		const tracked = this.trackedBypassEnabled && this.isTracked(normalized);
+		const trace = this.matchTrace(normalized, input.kind, tracked);
 		const winner = trace[trace.length - 1];
 		const ignored = winner?.result === "ignore";
 		const prune = ignored && input.kind === "directory" && !this.hasNegatedRuleForDescendant(normalized);
@@ -217,23 +242,12 @@ class IgnoreSnapshotImpl implements IgnoreSnapshot {
 
 	private matchTrace(pathname: string, kind: IgnoreEvaluateInput["kind"], tracked: boolean): IgnoreTraceEntry[] {
 		const trace: IgnoreTraceEntry[] = [];
-		const sourceTypes = Array.from(new Set(this.ruleSets.map((ruleSet) => ruleSet.sourceType))).sort(
-			(a, b) => SOURCE_PRIORITY[a] - SOURCE_PRIORITY[b],
-		);
-
-		for (const sourceType of sourceTypes) {
-			const sourceMatch = this.matchSource(sourceType, pathname, kind);
+		for (const source of this.sources) {
+			const sourceMatch = this.matchSource(source, pathname, kind);
 			if (sourceMatch === undefined) continue;
-			if (
-				sourceType === "gitignore" &&
-				this.config.gitignore.trackedFilesBypass &&
-				tracked &&
-				sourceMatch.state === "ignore"
-			) {
-				continue;
-			}
+			if (this.isBypassedTrackedIgnore(source.sourceType, sourceMatch, tracked)) continue;
 			trace.push({
-				sourceType,
+				sourceType: source.sourceType,
 				sourcePath: sourceMatch.rule.sourcePath,
 				line: sourceMatch.rule.line,
 				pattern: sourceMatch.rule.pattern,
@@ -244,16 +258,15 @@ class IgnoreSnapshotImpl implements IgnoreSnapshot {
 		return trace;
 	}
 
-	private matchSource(sourceType: IgnoreSourceType, pathname: string, kind: IgnoreEvaluateInput["kind"]): SourceMatch | undefined {
+	private matchSource(source: CompiledSource, pathname: string, kind: IgnoreEvaluateInput["kind"]): SourceMatch | undefined {
 		let winner: SourceMatch | undefined;
-		const applicable = this.ruleSets
-			.filter((ruleSet) => ruleSet.sourceType === sourceType && pathIsInsideBase(pathname, ruleSet.baseDirectory))
-			.sort((a, b) => pathDepth(a.baseDirectory) - pathDepth(b.baseDirectory));
-
-		for (const ruleSet of applicable) {
+		for (const ruleSet of source.ruleSets) {
+			if (!pathIsInsideBase(pathname, ruleSet.baseDirectory)) continue;
 			const relative = toBaseRelative(pathname, ruleSet.baseDirectory);
 			if (relative === "") continue;
 			const testPath = kind === "directory" ? `${relative}/` : relative;
+			const ruleSetMatch = ruleSet.matcher.test(testPath);
+			if (!ruleSetMatch.ignored && !ruleSetMatch.unignored) continue;
 			let parentExcluded = winner?.state === "ignore" && ruleMatchesDirectoryAncestor(winner.rule, relative, kind);
 			for (const compiledRule of ruleSet.rules) {
 				if (!compiledRule.matcher.ignores(testPath)) continue;
@@ -270,23 +283,32 @@ class IgnoreSnapshotImpl implements IgnoreSnapshot {
 		return winner;
 	}
 
+	private isBypassedTrackedIgnore(sourceType: IgnoreSourceType, match: SourceMatch, tracked: boolean): boolean {
+		return sourceType === "gitignore" && tracked && match.state === "ignore";
+	}
+
 	private hasNegatedRuleForDescendant(pathname: string): boolean {
-		return this.ruleSets.some((ruleSet) => {
-			if (!ruleSet.hasNegatedRule) return false;
-			return pathIsInsideBase(`${pathname}/child`, ruleSet.baseDirectory);
-		});
+		const descendant = `${pathname}/child`;
+		return this.negatedRuleSets.some((ruleSet) => pathIsInsideBase(descendant, ruleSet.baseDirectory));
 	}
 
 	private isTracked(pathname: string): boolean {
-		if (this.caseInsensitive) {
-			const folded = pathname.toLowerCase();
-			for (const tracked of this.trackedPaths) {
-				if (tracked.toLowerCase() === folded) return true;
-			}
-			return false;
-		}
-		return this.trackedPaths.has(pathname);
+		return this.trackedLookup.has(this.caseInsensitive ? pathname.toLowerCase() : pathname);
 	}
+}
+
+function groupRuleSetsBySource(ruleSets: CompiledRuleSet[]): CompiledSource[] {
+	const grouped = new Map<IgnoreSourceType, CompiledRuleSet[]>();
+	for (const ruleSet of ruleSets) {
+		const existing = grouped.get(ruleSet.sourceType);
+		if (existing === undefined) grouped.set(ruleSet.sourceType, [ruleSet]);
+		else existing.push(ruleSet);
+	}
+	return Array.from(grouped, ([sourceType, sourceRuleSets]) => ({ sourceType, ruleSets: sourceRuleSets }));
+}
+
+function decisionRule(rule: MatchedIgnoreRule): MatchedIgnoreRule {
+	return { ...rule, baseDirectory: ".", priority: SOURCE_PRIORITY[rule.sourceType] };
 }
 
 export const defaultIgnoreEngine: IgnoreEngine = new WorkspaceIgnoreEngine();
@@ -304,7 +326,7 @@ async function discoverRuleFiles(root: string, config: IgnoreConfig): Promise<{
 	const directories: DirectoryStamp[] = [];
 	const diagnostics: IgnoreDiagnostic[] = [];
 
-	await collectNestedRuleFiles(root, ".", config, files, directories, diagnostics);
+	await collectNestedRuleFiles(root, config, files, directories);
 	if (config.gitInfoExclude) {
 		await addDirectoryStamp(path.join(root, ".git", "info"), directories);
 		await addRuleFile(root, ".git/info/exclude", "git-info-exclude", ".", files);
@@ -314,33 +336,49 @@ async function discoverRuleFiles(root: string, config: IgnoreConfig): Promise<{
 
 async function collectNestedRuleFiles(
 	root: string,
+	config: IgnoreConfig,
+	files: RuleFile[],
+	directories: DirectoryStamp[],
+): Promise<void> {
+	const pending = ["."];
+	while (pending.length > 0) {
+		const batch = pending.splice(0, RULE_DISCOVERY_CONCURRENCY);
+		const discovered = await Promise.all(batch.map(async (relativeDirectory) =>
+			await scanRuleDirectory(root, relativeDirectory, config, files, directories)));
+		for (const children of discovered) pending.push(...children);
+	}
+}
+
+async function scanRuleDirectory(
+	root: string,
 	relativeDirectory: string,
 	config: IgnoreConfig,
 	files: RuleFile[],
 	directories: DirectoryStamp[],
-	diagnostics: IgnoreDiagnostic[],
-): Promise<void> {
-	if (relativeDirectory !== "." && isWorkspaceMetadataPath(relativeDirectory)) return;
+): Promise<string[]> {
+	if (relativeDirectory !== "." && isWorkspaceMetadataPath(relativeDirectory)) return [];
 	const absoluteDirectory = path.join(root, relativeDirectory === "." ? "" : relativeDirectory);
 	let entries;
 	try {
 		const [listed, info] = await Promise.all([readdir(absoluteDirectory, { withFileTypes: true }), lstat(absoluteDirectory)]);
-		if (!info.isDirectory()) return;
+		if (!info.isDirectory()) return [];
 		entries = listed;
 		directories.push(toDirectoryStamp(absoluteDirectory, info));
 	} catch {
-		return;
+		return [];
 	}
 
+	const children: string[] = [];
+	const ruleFiles: Array<Promise<void>> = [];
 	for (const entry of entries) {
 		const childRelative = relativeDirectory === "." ? entry.name : `${relativeDirectory}/${entry.name}`;
 		if (entry.isSymbolicLink()) continue;
 		if (entry.isFile()) {
 			if (config.piignore.enabled && entry.name === config.piignore.filename) {
-				await addRuleFile(root, childRelative, "piignore", relativeDirectory, files);
+				ruleFiles.push(addRuleFile(root, childRelative, "piignore", relativeDirectory, files));
 			}
 			if (config.gitignore.enabled && entry.name === ".gitignore") {
-				await addRuleFile(root, childRelative, "gitignore", relativeDirectory, files);
+				ruleFiles.push(addRuleFile(root, childRelative, "gitignore", relativeDirectory, files));
 			}
 			continue;
 		}
@@ -350,8 +388,10 @@ async function collectNestedRuleFiles(
 		const allowPiNested = config.piignore.nested || relativeDirectory === ".";
 		const allowGitNested = config.gitignore.nested || relativeDirectory === ".";
 		if (!allowPiNested && !allowGitNested) continue;
-		await collectNestedRuleFiles(root, childRelative, config, files, directories, diagnostics);
+		children.push(childRelative);
 	}
+	await Promise.all(ruleFiles);
+	return children;
 }
 
 async function addRuleFile(
@@ -477,6 +517,7 @@ function compileRuleLines(input: {
 	diagnostics: IgnoreDiagnostic[];
 }): CompiledRuleSet | undefined {
 	const rules: CompiledRule[] = [];
+	const matcher = ignoreFactory({ ignorecase: input.caseInsensitive });
 	let hasAnyRule = false;
 	let hasNegatedRule = false;
 
@@ -487,6 +528,7 @@ function compileRuleLines(input: {
 
 		const ruleMatcher = ignoreFactory({ ignorecase: input.caseInsensitive });
 		try {
+			matcher.add(rawPattern);
 			ruleMatcher.add(parsed.matchPattern);
 		} catch (error) {
 			input.diagnostics.push({
@@ -518,6 +560,7 @@ function compileRuleLines(input: {
 		sourcePath: input.sourcePath,
 		baseDirectory: input.baseDirectory,
 		priority: SOURCE_PRIORITY[input.sourceType],
+		matcher,
 		rules,
 		hasNegatedRule,
 	};
@@ -600,18 +643,6 @@ function toBaseRelative(pathname: string, baseDirectory: string): string {
 
 function normalizeIgnorePath(pathname: string): string {
 	return pathname.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+/g, "/").replace(/\/$/, "") || ".";
-}
-
-function traceRuleToMatched(trace: IgnoreTraceEntry): MatchedIgnoreRule {
-	return {
-		sourceType: trace.sourceType,
-		sourcePath: trace.sourcePath,
-		line: trace.line,
-		pattern: trace.pattern,
-		negated: trace.negated,
-		baseDirectory: ".",
-		priority: SOURCE_PRIORITY[trace.sourceType],
-	};
 }
 
 function ruleMatchesDirectoryAncestor(rule: MatchedIgnoreRule, relative: string, kind: IgnoreEvaluateInput["kind"]): boolean {
