@@ -1,12 +1,24 @@
 import net from "node:net";
-import { countTokens as countCl100kTokens } from "gpt-tokenizer/encoding/cl100k_base";
-import { countTokens as countO200kTokens } from "gpt-tokenizer/encoding/o200k_base";
+import { createRequire } from "node:module";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 
 const REMOTE_TIMEOUT_MS = 350;
 const ESTIMATED_IMAGE_TOKENS = 1200;
 const remoteCache = new Map<string, TokenCount>();
 const unavailableRemoteBases = new Set<string>();
+const require = createRequire(import.meta.url);
+
+type BpeMethod = "o200k_base" | "cl100k_base";
+type BpeCounter = (input: string) => number;
+interface BpeState {
+	counter: BpeCounter | undefined;
+	load: Promise<BpeCounter> | undefined;
+}
+
+const bpeStates: Record<BpeMethod, BpeState> = {
+	o200k_base: { counter: undefined, load: undefined },
+	cl100k_base: { counter: undefined, load: undefined },
+};
 
 export type TokenCounterConfidence = "exact" | "high" | "medium" | "low";
 
@@ -31,8 +43,8 @@ export async function countTextTokens(text: string, scope: TokenCounterScope = {
 	if (remote !== undefined) return remote;
 
 	const family = detectTokenizerFamily(scope);
-	if (family === "o200k") return countWithBpe(text, "o200k_base", countO200kTokens, "OpenAI-compatible BPE tokenizer");
-	if (family === "cl100k") return countWithBpe(text, "cl100k_base", countCl100kTokens, "cl100k-compatible BPE tokenizer");
+	if (family === "o200k") return countWithBpe(text, "o200k_base", "OpenAI-compatible BPE tokenizer");
+	if (family === "cl100k") return countWithBpe(text, "cl100k_base", "cl100k-compatible BPE tokenizer");
 	if (family === "deepseek_ratio") return countWithDeepSeekRatio(text);
 	return countWithCharRatio(text, "unknown tokenizer fallback");
 }
@@ -41,11 +53,11 @@ export async function countTextTokens(text: string, scope: TokenCounterScope = {
 export function countTextTokensSync(text: string, scope: TokenCounterScope = {}): TokenCount {
 	if (text.trim().length === 0) return { tokens: 0, confidence: "high", method: "char_ratio", note: "empty text" };
 	const family = detectTokenizerFamily(scope);
-	if (family === "o200k") return countWithBpe(text, "o200k_base", countO200kTokens, "OpenAI-compatible BPE tokenizer");
-	if (family === "cl100k") return countWithBpe(text, "cl100k_base", countCl100kTokens, "cl100k-compatible BPE tokenizer");
+	if (family === "o200k") return countWithBpeSync(text, "o200k_base", "OpenAI-compatible BPE tokenizer");
+	if (family === "cl100k") return countWithBpeSync(text, "cl100k_base", "cl100k-compatible BPE tokenizer");
 	if (family === "deepseek_ratio") return countWithDeepSeekRatio(text);
 	// Unknown model families still use o200k as a stronger budget estimator than chars/4, but keep confidence low.
-	const counted = countWithBpe(text, "o200k_base", countO200kTokens, "generic BPE budget estimate");
+	const counted = countWithBpeSync(text, "o200k_base", "generic BPE budget estimate");
 	return { ...counted, confidence: "low", note: "generic BPE budget estimate" };
 }
 
@@ -69,12 +81,66 @@ export async function countContentTokens(content: string | Array<TextContent | I
 	return { tokens: total, confidence, method: "char_ratio", note: [...notes].join("; ") || "content estimate" };
 }
 
-function countWithBpe(text: string, method: "o200k_base" | "cl100k_base", count: (input: string) => number, note: string): TokenCount {
+async function countWithBpe(text: string, method: BpeMethod, note: string): Promise<TokenCount> {
 	try {
-		return { tokens: count(text), confidence: method === "o200k_base" ? "high" : "medium", method, note };
+		const count = await loadBpeCounter(method);
+		return bpeResult(text, method, count, note);
 	} catch {
 		return countWithCharRatio(text, `${method} failed`);
 	}
+}
+
+function countWithBpeSync(text: string, method: BpeMethod, note: string): TokenCount {
+	try {
+		return bpeResult(text, method, loadBpeCounterSync(method), note);
+	} catch {
+		return countWithCharRatio(text, `${method} failed`);
+	}
+}
+
+function bpeResult(text: string, method: BpeMethod, count: BpeCounter, note: string): TokenCount {
+	return { tokens: count(text), confidence: method === "o200k_base" ? "high" : "medium", method, note };
+}
+
+function loadBpeCounter(method: BpeMethod): Promise<BpeCounter> {
+	const state = bpeStates[method];
+	if (state.counter !== undefined) return Promise.resolve(state.counter);
+	if (state.load !== undefined) return state.load;
+
+	const created = (method === "o200k_base"
+		? import("gpt-tokenizer/encoding/o200k_base")
+		: import("gpt-tokenizer/encoding/cl100k_base"))
+		.then((module) => {
+			const counter = requireBpeCounter(module);
+			state.counter = counter;
+			return counter;
+		})
+		.catch((error: unknown) => {
+			state.load = undefined;
+			throw error;
+		});
+	state.load = created;
+	return created;
+}
+
+function loadBpeCounterSync(method: BpeMethod): BpeCounter {
+	const state = bpeStates[method];
+	if (state.counter !== undefined) return state.counter;
+	const moduleId = method === "o200k_base" ? "gpt-tokenizer/encoding/o200k_base" : "gpt-tokenizer/encoding/cl100k_base";
+	const counter = requireBpeCounter(require(moduleId));
+	state.counter = counter;
+	return counter;
+}
+
+function requireBpeCounter(module: unknown): BpeCounter {
+	if (!isBpeModule(module)) {
+		throw new Error("gpt-tokenizer module does not export countTokens");
+	}
+	return module.countTokens;
+}
+
+function isBpeModule(value: unknown): value is { countTokens: BpeCounter } {
+	return typeof value === "object" && value !== null && "countTokens" in value && typeof value.countTokens === "function";
 }
 
 function countWithDeepSeekRatio(text: string): TokenCount {

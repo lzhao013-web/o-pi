@@ -6,24 +6,36 @@ import { createFooterComponent, GitSegmentCache } from "../../src/tui/footer.js"
 import type { TuiConfig, TuiFooterSkillsSnapshot, TuiFooterSnapshot, TuiFooterToolsSnapshot } from "../../src/tui/types.js";
 
 const STATUS_KEY = "o-pi:tui";
+const MATH_IDLE_DELAY_MS = 750;
 
-interface MathMarkdownModule {
+export interface MathMarkdownModule {
 	installMathMarkdownRenderer(config: TuiConfig["math"]): void;
 	supportsDisplayMathImages(): boolean;
 	warmDisplayMathRenderer(): Promise<void>;
 }
 
-let mathMarkdownModule: MathMarkdownModule | undefined;
+export type MathMarkdownLoader = () => Promise<MathMarkdownModule>;
 
 /** 注册 o-pi TUI V1：只使用 Pi 公开 UI API，不替换主 TUI 或 input editor。 */
-export default function tuiExtension(pi: ExtensionAPI): void {
+export function createTuiExtension(loadMathMarkdown: MathMarkdownLoader = loadDefaultMathMarkdown): (pi: ExtensionAPI) => void {
+	return (pi) => registerTuiExtension(pi, loadMathMarkdown);
+}
+
+function registerTuiExtension(pi: ExtensionAPI, loadMathMarkdown: MathMarkdownLoader): void {
 	let config: TuiConfig | undefined;
 	let snapshot: TuiFooterSnapshot = {};
 	let setTitle: ((title: string) => void) | undefined;
 	let gitCache: GitSegmentCache | undefined;
 	let startupBannerVisible = false;
+	let mathMarkdownModule: MathMarkdownModule | undefined;
+	let mathMarkdownLoad: Promise<MathMarkdownModule> | undefined;
+	let displayMathWarm = false;
+	let mathTimer: ReturnType<typeof setTimeout> | undefined;
+	let sessionGeneration = 0;
 
 	pi.on("session_start", async (_event, ctx) => {
+		sessionGeneration += 1;
+		cancelMathInitialization();
 		gitCache?.dispose();
 		gitCache = createGitCache(() => snapshot, (next) => {
 			snapshot = next;
@@ -31,7 +43,7 @@ export default function tuiExtension(pi: ExtensionAPI): void {
 		});
 		config = await loadTuiConfig();
 		const mathEnabled = config.enabled && config.math.enabled;
-		await configureMathMarkdown(config, mathEnabled);
+		mathMarkdownModule?.installMathMarkdownRenderer({ ...config.math, enabled: mathEnabled });
 		snapshot = makeSnapshot(ctx, pi, "ready", gitCache.get(ctx.cwd));
 		setTitle = (title) => ctx.ui.setTitle(title);
 		if (!config.enabled) {
@@ -44,9 +56,11 @@ export default function tuiExtension(pi: ExtensionAPI): void {
 			startupBannerVisible = true;
 			ctx.ui.setHeader(createStartupBannerComponent(config.banner, () => snapshotWithCapabilities(snapshot, pi)));
 		}
+		scheduleMathInitialization(ctx, sessionGeneration);
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
+		cancelMathInitialization();
 		if (!config?.enabled) return;
 		snapshot = makeSnapshot(ctx, pi, "running", gitCache?.get(ctx.cwd));
 		if (startupBannerVisible && config.banner.clear_on_first_turn) {
@@ -64,6 +78,7 @@ export default function tuiExtension(pi: ExtensionAPI): void {
 		gitCache?.refresh(ctx.cwd);
 		ctx.ui.setStatus(STATUS_KEY, formatStatus("ready", ctx.ui.theme));
 		refreshTitle();
+		scheduleMathInitialization(ctx, sessionGeneration);
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
@@ -90,6 +105,8 @@ export default function tuiExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		sessionGeneration += 1;
+		cancelMathInitialization();
 		cleanup(ctx);
 		gitCache?.dispose();
 		gitCache = undefined;
@@ -98,6 +115,68 @@ export default function tuiExtension(pi: ExtensionAPI): void {
 		startupBannerVisible = false;
 		snapshot = {};
 	});
+
+	function cancelMathInitialization(): void {
+		if (mathTimer === undefined) return;
+		clearTimeout(mathTimer);
+		mathTimer = undefined;
+	}
+
+	function scheduleMathInitialization(ctx: ExtensionContext, generation: number): void {
+		cancelMathInitialization();
+		const current = config;
+		if (
+			current === undefined
+			|| !current.enabled
+			|| !current.math.enabled
+			|| ctx.mode !== "tui"
+			|| mathInitializationComplete(current, mathMarkdownModule, displayMathWarm)
+		) return;
+		mathTimer = setTimeout(() => {
+			mathTimer = undefined;
+			if (generation !== sessionGeneration) return;
+			if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+				scheduleMathInitialization(ctx, generation);
+				return;
+			}
+			void initializeMathMarkdown(current, ctx, generation);
+		}, MATH_IDLE_DELAY_MS);
+		mathTimer.unref();
+	}
+
+	async function initializeMathMarkdown(current: TuiConfig, ctx: ExtensionContext, generation: number): Promise<void> {
+		try {
+			const module = await getMathMarkdownModule();
+			if (generation !== sessionGeneration) return;
+			if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+				scheduleMathInitialization(ctx, generation);
+				return;
+			}
+			module.installMathMarkdownRenderer({ ...current.math, enabled: true });
+			if (current.math.display && module.supportsDisplayMathImages()) {
+				await module.warmDisplayMathRenderer();
+				displayMathWarm = true;
+			}
+			if (generation === sessionGeneration) ctx.ui.setStatus(STATUS_KEY, formatStatus("ready", ctx.ui.theme));
+		} catch (error) {
+			if (generation === sessionGeneration) ctx.ui.notify(`Math renderer initialization failed: ${stringifyError(error)}`, "warning");
+		}
+	}
+
+	function getMathMarkdownModule(): Promise<MathMarkdownModule> {
+		if (mathMarkdownModule !== undefined) return Promise.resolve(mathMarkdownModule);
+		if (mathMarkdownLoad !== undefined) return mathMarkdownLoad;
+		const pending = loadMathMarkdown().then((module) => {
+			mathMarkdownModule = module;
+			mathMarkdownLoad = undefined;
+			return module;
+		}, (error: unknown) => {
+			mathMarkdownLoad = undefined;
+			throw error;
+		});
+		mathMarkdownLoad = pending;
+		return pending;
+	}
 
 	function refreshTitle(): void {
 		if (config?.chrome.title === true && setTitle !== undefined) setTitle(formatTitle(snapshot));
@@ -128,12 +207,26 @@ export default function tuiExtension(pi: ExtensionAPI): void {
 	}
 }
 
-async function configureMathMarkdown(config: TuiConfig, mathEnabled: boolean): Promise<void> {
-	if (!mathEnabled && mathMarkdownModule === undefined) return;
-	mathMarkdownModule ??= await import("../../src/tui/math-markdown.js");
-	mathMarkdownModule.installMathMarkdownRenderer({ ...config.math, enabled: mathEnabled });
-	if (mathEnabled && config.math.display && mathMarkdownModule.supportsDisplayMathImages()) void mathMarkdownModule.warmDisplayMathRenderer();
+function mathInitializationComplete(
+	config: TuiConfig,
+	module: MathMarkdownModule | undefined,
+	displayMathWarm: boolean,
+): boolean {
+	if (module === undefined) return false;
+	return !config.math.display || displayMathWarm || !module.supportsDisplayMathImages();
 }
+
+async function loadDefaultMathMarkdown(): Promise<MathMarkdownModule> {
+	return import("../../src/tui/math-markdown.js");
+}
+
+function stringifyError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+const tuiExtension = createTuiExtension();
+
+export default tuiExtension;
 
 function applyChrome(ctx: ExtensionContext, config: TuiConfig, getSnapshot: () => TuiFooterSnapshot): void {
 	if (config.chrome.title) ctx.ui.setTitle(formatTitle(getSnapshot()));

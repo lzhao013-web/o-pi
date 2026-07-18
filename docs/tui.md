@@ -19,6 +19,8 @@ agent/configs/tui.jsonc
 
 配置缺失时使用默认值；配置错误会抛出明确错误。
 
+数学 Markdown 解析器和 MathJax 不在 `session_start` 热路径加载。启用数学渲染时，扩展会在 TUI 连续空闲 750ms 后初始化；`turn_start` 会取消等待，`turn_end` 再重新安排。支持终端图片的环境会同时预热 MathJax；如果预热尚未完成就首次遇到块级公式，renderer 会先显示源码并按需启动初始化，后续重绘显示公式图片。`print`、`json` 和 `rpc` 模式不会加载这套 TUI 数学能力，session 关闭也会取消尚未开始的任务。
+
 ## 配置
 
 仓库配置完整列出当前有效值；内置回退值由 `src/tui/config.ts` 提供。可配置字段：

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
 	defaultModelsCachePath,
@@ -12,6 +12,8 @@ import {
 	resolveCachedModelsJsoncConfig,
 	type ModelsRefreshResult,
 } from "../../src/openai-compatible-provider/index.js";
+
+const AUTO_REFRESH_IDLE_DELAY_MS = 2_000;
 
 /** 从 ~/.pi/agent/models.jsonc 注册 OpenAI-compatible provider。 */
 export default async function openAICompatibleProvider(pi: ExtensionAPI): Promise<void> {
@@ -28,6 +30,7 @@ export default async function openAICompatibleProvider(pi: ExtensionAPI): Promis
 
 	const lifecycle = new AbortController();
 	let refreshInFlight: Promise<ModelsRefreshResult> | undefined;
+	let autoRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 	const refresh = (): Promise<ModelsRefreshResult> => {
 		if (refreshInFlight) return refreshInFlight;
 		const currentCache = cache;
@@ -47,24 +50,42 @@ export default async function openAICompatibleProvider(pi: ExtensionAPI): Promis
 		});
 		return refreshInFlight;
 	};
+	const cancelAutoRefresh = (): void => {
+		if (autoRefreshTimer === undefined) return;
+		clearTimeout(autoRefreshTimer);
+		autoRefreshTimer = undefined;
+	};
+	const scheduleAutoRefresh = (ctx: ExtensionContext): void => {
+		cancelAutoRefresh();
+		if (isOffline() || lifecycle.signal.aborted || !supportsAutoRefresh(ctx)) return;
+		autoRefreshTimer = setTimeout(() => {
+			autoRefreshTimer = undefined;
+			if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+				scheduleAutoRefresh(ctx);
+				return;
+			}
+			void runAutoRefresh(refresh, lifecycle.signal, ctx);
+		}, AUTO_REFRESH_IDLE_DELAY_MS);
+		autoRefreshTimer.unref();
+	};
 
 	pi.on("session_start", (_event, ctx) => {
-		if (isOffline()) return;
-		void refresh().then((result) => {
-			if (lifecycle.signal.aborted) return;
-			if (result.failures.length > 0) {
-				ctx.ui.notify(`Model refresh failed for: ${result.failures.map((failure) => failure.providerId).join(", ")}. Using cached models.`, "warning");
-			}
-		}).catch((error: unknown) => {
-			if (!lifecycle.signal.aborted) ctx.ui.notify(`Model cache update failed: ${stringifyError(error)}`, "warning");
-		});
+		scheduleAutoRefresh(ctx);
+	});
+	pi.on("turn_start", () => {
+		cancelAutoRefresh();
+	});
+	pi.on("turn_end", (_event, ctx) => {
+		scheduleAutoRefresh(ctx);
 	});
 	pi.on("session_shutdown", () => {
+		cancelAutoRefresh();
 		lifecycle.abort();
 	});
 	pi.registerCommand("refresh-models", {
 		description: "Refresh OpenAI-compatible model cache",
 		handler: async (_args, ctx) => {
+			cancelAutoRefresh();
 			if (isOffline()) {
 				ctx.ui.notify("Model refresh skipped in offline mode.", "info");
 				return;
@@ -79,6 +100,24 @@ export default async function openAICompatibleProvider(pi: ExtensionAPI): Promis
 			}
 		},
 	});
+}
+
+async function runAutoRefresh(
+	refresh: () => Promise<ModelsRefreshResult>,
+	signal: AbortSignal,
+	ctx: ExtensionContext,
+): Promise<void> {
+	try {
+		const result = await refresh();
+		if (signal.aborted || result.failures.length === 0) return;
+		ctx.ui.notify(`Model refresh failed for: ${result.failures.map((failure) => failure.providerId).join(", ")}. Using cached models.`, "warning");
+	} catch (error) {
+		if (!signal.aborted) ctx.ui.notify(`Model cache update failed: ${stringifyError(error)}`, "warning");
+	}
+}
+
+function supportsAutoRefresh(ctx: Pick<ExtensionContext, "mode">): boolean {
+	return ctx.mode === "tui" || ctx.mode === "rpc";
 }
 
 function isOffline(env: NodeJS.ProcessEnv = process.env): boolean {

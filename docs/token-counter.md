@@ -2,6 +2,7 @@
 
 `src/token-counter.ts` 是本仓库统一的 token 计数入口。它用于：
 
+* `/system` 查看器的 prompt token 估算；
 * `/stats` 的 context breakdown 分项估算；
 * `find` / `grep` 模型可见输出预算；
 * `subagent` inline 与 chain handoff 输出预算；
@@ -13,6 +14,7 @@
 * 不把单一 tokenizer 当作所有模型的真值。
 * 不自动请求公网 provider 的 tokenize/count endpoint，避免未知计费或限流副作用。
 * 只对本机或私网 `baseUrl` 自动尝试 tokenizer endpoint。
+* `o200k_base` 和 `cl100k_base` 不参与扩展启动；首次实际使用对应 BPE 计数时才加载，并在进程内复用。
 * 所有非 usage 来源的数值都视为估算，UI 使用 `~` 标记。
 
 ## 入口

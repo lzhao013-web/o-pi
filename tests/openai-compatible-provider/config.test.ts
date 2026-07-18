@@ -73,7 +73,8 @@ describe("openai-compatible-provider config", () => {
 		expect(fetch).toHaveBeenCalledOnce();
 	});
 
-	it("session_start 后并发刷新所有 provider，手动命令复用进行中的请求", async () => {
+	it("空闲期并发刷新所有 provider，手动命令复用进行中的请求", async () => {
+		vi.useFakeTimers();
 		process.env.PI_CODING_AGENT_DIR = dir;
 		await writeFile(
 			path.join(dir, "models.jsonc"),
@@ -102,6 +103,8 @@ describe("openai-compatible-provider config", () => {
 
 		expect(harness.providerCalls).toHaveLength(0);
 		await harness.emit("session_start");
+		expect(fetch).not.toHaveBeenCalled();
+		await vi.advanceTimersToNextTimerAsync();
 		await harness.runCommand("refresh-models");
 
 		expect(fetch).toHaveBeenCalledTimes(2);
@@ -109,6 +112,73 @@ describe("openai-compatible-provider config", () => {
 		expect(harness.providerCalls.map((call) => call.name)).toEqual(["one", "two"]);
 		expect(harness.notifications.some((item) => item.message.includes("Reopen /model"))).toBe(false);
 		expect(harness.notifications.at(-1)?.message).toBe("Model refresh complete: 2 updated, 0 failed.");
+	});
+
+	it("繁忙时推迟自动刷新，turn_start 取消，turn_end 空闲后恢复", async () => {
+		vi.useFakeTimers();
+		process.env.PI_CODING_AGENT_DIR = dir;
+		await writeFile(
+			path.join(dir, "models.jsonc"),
+			'{ "providers": { "local": { "base_url": "https://local.test/v1", "api_key": "EMPTY" } } }',
+			{ mode: 0o600 },
+		);
+		let idle = false;
+		const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response('{ "data": [{ "id": "model" }] }'));
+		const harness = createExtensionHarness({ isIdle: () => idle });
+		await openAICompatibleProvider(harness.pi);
+
+		await harness.emit("session_start");
+		await vi.advanceTimersToNextTimerAsync();
+		expect(fetch).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(1);
+
+		await harness.emit("turn_start");
+		expect(vi.getTimerCount()).toBe(0);
+
+		idle = true;
+		await harness.emit("turn_end");
+		await vi.advanceTimersToNextTimerAsync();
+		await harness.runCommand("refresh-models");
+		expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	it("print/json session 不自动联网，手动刷新仍立即执行", async () => {
+		vi.useFakeTimers();
+		process.env.PI_CODING_AGENT_DIR = dir;
+		await writeFile(
+			path.join(dir, "models.jsonc"),
+			'{ "providers": { "local": { "base_url": "https://local.test/v1", "api_key": "EMPTY" } } }',
+			{ mode: 0o600 },
+		);
+		const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response('{ "data": [{ "id": "model" }] }'));
+		const harness = createExtensionHarness({ mode: "print" });
+		await openAICompatibleProvider(harness.pi);
+
+		await harness.emit("session_start");
+		await vi.runAllTimersAsync();
+		expect(fetch).not.toHaveBeenCalled();
+
+		await harness.runCommand("refresh-models");
+		expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	it("session 关闭会取消尚未开始的自动模型刷新", async () => {
+		vi.useFakeTimers();
+		process.env.PI_CODING_AGENT_DIR = dir;
+		await writeFile(
+			path.join(dir, "models.jsonc"),
+			'{ "providers": { "local": { "base_url": "https://local.test/v1", "api_key": "EMPTY" } } }',
+			{ mode: 0o600 },
+		);
+		const fetch = vi.spyOn(globalThis, "fetch");
+		const harness = createExtensionHarness();
+		await openAICompatibleProvider(harness.pi);
+
+		await harness.emit("session_start");
+		await harness.emit("session_shutdown");
+		await vi.runAllTimersAsync();
+
+		expect(fetch).not.toHaveBeenCalled();
 	});
 
 	it("部分刷新失败时保留该 provider 的旧缓存", async () => {
@@ -1000,7 +1070,7 @@ interface ExtensionHarness {
 	runCommand(name: string): Promise<void>;
 }
 
-function createExtensionHarness(): ExtensionHarness {
+function createExtensionHarness(options: ExtensionHarnessOptions = {}): ExtensionHarness {
 	type Handler = (event: unknown, ctx: TestExtensionContext) => unknown;
 	type CommandHandler = (args: string, ctx: TestExtensionContext) => unknown;
 	const providerCalls: Array<{ name: string; config: PiProviderConfig }> = [];
@@ -1008,7 +1078,10 @@ function createExtensionHarness(): ExtensionHarness {
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, CommandHandler>();
 	const ctx: TestExtensionContext = {
+		mode: options.mode ?? "tui",
 		model: undefined,
+		isIdle: options.isIdle ?? (() => true),
+		hasPendingMessages: options.hasPendingMessages ?? (() => false),
 		ui: {
 			notify(message, type) {
 				notifications.push({ message, type });
@@ -1044,8 +1117,17 @@ function createExtensionHarness(): ExtensionHarness {
 	};
 }
 
+interface ExtensionHarnessOptions {
+	mode?: TestExtensionContext["mode"];
+	isIdle?: () => boolean;
+	hasPendingMessages?: () => boolean;
+}
+
 interface TestExtensionContext {
+	mode: "tui" | "rpc" | "json" | "print";
 	model: undefined;
+	isIdle(): boolean;
+	hasPendingMessages(): boolean;
 	ui: {
 		notify(message: string, type?: string): void;
 	};

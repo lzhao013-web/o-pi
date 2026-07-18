@@ -2,9 +2,9 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import tuiExtension from "../../agent/extensions/tui.js";
+import tuiExtension, { createTuiExtension } from "../../agent/extensions/tui.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
 type Handler = (event: unknown, ctx: ExtensionContextStub) => Promise<void> | void;
@@ -24,8 +24,10 @@ interface FooterDataStub {
 
 interface ExtensionContextStub {
 	cwd: string;
+	mode: "tui" | "rpc" | "json" | "print";
 	ui: {
 		theme: ThemeStub;
+		notify(message: string, type?: string): void;
 		setTitle(title: string): void;
 		setStatus(key: string, text: string | undefined): void;
 		setFooter(factory: FooterFactory | undefined): void;
@@ -33,6 +35,8 @@ interface ExtensionContextStub {
 		setWorkingIndicator(options?: unknown): void;
 	};
 	getContextUsage(): undefined;
+	isIdle(): boolean;
+	hasPendingMessages(): boolean;
 	model: ModelStub | undefined;
 	modelRegistry: { isUsingOAuth(model: ModelStub): boolean };
 	sessionManager: { getEntries(): unknown[] };
@@ -50,6 +54,10 @@ preserveEnv("PI_TUI_CONFIG");
 
 beforeEach(() => {
 	dir = temp.path;
+});
+
+afterEach(() => {
+	vi.useRealTimers();
 });
 
 describe("tui extension", () => {
@@ -79,8 +87,10 @@ describe("tui extension", () => {
 
 		const ctx: ExtensionContextStub = {
 			cwd: process.cwd(),
+			mode: "print",
 			ui: {
 				theme: { fg: (_name, text) => text },
+				notify() {},
 				setTitle() {},
 				setStatus() {},
 				setFooter(factory) {
@@ -92,6 +102,8 @@ describe("tui extension", () => {
 			getContextUsage() {
 				return undefined;
 			},
+			isIdle: () => true,
+			hasPendingMessages: () => false,
 			model: undefined,
 			modelRegistry: { isUsingOAuth: () => false },
 			sessionManager: { getEntries: () => [] },
@@ -199,6 +211,65 @@ describe("tui extension", () => {
 		expect(calls.footer.at(-1)).toBeUndefined();
 		expect(calls.status.at(-1)).toEqual({ key: "o-pi:tui", text: undefined });
 	});
+
+	it("数学渲染器只在 TUI 空闲期加载，并在活跃 turn 期间暂停", async () => {
+		vi.useFakeTimers();
+		let idle = true;
+		const install = vi.fn();
+		const warm = vi.fn(async () => {});
+		const load = vi.fn(async () => ({
+			installMathMarkdownRenderer: install,
+			supportsDisplayMathImages: () => true,
+			warmDisplayMathRenderer: warm,
+		}));
+		const handlers = new Map<string, Handler>();
+		const calls = createUiCalls();
+		const ctx = createContext(calls, {
+			mode: "tui",
+			isIdle: () => idle,
+		});
+
+		createTuiExtension(load)(createPi(handlers) as unknown as ExtensionAPI);
+		await handlers.get("session_start")?.({}, ctx);
+		expect(load).not.toHaveBeenCalled();
+
+		await handlers.get("turn_start")?.({}, ctx);
+		expect(vi.getTimerCount()).toBe(0);
+
+		idle = false;
+		await handlers.get("turn_end")?.({}, ctx);
+		await vi.advanceTimersToNextTimerAsync();
+		expect(load).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(1);
+
+		idle = true;
+		await vi.advanceTimersToNextTimerAsync();
+		await Promise.resolve();
+		expect(load).toHaveBeenCalledOnce();
+		expect(install).toHaveBeenCalledOnce();
+		expect(warm).toHaveBeenCalledOnce();
+
+		await handlers.get("turn_end")?.({}, ctx);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("session 关闭会取消尚未开始的数学渲染初始化", async () => {
+		vi.useFakeTimers();
+		const load = vi.fn(async () => ({
+			installMathMarkdownRenderer() {},
+			supportsDisplayMathImages: () => true,
+			async warmDisplayMathRenderer() {},
+		}));
+		const handlers = new Map<string, Handler>();
+		const ctx = createContext(createUiCalls(), { mode: "tui" });
+
+		createTuiExtension(load)(createPi(handlers) as unknown as ExtensionAPI);
+		await handlers.get("session_start")?.({}, ctx);
+		await handlers.get("session_shutdown")?.({}, ctx);
+		await vi.runAllTimersAsync();
+
+		expect(load).not.toHaveBeenCalled();
+	});
 });
 
 function createFooterData(): FooterDataStub {
@@ -234,11 +305,20 @@ function createPi(handlers: Map<string, Handler>) {
 	};
 }
 
-function createContext(calls: ReturnType<typeof createUiCalls>): ExtensionContextStub {
+function createContext(
+	calls: ReturnType<typeof createUiCalls>,
+	options: {
+		mode?: ExtensionContextStub["mode"];
+		isIdle?: () => boolean;
+		hasPendingMessages?: () => boolean;
+	} = {},
+): ExtensionContextStub {
 	return {
 		cwd: process.cwd(),
+		mode: options.mode ?? "print",
 		ui: {
 			theme: { fg: (_name, text) => text },
+			notify() {},
 			setTitle(title) {
 				calls.title.push(title);
 			},
@@ -258,6 +338,8 @@ function createContext(calls: ReturnType<typeof createUiCalls>): ExtensionContex
 		getContextUsage() {
 			return undefined;
 		},
+		isIdle: options.isIdle ?? (() => true),
+		hasPendingMessages: options.hasPendingMessages ?? (() => false),
 		model: undefined,
 		modelRegistry: { isUsingOAuth: () => false },
 		sessionManager: { getEntries: () => [] },
