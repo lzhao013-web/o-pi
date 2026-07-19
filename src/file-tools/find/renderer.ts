@@ -122,24 +122,7 @@ function formatHeader(totalMatches: number, files: number, directories: number, 
 }
 
 function selectConcreteMatches(matches: FindMatch[]): FindMatch[] {
-	const selected: FindMatch[] = [];
-	const selectedPaths = new Set<string>();
-	const representedDirectories = new Set<string>();
-	for (const match of matches) {
-		if (selected.length >= Math.min(TOP_MATCH_LIMIT, matches.length)) break;
-		const group = topDirectory(match.path);
-		if (representedDirectories.has(group)) continue;
-		selected.push(match);
-		selectedPaths.add(match.path);
-		representedDirectories.add(group);
-	}
-	for (const match of matches) {
-		if (selected.length >= Math.min(TOP_MATCH_LIMIT, matches.length)) break;
-		if (selectedPaths.has(match.path)) continue;
-		selected.push(match);
-		selectedPaths.add(match.path);
-	}
-	return selected;
+	return matches.slice(0, TOP_MATCH_LIMIT);
 }
 
 function collapseMatches(matches: FindMatch[]): FindCollapsedGroup[] {
@@ -191,11 +174,6 @@ function formatGroup(group: FindCollapsedGroup): string {
 
 function withDirectorySlash(value: string): string {
 	return value.endsWith("/") ? value : `${value}/`;
-}
-
-function topDirectory(value: string): string {
-	const slash = value.indexOf("/");
-	return slash === -1 ? "." : value.slice(0, slash);
 }
 
 function fitsBudget(lines: string[], tokenBudget: number): boolean {

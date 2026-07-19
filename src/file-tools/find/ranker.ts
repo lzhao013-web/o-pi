@@ -1,7 +1,7 @@
 import path from "node:path";
 import Fuse, { type FuseResult } from "fuse.js";
 
-import { createRankingEvidence, EMPTY_RANKING_EVIDENCE, rankPercentile, type RankingEvidence } from "../ranking-evidence.js";
+import { createSourceRankingEvidence, EMPTY_RANKING_EVIDENCE, type RankingEvidence } from "../ranking-evidence.js";
 import type { FindEntry } from "../types.js";
 
 export interface RankedFindEntry {
@@ -154,7 +154,7 @@ function rankedFromFuse(result: FuseResult<FuseFindDocument>, query: QueryTokens
 	const fuseScore = result.score ?? 1;
 	return {
 		entry,
-		tier: 4,
+		tier: hasTestPath(entry) && !query.testIntent && !query.smartCase ? 5 : 4,
 		evidence: EMPTY_RANKING_EVIDENCE,
 		matchScore: fuseScore,
 		coveredTokens: tokenCoverage(query.tokens, entry.tokens),
@@ -278,7 +278,7 @@ function unique(values: string[]): string[] {
 
 function withPathEvidence<T extends RankedFindEntry>(ranked: T[]): T[] {
 	for (const [index, item] of ranked.entries()) {
-		item.evidence = createRankingEvidence("lexical", rankPercentile(index, ranked.length));
+		item.evidence = createSourceRankingEvidence("path", index + 1);
 	}
 	return ranked;
 }

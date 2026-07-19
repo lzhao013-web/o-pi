@@ -1,76 +1,97 @@
-/** 精确复现“两轮多样性选择”，但只维护有界最差堆，避免全量排序。 */
-export function selectDiverseTopK<T>(
+export const RELEVANCE_HEAD_SIZE = 3;
+export const MMR_LAMBDA = 0.85;
+export const SAME_TIER_SCORE_RATIO_CUTOFF = 0.3;
+
+export interface RankingSelectionOptions<T> {
+	compare(left: T, right: T): number;
+	tier(candidate: T): number;
+	score(candidate: T): number;
+	consensus?(candidate: T): boolean;
+	identity(candidate: T): string;
+	similarity(left: T, right: T): number;
+	headSize?: number;
+	lambda?: number;
+}
+
+/** relevance head 原样保留，剩余名额按 tier 约束的轻量 MMR 软选择。 */
+export function selectRelevanceHeadMmr<T>(
 	candidates: readonly T[],
 	limit: number,
-	compare: (left: T, right: T) => number,
-	groupKey: (candidate: T) => string,
-	identityKey: (candidate: T) => string,
+	options: RankingSelectionOptions<T>,
 ): T[] {
 	if (limit <= 0 || candidates.length === 0) return [];
-	const bestByGroup = new Map<string, T>();
-	for (const candidate of candidates) {
-		const group = groupKey(candidate);
-		const previous = bestByGroup.get(group);
-		if (previous === undefined || compare(candidate, previous) < 0) bestByGroup.set(group, candidate);
-	}
-	const selected = boundedBest(bestByGroup.values(), limit, compare);
-	if (selected.length < limit) {
-		const selectedIds = new Set(selected.map(identityKey));
-		const remaining = function* (): Generator<T> {
-			for (const candidate of candidates) if (!selectedIds.has(identityKey(candidate))) yield candidate;
-		};
-		selected.push(...boundedBest(remaining(), limit - selected.length, compare));
-	}
-	return selected.sort(compare);
-}
+	const ranked = deduplicate(candidates, options).sort(options.compare);
+	const eligible = applyDynamicCutoff(ranked, options);
+	const target = Math.min(limit, eligible.length);
+	const headCount = Math.min(options.headSize ?? RELEVANCE_HEAD_SIZE, target);
+	const selected = eligible.slice(0, headCount);
+	if (selected.length === target) return selected;
 
-function boundedBest<T>(candidates: Iterable<T>, limit: number, compare: (left: T, right: T) => number): T[] {
-	if (limit <= 0) return [];
-	const heap: T[] = [];
-	for (const candidate of candidates) {
-		if (heap.length < limit) {
-			heap.push(candidate);
-			siftUpWorst(heap, heap.length - 1, compare);
-		} else {
-			const worst = heap[0];
-			if (worst !== undefined && compare(candidate, worst) < 0) {
-				heap[0] = candidate;
-				siftDownWorst(heap, 0, compare);
+	const remaining = eligible.slice(headCount);
+	const relevance = remaining.map((_candidate, index) => normalizedRelevance(index + headCount, eligible.length));
+	const redundancy = remaining.map(() => 0);
+	const evaluatedSelections = remaining.map(() => 0);
+	const lambda = options.lambda ?? MMR_LAMBDA;
+	while (selected.length < target && remaining.length > 0) {
+		const bestTier = options.tier(remaining[0] as T);
+		let bestIndex = -1;
+		let bestUtility = Number.NEGATIVE_INFINITY;
+		for (let index = 0; index < remaining.length; index += 1) {
+			const candidate = remaining[index];
+			if (candidate === undefined) continue;
+			if (options.tier(candidate) !== bestTier) break;
+			const candidateRelevance = relevance[index] ?? 0;
+			if (lambda * candidateRelevance <= bestUtility) break;
+			let maximum = redundancy[index] ?? 0;
+			for (let selectedIndex = evaluatedSelections[index] ?? 0; selectedIndex < selected.length; selectedIndex += 1) {
+				const chosen = selected[selectedIndex];
+				if (chosen !== undefined) maximum = Math.max(maximum, options.similarity(candidate, chosen));
+			}
+			redundancy[index] = maximum;
+			evaluatedSelections[index] = selected.length;
+			const utility = lambda * candidateRelevance - (1 - lambda) * maximum;
+			if (utility > bestUtility) {
+				bestUtility = utility;
+				bestIndex = index;
 			}
 		}
+		if (bestIndex < 0) break;
+		const [chosen] = remaining.splice(bestIndex, 1);
+		relevance.splice(bestIndex, 1);
+		redundancy.splice(bestIndex, 1);
+		evaluatedSelections.splice(bestIndex, 1);
+		if (chosen !== undefined) {
+			selected.push(chosen);
+		}
 	}
-	return heap;
+	const head = selected.slice(0, headCount);
+	const tail = selected.slice(headCount).sort(options.compare);
+	return [...head, ...tail];
 }
 
-function siftUpWorst<T>(heap: T[], index: number, compare: (left: T, right: T) => number): void {
-	while (index > 0) {
-		const parent = Math.floor((index - 1) / 2);
-		const item = heap[index];
-		const parentItem = heap[parent];
-		if (item === undefined || parentItem === undefined || compare(item, parentItem) <= 0) return;
-		heap[index] = parentItem;
-		heap[parent] = item;
-		index = parent;
+function applyDynamicCutoff<T>(ranked: T[], options: RankingSelectionOptions<T>): T[] {
+	const bestByTier = new Map<number, number>();
+	for (const candidate of ranked) {
+		const tier = options.tier(candidate);
+		if (!bestByTier.has(tier)) bestByTier.set(tier, options.score(candidate));
 	}
+	return ranked.filter((candidate) => {
+		const score = options.score(candidate);
+		const best = bestByTier.get(options.tier(candidate)) ?? 0;
+		return best <= 0 || score >= best * SAME_TIER_SCORE_RATIO_CUTOFF || options.consensus?.(candidate) === true;
+	});
 }
 
-function siftDownWorst<T>(heap: T[], index: number, compare: (left: T, right: T) => number): void {
-	while (true) {
-		const left = index * 2 + 1;
-		const right = left + 1;
-		let worst = index;
-		const leftItem = heap[left];
-		const worstItem = heap[worst];
-		if (leftItem !== undefined && worstItem !== undefined && compare(leftItem, worstItem) > 0) worst = left;
-		const rightItem = heap[right];
-		const nextWorst = heap[worst];
-		if (rightItem !== undefined && nextWorst !== undefined && compare(rightItem, nextWorst) > 0) worst = right;
-		if (worst === index) return;
-		const item = heap[index];
-		const replacement = heap[worst];
-		if (item === undefined || replacement === undefined) return;
-		heap[index] = replacement;
-		heap[worst] = item;
-		index = worst;
+function deduplicate<T>(candidates: readonly T[], options: RankingSelectionOptions<T>): T[] {
+	const best = new Map<string, T>();
+	for (const candidate of candidates) {
+		const key = options.identity(candidate);
+		const previous = best.get(key);
+		if (previous === undefined || options.compare(candidate, previous) < 0) best.set(key, candidate);
 	}
+	return [...best.values()];
+}
+
+function normalizedRelevance(index: number, total: number): number {
+	return total <= 1 ? 1 : 1 - index / (total - 1);
 }

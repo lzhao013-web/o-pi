@@ -174,7 +174,8 @@ export interface FileToolLspSymbolCandidate {
 	kind: string;
 	symbol: string;
 	signature?: string;
-	reason: "lsp symbol" | "lsp exact symbol";
+	reason: "lsp symbol" | "lsp exact symbol" | "lsp reference";
+	origin?: "workspace-symbol" | "reference";
 }
 
 /** edit 前保存的诊断基线，用于成功写盘后的 diff。 */

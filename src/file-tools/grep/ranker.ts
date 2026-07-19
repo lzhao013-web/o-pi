@@ -1,5 +1,5 @@
 import { buildLineIndex, byteRangeForLinesWithIndex, extractByteRange, splitTokens, tokenizeText, type AnalyzedFileIndex, type IndexedCodeUnit, type LineIndex, type SourceRange } from "../../code-index/parser.js";
-import { createRankingEvidence, EMPTY_RANKING_EVIDENCE, mergeRankingEvidence, rankPercentile, type RankingEvidence, type RankingEvidenceFamily } from "../ranking-evidence.js";
+import { createSourceRankingEvidence, EMPTY_RANKING_EVIDENCE, mergeRankingEvidence, type RankingEvidence } from "../ranking-evidence.js";
 import type { GrepMatchMode } from "../types.js";
 
 export interface RankedGrepRegion extends SourceRange {
@@ -78,7 +78,7 @@ export function rankGrepRegions(input: RankInput): { regions: RankedGrepRegion[]
 
 	const sourceSorted = Array.from(candidates.values()).sort(compareLocalRanked);
 	for (const [index, region] of sourceSorted.entries()) {
-		region.evidence = createRankingEvidence(localEvidenceFamily(region), rankPercentile(index, sourceSorted.length));
+		region.evidence = localRankingEvidence(region, index + 1);
 	}
 	return {
 		regions: sourceSorted,
@@ -87,14 +87,24 @@ export function rankGrepRegions(input: RankInput): { regions: RankedGrepRegion[]
 	};
 }
 
-function localEvidenceFamily(region: RankedGrepRegion): RankingEvidenceFamily {
-	return region.reasons.some((reason) =>
+function localRankingEvidence(region: RankedGrepRegion, rank: number): RankingEvidence {
+	let evidence = EMPTY_RANKING_EVIDENCE;
+	if (region.reasons.some((reason) =>
 		reason === "exact qualified symbol"
 		|| reason === "exact symbol"
 		|| reason === "definition"
-		|| reason === "symbol prefix")
-		? "structural"
-		: "lexical";
+		|| reason === "symbol prefix")) {
+		evidence = mergeRankingEvidence(evidence, createSourceRankingEvidence("ast-symbol", rank));
+	}
+	if (region.reasons.some((reason) => reason === "exact literal" || reason === "regex")) {
+		evidence = mergeRankingEvidence(evidence, createSourceRankingEvidence("text", rank));
+	} else if (region.reasons.some((reason) => reason === "lexical" || reason === "path")) {
+		evidence = mergeRankingEvidence(evidence, createSourceRankingEvidence("bm25", rank));
+	}
+	if (region.reasons.some((reason) => reason === "caller" || reason === "callee" || reason === "import")) {
+		evidence = mergeRankingEvidence(evidence, createSourceRankingEvidence("ast-graph", rank));
+	}
+	return evidence;
 }
 
 function rankUnit(unit: IndexedCodeUnit, input: RankInput, context: RankContext): RankedGrepRegion {

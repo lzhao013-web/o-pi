@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { editWorkspace } from "../../src/file-tools/tools/edit.js";
 import { grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
+import { clearGrepIndex } from "../../src/file-tools/grep/indexer.js";
 import { ReadVersionCache } from "../../src/file-tools/core/read-cache.js";
 import { readWorkspaceFile } from "../../src/file-tools/tools/read.js";
 import { writeWorkspaceFile } from "../../src/file-tools/tools/write.js";
@@ -119,6 +120,31 @@ describe("file-tools lsp hooks", () => {
 		});
 
 		expect(maxActive).toBe(2);
+	});
+
+	it("LSP 显式语义排序不依赖服务器顺序，并把 reference 放在 workspace symbol 后", async () => {
+		for (const name of ["exact", "prefix", "reference"]) {
+			await writeFile(path.join(workspace, `${name}.ts`), `export const ${name} = 1;\n`);
+		}
+		const candidates = [
+			{ path: "reference.ts", start_line: 1, end_line: 1, kind: "variable", symbol: "Target", reason: "lsp reference" as const, origin: "reference" as const },
+			{ path: "prefix.ts", start_line: 1, end_line: 1, kind: "variable", symbol: "TargetHelper", reason: "lsp symbol" as const, origin: "workspace-symbol" as const },
+			{ path: "exact.ts", start_line: 1, end_line: 1, kind: "variable", symbol: "Target", reason: "lsp exact symbol" as const, origin: "workspace-symbol" as const },
+		];
+		const first = expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "Target" }, undefined, {
+			lsp: { async grepSymbols() { return candidates; } },
+		}));
+		clearGrepIndex();
+		const second = expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "Target" }, undefined, {
+			lsp: { async grepSymbols() { return [...candidates].reverse(); } },
+		}));
+		const order = (result: GrepSuccess) => result.regions.map((region) => `${region.path}:${region.reasons[0]}`);
+		expect(order(first)).toEqual(order(second));
+		expect(order(first)).toEqual([
+			"exact.ts:lsp exact symbol",
+			"prefix.ts:lsp symbol",
+			"reference.ts:lsp reference",
+		]);
 	});
 });
 

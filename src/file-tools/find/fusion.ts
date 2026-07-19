@@ -1,6 +1,15 @@
 import { compareRankingEvidence, mergeRankingEvidence } from "../ranking-evidence.js";
-import { selectDiverseTopK } from "../ranking-selection.js";
+import { selectRelevanceHeadMmr } from "../ranking-selection.js";
 import type { RankedFindEntry } from "./ranker.js";
+
+interface FindSimilarityProfile {
+	path: string;
+	component: string;
+	kind: string;
+	basename: string;
+}
+
+const FIND_SIMILARITY_PROFILES = new WeakMap<RankedFindEntry, FindSimilarityProfile>();
 
 /** 路径与 Repo Map 候选按 path 合并；只有发生碰撞时才复制输入候选。 */
 export function mergeRankedFindSources(primary: RankedFindEntry[], repoMap: RankedFindEntry[]): RankedFindEntry[] {
@@ -19,7 +28,14 @@ export function fuseRankedFindSources(primary: RankedFindEntry[], repoMap: Ranke
 }
 
 export function selectRankedFindEntries(candidates: readonly RankedFindEntry[], limit: number): RankedFindEntry[] {
-	return selectDiverseTopK(candidates, limit, compareRankedFindEntries, (candidate) => topDirectory(candidate.entry.path), (candidate) => candidate.entry.path);
+	return selectRelevanceHeadMmr(candidates, limit, {
+		compare: compareRankedFindEntries,
+		tier: (candidate) => candidate.tier,
+		score: (candidate) => candidate.evidence.fusionScore,
+		consensus: (candidate) => candidate.evidence.familyCount >= 2,
+		identity: (candidate) => candidate.entry.path,
+		similarity: findSimilarity,
+	});
 }
 
 export function compareRankedFindEntries(left: RankedFindEntry, right: RankedFindEntry): number {
@@ -56,4 +72,30 @@ function compareStableString(left: string, right: string): number {
 function topDirectory(value: string): string {
 	const slash = value.indexOf("/");
 	return slash === -1 ? "." : value.slice(0, slash);
+}
+
+function findSimilarity(left: RankedFindEntry, right: RankedFindEntry): number {
+	const leftProfile = findSimilarityProfile(left);
+	const rightProfile = findSimilarityProfile(right);
+	if (leftProfile.path === rightProfile.path) return 1;
+	const sameComponent = leftProfile.component === rightProfile.component;
+	const sameKind = leftProfile.kind === rightProfile.kind;
+	const sameBasename = leftProfile.basename === rightProfile.basename;
+	if (sameBasename && sameKind) return 0.8;
+	if (sameComponent && sameKind) return 0.22;
+	if (sameComponent) return 0.1;
+	return 0;
+}
+
+function findSimilarityProfile(candidate: RankedFindEntry): FindSimilarityProfile {
+	const cached = FIND_SIMILARITY_PROFILES.get(candidate);
+	if (cached !== undefined) return cached;
+	const profile = {
+		path: candidate.entry.path,
+		component: topDirectory(candidate.entry.path),
+		kind: candidate.entry.kind,
+		basename: candidate.entry.basename.toLocaleLowerCase(),
+	};
+	FIND_SIMILARITY_PROFILES.set(candidate, profile);
+	return profile;
 }

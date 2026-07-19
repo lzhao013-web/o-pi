@@ -428,6 +428,74 @@ describe("grep", () => {
 		expect(native.matchLines).toEqual([2]);
 	});
 
+	it("AST/LSP 同一 symbol 的范围相差两行仍合并，但 overload signature 不合并", () => {
+		const base: RankedGrepRegion = {
+			id: "ast-a",
+			path: "target.ts",
+			kind: "function",
+			symbol: "Target",
+			signature: "function Target(value: string)",
+			startLine: 10,
+			endLine: 14,
+			startByte: 100,
+			endByte: 180,
+			tier: 3,
+			evidence: createRankingEvidence("structural", 1),
+			lexicalRelevance: 0,
+			pathRelevance: 0,
+			reasons: ["exact symbol"],
+			matchLines: [],
+			callees: [],
+			imports: [],
+		};
+		const { signature: _signature, ...withoutSignature } = base;
+		const lsp: RankedGrepRegion = {
+			...withoutSignature,
+			id: "lsp",
+			kind: "Function",
+			startLine: 8,
+			endLine: 10,
+			evidence: createRankingEvidence("semantic", 1),
+			reasons: ["lsp exact symbol"],
+		};
+		expect(mergeRankedGrepSources([base], [lsp])).toHaveLength(1);
+
+		const overload: RankedGrepRegion = {
+			...base,
+			id: "ast-b",
+			signature: "function Target(value: number)",
+			startLine: 11,
+			endLine: 15,
+		};
+		expect(mergeRankedGrepSources([base, overload], [])).toHaveLength(2);
+	});
+
+	it("无 symbol/range 的 Repo Map 文件候选不会投影到 units[0]", async () => {
+		const content = "export function FirstFunction() { return 1; }\nexport function SecondFunction() { return 2; }\n";
+		await writeFile(path.join(workspace, "ambiguous.ts"), content);
+		const candidate: RepoMapQueryCandidate = {
+			path: "ambiguous.ts",
+			fileId: "file:ambiguous.ts",
+			contentHash: createHash("sha256").update(content).digest("hex"),
+			score: 900,
+			confidence: 1,
+			hop: 0,
+			reasons: ["definition"],
+			matchedAliases: [],
+			relatedEdges: [],
+		};
+		const result = expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: "MissingTarget" }, undefined, {
+			repoMap: repoMapQuery(async (input) => ({
+				root: workspace,
+				explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+				candidates: [candidate],
+			})),
+		}));
+		expect(result.regions.some((region) => region.symbol === "FirstFunction")).toBe(false);
+		expect(result.related).toEqual([expect.objectContaining({ path: "ambiguous.ts", kind: "file" })]);
+		expect(result.related?.[0]?.symbol).toBeUndefined();
+	});
+
 	it.each(["literal", "regex"] as const)("%s 在 repo-map 查询失效时保持原结果", async (match) => {
 		const content = "export function Target() { return 'Needle42'; }\n";
 		await writeFile(path.join(workspace, "target.ts"), content);

@@ -9,7 +9,7 @@ import { fail, isAccessDenied, isFailed, protectedPathFailure } from "../core/er
 import { createFindEntry, rankFindEntries, type RankedFindEntry } from "../find/ranker.js";
 import { fuseRankedFindSources, selectRankedFindEntries } from "../find/fusion.js";
 import { renderFindResults } from "../find/renderer.js";
-import { createRankingEvidence, EMPTY_RANKING_EVIDENCE, rankPercentile, rescaleRankingEvidence } from "../ranking-evidence.js";
+import { createSourceRankingEvidence, EMPTY_RANKING_EVIDENCE } from "../ranking-evidence.js";
 import { defaultIgnoreEngine } from "../ignore/ignore-engine.js";
 import type { IgnoreSnapshot } from "../ignore/ignore-types.js";
 import { guardExistingPath, PathGuardBlockedError } from "../../safety/path-guard.js";
@@ -17,7 +17,7 @@ import { normalizeToolPath, resolveWorkspaceRoot } from "../core/path-resolver.j
 import type { FindEntry, FindMatch, FindParams, FindSuccess, RepoMapRelatedResult, ToolOutcome } from "../types.js";
 import type { RepoMapFileToolQuery } from "../../repo-map/file-tool-query.js";
 import type { RepoMapQueryCandidate } from "../../repo-map/query.js";
-import { hasDirectRepoMapEvidence, isRepoMapNavigationCandidate, repoMapEvidenceTier, repoMapNavigationRelation } from "../repo-map-ranking.js";
+import { isRepoMapMainCandidate, isRepoMapNavigationCandidate, repoMapEvidenceTier, repoMapNavigationRelation, repoMapRankingEvidence } from "../repo-map-ranking.js";
 
 interface NormalizedFindParams {
 	query: string;
@@ -67,6 +67,7 @@ interface RepoMapFindInput {
 type RepoMapRankedFindEntry = RankedFindEntry;
 
 interface ValidatedRepoMapFindEntry extends RepoMapRankedFindEntry {
+	candidate: RepoMapQueryCandidate;
 	matchesQuery: boolean;
 	navigation: boolean;
 	repoMapOrder: number;
@@ -137,7 +138,7 @@ export async function findWorkspaceFiles(
 				ranked: [{
 					entry: exact,
 					tier: 0,
-					evidence: createRankingEvidence("lexical", 1),
+					evidence: createSourceRankingEvidence("path", 1),
 				}],
 				totalMatches: 1,
 				scannedEntries: 0,
@@ -337,7 +338,7 @@ async function runRankedSearch(
 		skippedCount: state.skippedCount,
 		truncated: state.truncated,
 		config,
-		...(filter !== undefined && merged.length < FIND_RELATED_TRIGGER && repoMapCandidates.related.length > 0 ? { related: repoMapCandidates.related } : {}),
+		...(merged.length < FIND_RELATED_TRIGGER && repoMapCandidates.related.length > 0 ? { related: repoMapCandidates.related } : {}),
 		...(merged.length === 0 ? { suggestions: ranked.suggestions.map((item) => toMatch(item.entry)) } : {}),
 	});
 }
@@ -362,7 +363,7 @@ async function safeRepoMapFindCandidates(
 			return await validateRepoMapFindCandidate(candidate, queried.root, input, hashes);
 		})));
 		const validated = candidates.filter((candidate): candidate is ValidatedRepoMapFindEntry => candidate !== undefined);
-		return partitionRepoMapFindCandidates(withValidatedRepoMapPercentiles(validated));
+		return partitionRepoMapFindCandidates(validated);
 	} catch (error) {
 		if (error instanceof AbortFind) throw error;
 		return emptyRepoMapFindCandidates();
@@ -384,7 +385,8 @@ async function validateRepoMapFindCandidate(
 	const displayPath = childDisplayPath(input.searchRoot.relativePath, searchRelative);
 	const identity = toolPathIdentity(displayPath, absolutePath, workspaceRelative);
 	if (isBlockedPath(input.config, identity)) return undefined;
-	const matchesQuery = input.accept?.(searchRelative, "file") ?? true;
+	const matchesScope = input.accept?.(searchRelative, "file") ?? true;
+	const matchesQuery = matchesScope && isRepoMapMainCandidate(candidate, input.query);
 	if (!input.ignoreBypass) {
 		if (isIgnoredPath(input.config, identity)) return undefined;
 		if (input.ignoreSnapshot.evaluate({ path: workspaceRelative, kind: "file", intent: "search" }).ignored) return undefined;
@@ -396,23 +398,36 @@ async function validateRepoMapFindCandidate(
 		return undefined;
 	}
 	if (!info.isFile() || info.isSymbolicLink()) return undefined;
-	const pathOnly = candidate.reasons.every((reason) => reason === "exact path" || reason === "exact filename" || reason === "path match");
-	if (!pathOnly && !await matchesCurrentHash(absolutePath, candidate.contentHash, input.signal, hashes)) return undefined;
+	if (!await matchesCurrentHash(absolutePath, candidate.contentHash, input.signal, hashes)) return undefined;
 	for (const related of candidate.relatedEdges.flatMap((edge) => edge.relatedFiles)) {
 		const relatedAbsolutePath = path.resolve(mapRoot, related.path);
 		if (relativeInside(input.searchRoot.absolutePath, relatedAbsolutePath) === undefined) return undefined;
 		if (!await matchesCurrentHash(relatedAbsolutePath, related.contentHash, input.signal, hashes)) return undefined;
 	}
 	const relation = repoMapNavigationRelation(candidate);
+	const baseTier = repoMapEvidenceTier(candidate);
+	const tier = !hasFindTestIntent(input.query) && !/[A-Z]/u.test(input.query) && isTestLikeRepoMapCandidate(candidate)
+		? Math.max(5, baseTier)
+		: baseTier;
 	return {
+		candidate,
 		entry: createFindEntry(displayPath, "file"),
-		tier: repoMapEvidenceTier(candidate),
-		evidence: hasDirectRepoMapEvidence(candidate) ? createRankingEvidence("structural", 1) : EMPTY_RANKING_EVIDENCE,
+		tier,
+		evidence: EMPTY_RANKING_EVIDENCE,
 		matchesQuery,
 		navigation: isRepoMapNavigationCandidate(candidate),
 		repoMapOrder: selected.order,
 		...(relation !== undefined ? { relation } : {}),
 	};
+}
+
+function hasFindTestIntent(query: string): boolean {
+	return /(?:^|[^a-z0-9])(?:tests?|specs?|fixtures?|mocks?)(?:$|[^a-z0-9])/iu.test(query);
+}
+
+function isTestLikeRepoMapCandidate(candidate: RepoMapQueryCandidate): boolean {
+	return candidate.reasons.some((reason) => reason === "test" || reason === "mock" || reason === "fixture" || reason === "snapshot" || reason === "test config")
+		|| /(?:^|\/)(?:tests?|fixtures?|mocks?)(?:\/|$)|(?:\.|-)(?:test|spec)\.[^/]+$/iu.test(candidate.path);
 }
 
 function selectRepoMapFindCandidates(
@@ -440,15 +455,11 @@ function selectRepoMapFindCandidates(
 	return [...matching, ...related.slice(0, FIND_RELATED_VALIDATION_LIMIT)];
 }
 
-function withValidatedRepoMapPercentiles(candidates: ValidatedRepoMapFindEntry[]): ValidatedRepoMapFindEntry[] {
-	for (const [index, candidate] of candidates.entries()) {
-		candidate.evidence = rescaleRankingEvidence(candidate.evidence, rankPercentile(index, candidates.length));
-	}
-	return candidates;
-}
-
 function partitionRepoMapFindCandidates(candidates: ValidatedRepoMapFindEntry[]): RepoMapFindCandidates {
 	const matching = candidates.filter((candidate) => candidate.matchesQuery);
+	for (const [index, candidate] of matching.entries()) {
+		candidate.evidence = repoMapRankingEvidence(candidate.candidate, index + 1, true);
+	}
 	const relatedByPath = new Map<string, { result: RepoMapRelatedResult; order: number }>();
 	for (const candidate of candidates) {
 		if (candidate.matchesQuery || !candidate.navigation || candidate.relation === undefined) continue;

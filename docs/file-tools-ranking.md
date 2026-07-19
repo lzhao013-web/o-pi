@@ -1,168 +1,122 @@
 # 文件工具排序算法
 
-本文是 `find` 与 `grep` 排序行为的唯一详细说明。工具参数、路径安全、ignore、输出格式和预算边界见 [文件工具设计](fs-tools.md)；Repo Map 自身的查询与图传播见 [Repo Map](repo-map.md)。
+本文说明 `find` 与 `grep` 的候选融合和 Top-K。路径安全、ignore、glob、正文预算见 [文件工具设计](fs-tools.md)，Repo Map 查询见 [Repo Map](repo-map.md)。
 
-## 目标与边界
+## 排序边界
 
-排序器不训练或调用额外模型，也不尝试校准 Fuse、BM25、LSP 与 Repo Map 的原始分数。它只要求每个来源给出自身可信的候选顺序，再用无量纲排名和离散语义等级融合。
-
-核心约束：
-
-- 严格语义边界优先于连续相关性，例如精确路径永远先于 fuzzy path；
-- 原始分数只在产生它的来源内部使用，不跨来源相加；
-- 独立证据家族可以形成共识，相关或重复证据不能重复放大候选；
-- scope、ignore、glob、content hash 和实时 symbol 校验发生在百分位计算之前；
-- 并发完成顺序、文件系统枚举顺序和 locale 不影响最终结果；
-- Repo Map 或 LSP 不可用时，其候选直接缺席；parser 不可用时只缺失结构信息，并为对应文件启用文本 lexical 降级。其他来源的内部顺序不变。
-
-整体执行链：
+排序器不调用模型、不使用 embedding，也不跨来源比较 Fuse、BM25、LSP 或 Repo Map 原始分数。完整顺序始终是：
 
 ```text
-候选生成
-  -> scope / glob / hash / live symbol 校验
-  -> 赋予离散语义等级并在各来源独立排序
-  -> 来源内百分位
-  -> 单次按 path 或 region identity 合并
-  -> 有界选择器按等级、证据共识与稳定键比较
-  -> 两轮多样性 Top-K 与输出预算
+tier
+  -> family-aware weighted RRF
+  -> 必要的 hop / confidence 条件
+  -> 稳定路径、range 和文本键
 ```
 
-## 候选来源与职责
+`tier` 是离散语义边界。连续证据只能重排同一 tier，不能让 fuzzy、BM25、reference 或 hop 1/2 越过 exact path、exact filename、exact qualified symbol 等直接命中。literal/regex 主候选必须在当前正文中重新命中；纯图关系默认进入 `related`。
 
-| 来源 | 证据来源名 | 家族 | 作用 |
-| --- | --- | --- | --- |
-| `find` 路径索引 | `path` | lexical | exact path/name、segment、substring、token 和 fuzzy path。 |
-| `grep` 文本 fallback | `text` | lexical | parser 不支持或 code unit 外的真实 literal/regex 行窗口。 |
-| Tree-sitter code index | `ast` | structural 或 lexical | 提供实时 code-unit 边界、symbol/definition、signature 和 occurrence；symbol 类理由属于 structural，普通 occurrence/BM25 属于 lexical。 |
-| LSP workspace symbols | `lsp` | semantic | 仅为 symbol-like `grep auto` 查询补充 semantic symbol 候选。 |
-| Repo Map | `repo-map` | structural | 为 `find` 和 `grep` 补充已验证的跨文件 symbol、alias、架构和图关系。 |
+scope、ignore、glob、content hash、related-file hash 和 live symbol/range 校验都发生在计算来源 rank 之前。并发完成顺序和来源输入顺序不参与稳定键。
 
-Tree-sitter 不执行跨文件语义解析；LSP 不参与 `find`；Repo Map 不提供缓存正文，候选最终都由当前文件系统内容验证。某个文件的 Tree-sitter grammar 不支持、runtime 缺失或解析失败时，`grep auto` 在该文件上改用实时正文：连续查询文本为 tier 4，满足 token 覆盖的 lexical 行窗口为 tier 5；不会伪造 symbol、definition 或关系证据。
+## Family-aware weighted RRF
 
-## 来源内百分位
+证据分为四个独立 family：
 
-实时校验后，一个来源剩余 `n` 个候选。零基序号为 `i` 的候选转换为：
+| family | 来源 |
+| --- | --- |
+| lexical | path、literal/regex occurrence、BM25/text fallback |
+| semantic | LSP workspace symbol 或低权重 reference |
+| structural | Tree-sitter definition/symbol、已验证的 Repo Map hop 0 direct evidence |
+| graph | Repo Map hop 1/2；本地一跳关系 |
+
+每个有效来源按自身已验证顺序取得一基 rank。贡献公式为：
 
 ```text
-percentile(i, n) = 1                         n <= 1
-percentile(i, n) = 1 - i / (n - 1)          n > 1
+sourceContribution = sourceWeight * confidence / (60 + sourceRank)
+familyContribution = max(sourceContribution in family)
+fusionScore = sum(familyContribution)
 ```
 
-因此第一名为 `1`，最后一名为 `0`。百分位只表达来源内顺序，不声称两个来源的原始相关性分数具有相同尺度。
+默认权重集中在 `ranking-evidence.ts`：path/text/AST symbol 为 `1.0`，BM25 `0.9`，LSP workspace symbol `0.95`，LSP reference `0.5`，Repo Map direct `0.85`，本地一跳与 Repo Map hop 1 为 `0.35`，hop 2 为 `0.18`。同 family 重复确认只取最大值，因此 AST 与 Repo Map structural 不会双重累计。不同 family 的高排名证据可以形成共识，但多个低排名来源不能自动压过单来源第一名。
 
-概念上，每条来源证据包含 `source`、`family`、`percentile` 和简短 `reason`。实现中，展示原因由候选的 `reasons` 保留；排序热路径只保存三个家族的存在位和最佳百分位，避免比较时重建集合。合并同一候选时：
+固定宽度 `RankingEvidence` 只保存四个 family 的最大贡献、mask、family count、总分和最大贡献；合并与比较均为 `O(1)`，热路径不分配动态证据集合。
 
-1. 相同 `source + reason` 只保留最高百分位；
-2. 每个证据家族只取该家族的最高百分位；
-3. 在候选语义等级相同时，先比较非空独立家族数；
-4. 再比较各家族最佳百分位的中位数；
-5. 再比较最佳家族百分位。
+## Repo Map 校准
 
-这使同一语义等级内的 lexical + semantic 共识优先于单一 lexical 来源，同时保证向同一家族加入较弱证据不会降低或虚增候选。
+Repo Map 候选必须通过当前文件 content hash；自动模式还保留 related-file hash gate。没有实时 freshness 证明的候选不进入主结果，也不提供 RRF 贡献。
 
-## `find`
+- hop 0 且 confidence `>= 0.5`、具有直接 path/symbol/definition/architecture 理由时，进入 structural family；贡献仍乘 candidate confidence。
+- hop 0 低 confidence 可保留召回，但不形成独立 structural family。
+- hop 1/2 只进入 graph family，分别使用低权重；还要乘 candidate confidence、edge confidence 和 resolution 系数。semantic/syntactic/lexical resolution 系数依次为 `1/0.9/0.65`。
+- graph 候选不继承 seed 的 exact symbol tier。二跳只补充召回。
 
-### 路径来源内排序
+Repo Map 查询层顺序在实时验证后重新编号。main 与 related 分开编号，因此增加 related 候选不会稀释 main 的 RRF rank。
 
-路径按 `/`、`.`、`-`、`_`、camelCase、PascalCase 和字母/数字边界切词。全小写查询不区分大小写；查询含大写时启用 smart case，大小写冲突的名称命中降一个等级。
+文件候选投影到代码区域时依次尝试 candidate symbol ID、candidate range、alias/evidence 名称、查询 token 最匹配的 unit。无法定位时不会使用 `units[0]`：候选转为文件级 related，避免把任意首个函数伪装为目标。
 
-存在名称或路径硬命中时，它们作为主候选，Fuse 只生成 nearby suggestions。没有硬命中时，Fuse 候选必须满足阈值和主要 token 覆盖才进入主结果。Fuse 原始分数只在路径来源内参与以下比较：测试意图、smart case、精确 token 数、token 覆盖、Fuse 顺序和稳定路径键。
+## 来源内部顺序
 
-### 语义等级
+### find path
 
-数字越小越优先：
+路径来源内部使用 exact normalized path、exact basename/stem、segment/prefix、substring、Fuse 的既有离散 tier。未声明 test/spec/fixture/mock 意图时，测试路径的 fuzzy 候选降至下一 tier；明确测试意图仍优先测试路径。Fuse 原始分数只用于 path 来源内部顺序，之后转换为 RRF rank。
 
-| 等级 | 候选 |
-| --- | --- |
-| 0 | exact normalized path；Repo Map exact path。 |
-| 1 | exact basename/stem；Repo Map exact filename。 |
-| 2 | exact segment、basename prefix；Repo Map hop 0 exact qualified/exact symbol。 |
-| 3 | basename/path substring；Repo Map path match。 |
-| 4 | fuzzy path；Repo Map 其他 hop 0 直接关系。 |
-| 6 | Repo Map hop 1。 |
-| 7 | Repo Map hop 2。 |
+### Tree-sitter / text
 
-Repo Map 只有 hop 0 且带可导航结构理由的候选产生 structural 共识证据。hop 1/2 可以补充召回，但不会继承 seed 的精确 symbol 地位。
+Tree-sitter/text 按 tier、来源内 BM25、真实命中行数、路径 token、region 大小及稳定范围排序。definition/symbol 提供 structural family；实时 occurrence 提供 lexical family；同一 region 可同时获得两个 family，但每个 family 仍只保留最大贡献。
 
-同一路径候选合并后取最优等级并合并证据。候选依次比较：等级、证据共识、较短路径、较浅深度、字典序。
+### LSP
 
-### 结果多样性
+LSP 不依赖语言服务器返回顺序。通过 scope 和正文读取后显式排序：
 
-超过 `find_result_limit` 时执行两轮确定性选择：
+```text
+exact qualified symbol
+  -> exact symbol
+  -> prefix/token match
+  -> fuzzy workspace symbol
+  -> reference
+```
 
-1. 按完整相关性顺序为每个顶层目录选择一个候选；
-2. 再按完整顺序填满剩余名额；
-3. 输出所选子集时恢复其原始相关性顺序。
+`FileToolLspSymbolCandidate.origin` 区分 `workspace-symbol` 和 `reference`；旧适配未提供时按 workspace symbol 处理。reference 使用更差 tier 和更低 source weight。最终以 symbol、path 和 range 稳定打破平局。
 
-宽结果的 `Top matches` 使用同一目录覆盖原则，未展开部分再按路径树折叠。
+## Region identity
 
-## `grep`
+有 symbol 的 `grep` 候选按 path、normalized qualified symbol、kind、signature 和 range 聚类合并。Tree-sitter、LSP、Repo Map 的范围重叠或起始行相差不超过两行时可视为同一 region；若双方 signature 明确且不同，则保持为不同 overload。无 symbol 的文本 region 继续使用严格 ID/range。
 
-### Tree-sitter/text 来源内排序
+## Relevance head 与 MMR
 
-`literal` 与 `regex` 先逐行预筛，只解析真实命中文件；`auto` 构建 code index，用 symbol、occurrence、BM25、路径 token 和一跳 caller/callee/import 产生候选。parser 不可用的文件只产生 exact-text 或 token-coverage 文本窗口，并保持 lexical 家族。
+融合候选先按完整 relevance 排序。选择器参数集中在 `ranking-selection.ts`：
 
-Tree-sitter/text 来源内依次比较：语义等级、BM25、真实命中行数、路径 token 重合、较小 region、路径和行号。此处的 BM25 与 token overlap 不离开本来源。
+- `HEAD_SIZE = 3`：前三条原样保留；limit 小于等于 3 时结果就是全局 relevance Top-K。
+- `lambda = 0.85`。
+- 同 tier 动态 cutoff 比例为 `0.30`。
 
-### 语义等级
+剩余名额使用确定性 MMR：
 
-`auto`：
+```text
+utility = 0.85 * normalizedRelevance
+        - 0.15 * maxSimilarityToSelected
+```
 
-| 等级 | 候选 |
-| --- | --- |
-| 1 | exact qualified symbol；LSP/Repo Map 的直接 exact qualified symbol。 |
-| 3 | exact symbol/definition；LSP symbol；Repo Map hop 0 exact/short symbol 或 definition。 |
-| 4 | symbol prefix 或真实 literal occurrence。 |
-| 5 | BM25/path lexical；Repo Map 其他 hop 0 候选。 |
-| 6 | Tree-sitter 一跳关系；Repo Map hop 1。 |
-| 7 | Repo Map hop 2。 |
+每一步只在当前最优 tier 内选择，因此多样性不能提升较差 tier。`find` 相似度使用 identity、basename、顶层 component 和 kind；`grep` 使用 identity、symbol、path、candidate role、component。相似度只是软惩罚。MMR 选择结束后，tail 恢复完整 relevance 顺序，relevance head 保持在最前。
 
-`literal` / `regex`：
+同 tier 候选若 RRF 分数低于该 tier 最佳分数的 `30%` 会被 cutoff；该 tier 全部无有效证据时不截断。这样不会为了填满 limit 返回极低质量的长尾，同时保留没有可量化 RRF 的明确离散候选。
 
-| 等级 | 候选 |
-| --- | --- |
-| 0 | 查询在当前 symbol name、qualified name 或 signature 中真实命中。 |
-| 1 | 查询在 Tree-sitter code unit 正文中真实命中。 |
-| 2 | code unit 外的文本 fallback。 |
-| 5 | 仅供有界 hydration 的元数据候选；没有真实命中时不会作为严格主结果。 |
+`find` renderer 不再按顶层目录二次选择。宽输出的 `Top matches` 直接取已完成 relevance/MMR 选择的输入前缀；路径树只折叠其余结果。
 
-Repo Map 严格候选必须用原 literal/regex 在实时 code unit 中重新验证。`auto` 中只有 hop 0 Repo Map 候选产生 structural 共识证据；传播候选保持 hop 等级。
+## Main 与 related
 
-### Region 合并与最终排序
+主结果需要直接 path、symbol、textual 证据，或查询明确要求关系角色。轻量 intent 规则识别 caller/callee/reference、test/mock/fixture、registration/entrypoint 等明显 token：
 
-有 symbol 的 region identity 是 `path + start line + lowercase symbol`；没有 symbol 时使用 code-unit/fallback ID。相同 identity 合并最优等级、证据、理由、命中行和可选关系。
+- `login`：definition 为主；仅图传播得到的 caller/test 为 related。
+- `callers of login`：caller 可以进入主结果，但仍保持 hop tier 和 graph 弱权重。
+- `login tests`：test 关系可以进入主结果。
+- literal/regex：只有实时正文命中进入主结果；其他可导航结构候选留在 related。
 
-候选依次比较：等级、证据共识、较小 region、路径、起止行。Tree-sitter structural 与 Repo Map structural 属于同一家族，不会因重复确认而增加家族数；LSP semantic 可以与 structural 或 lexical 形成独立共识。
+`related` 明示 `query_match: not_guaranteed`，不参与主结果的 RRF rank、cutoff 或 limit。
 
-### 打包多样性
+## 确定性与复杂度
 
-`grep_result_limit` 使用两轮确定性选择：
+融合扫描为 `O(N)`，identity 合并通常为常数时间；同 symbol bucket 只比较少量 range。排序为 `O(N log N)`。MMR 缓存每个剩余候选对已选集合的最大相似度，每次选中一条后线性更新，因此 Top-K 阶段为 `O(NK)`、额外空间 `O(N)`；没有额外 I/O。
 
-1. 按完整相关性顺序为每个文件选择一个 region；
-2. 再按完整顺序填满剩余名额；
-3. 所选子集恢复原始相关性顺序后进入 token-budget packer。
+`scripts/bench-file-tools-ranking.mjs` 用独立参考实现校验 head+MMR，并固定覆盖高相关同文件与低相关跨文件、多来源高/低排名共识、hop 竞争、exact/reference/test/registration 混合，以及 renderer 顺序一致性。
 
-测试文件没有全局罚分。`test`、`spec` 等查询词与其他词一样通过本来源的 BM25 和路径 token 影响顺序。
-
-严格查询的非匹配结构候选只能进入独立 `related` 通道。该通道保留 Repo Map 来源顺序，用路径和范围稳定打破平局，并过滤 confidence 低于 `0.5` 或没有可导航关系的候选。
-
-## 执行与复杂度
-
-每个请求为所有通道建立一次 lookup context，复用 file、unit ID、source hash、line index、Repo Map reason 和已验证候选投影。hydration 后只验证新获得正文的候选，再重新计算来源内百分位。
-
-融合器单次扫描所有通道并建立 identity Map。唯一候选沿用原对象；发生 identity 碰撞时才复制并合并，避免修改来源输入。证据状态是固定宽度数值对象，融合与比较均为 `O(1)`。
-
-设融合后候选数为 `N`、结果上限为 `K`。选择器扫描全部候选以保证文件或顶层目录多样性，再用有界最差堆取得精确结果，复杂度为 `O(N log K)`、额外空间为 `O(G + K)`，其中 `G` 是文件或顶层目录数。输出与“完整排序后执行两轮多样性选择”逐项等价。
-
-## 实现与回归边界
-
-主要实现：
-
-- `src/file-tools/ranking-evidence.ts`：百分位、证据合并与共识比较；
-- `src/file-tools/ranking-selection.ts`：精确多样性 Top-K；
-- `src/file-tools/find/ranker.ts`、`src/file-tools/find/fusion.ts`、`src/file-tools/tools/find.ts`：路径来源与 `find` 融合；
-- `src/file-tools/grep/ranker.ts`、`src/file-tools/grep/fusion.ts`、`src/file-tools/tools/grep.ts`：Tree-sitter/text、LSP、Repo Map region 融合；
-- `src/file-tools/repo-map-ranking.ts`：直接证据、hop 等级和 related 边界；
-- `src/file-tools/find/renderer.ts`、`src/file-tools/grep/packer.ts`：结果与 token 预算打包。
-
-核心不变量由 `tests/file-tools/ranking-evidence.test.ts`、`tests/file-tools/ranking-selection.test.ts`、`tests/file-tools/grep-tree-sitter-fallback.test.ts` 及 `find`、`grep`、LSP、Repo Map 集成测试覆盖。使用 `npm run bench:file-tools:ranking` 测量多通道 identity 重叠下的完整排序与精确 Top-K；可用 `-- --runs=N` 调整采样次数。
+`npm run bench:file-tools:calibration` 会在临时缓存中为当前 `o-pi` 工作树重建 Repo Map，并执行路径、symbol、literal、regex、caller 与 test intent 的固定人工相关性查询。它报告逐查询 Top-3、MRR、Recall@3 和冷查询耗时，并以 `0.95` 作为 MRR/Recall@3 回归门槛；临时 generation 在退出时删除。当前校准暴露并修复了“普通实现查询被同名测试文件的多来源共识反超”的问题。

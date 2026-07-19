@@ -254,13 +254,22 @@ describe("find", () => {
 		expect(paths(result.details.matches)).toEqual(["src/z-service.ts", "src/a-service.ts"]);
 		expect(result.details.matches.filter((match) => match.path === "src/z-service.ts")).toHaveLength(1);
 		expect(paths(result.details.matches)).not.toContain("src/z-service.js");
-		expect(result.details.related).toEqual([{
-			path: "src/z-service.js",
-			kind: "file",
-			source: "repo-map",
-			relations: ["symbol"],
-			query_match: "not_guaranteed",
-		}]);
+		expect(result.details.related).toEqual([
+			{
+				path: "src/a-service.ts",
+				kind: "file",
+				source: "repo-map",
+				relations: ["definition"],
+				query_match: "not_guaranteed",
+			},
+			{
+				path: "src/z-service.js",
+				kind: "file",
+				source: "repo-map",
+				relations: ["symbol"],
+				query_match: "not_guaranteed",
+			},
+		]);
 		expect(result.content).toContain("Related (repo-map; query match not guaranteed):");
 		expect(result.content).toContain("src/z-service.js [symbol]");
 	});
@@ -410,7 +419,7 @@ describe("find", () => {
 		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "auth service" })).details.matches).slice(0, 3)).toEqual([
 			"src/auth-service.ts",
 			"src/auth_service.ts",
-			"src/AuthService.test.ts",
+			"src/authservice.ts",
 		]);
 		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "AuthService" })).details.matches)[0]).toBe(
 			"src/AuthService.test.ts",
@@ -449,7 +458,28 @@ describe("find", () => {
 		expect(paths(result.details.matches)[0]).toBe("tests/auth/service.test.ts");
 	});
 
-	it("排序稳定，renderer 保留相关性顺序且大结果覆盖多个顶层目录", async () => {
+	it("未声明测试意图时实现文件排在同名测试文件前", async () => {
+		await writeFixture("src/file-tools/ranking-evidence.ts");
+		await writeFixture("tests/file-tools/ranking-evidence.test.ts");
+		const query = vi.fn(async (input): Promise<RepoMapQueryResult> => ({
+			root: workspace,
+			explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+			candidates: [repoMapCandidate("tests/file-tools/ranking-evidence.test.ts", "", ["definition"])],
+		}));
+
+		const result = expectFindSuccess(await findWorkspaceFiles(
+			workspace,
+			{ query: "ranking evidence" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+		expect(paths(result.details.matches).slice(0, 2)).toEqual([
+			"src/file-tools/ranking-evidence.ts",
+			"tests/file-tools/ranking-evidence.test.ts",
+		]);
+	});
+
+	it("排序稳定，renderer 的 Top matches 保留已选相关性顺序", async () => {
 		for (const directory of ["a", "b", "c"]) {
 			for (let index = 0; index < 30; index += 1) await writeFixture(`${directory}/file-${String(index).padStart(2, "0")}.ts`);
 		}
@@ -463,8 +493,9 @@ describe("find", () => {
 		expect(first.content).toContain("Other matches:");
 		const topMatches = first.content.split("Other matches:")[0] ?? "";
 		expect(topMatches).toContain("a/");
-		expect(topMatches).toContain("b/");
-		expect(topMatches).toContain("c/");
+		expect(topMatches).not.toContain("b/");
+		expect(topMatches).not.toContain("c/");
+		expect(topMatches.indexOf("a/file-00.ts")).toBeLessThan(topMatches.indexOf("a/file-01.ts"));
 	});
 
 	it("输出遵守 token budget，find_result_limit 和 find_max_entries_scanned 生效", async () => {

@@ -1,41 +1,75 @@
-export type RankingEvidenceFamily = "lexical" | "semantic" | "structural";
+export type RankingEvidenceFamily = "lexical" | "semantic" | "structural" | "graph";
 
-/** 排序热路径使用的固定宽度证据摘要；字段只由本模块构造。 */
+export type RankingEvidenceSource =
+	| "path"
+	| "text"
+	| "bm25"
+	| "ast-symbol"
+	| "ast-graph"
+	| "lsp-workspace-symbol"
+	| "lsp-reference"
+	| "repo-map-direct"
+	| "repo-map-hop-1"
+	| "repo-map-hop-2";
+
+/** RRF 参数集中在这里，benchmark 可以直接导入并校准。rank 从 1 开始。 */
+export const RRF_K = 60;
+export const RANKING_SOURCE_POLICY: Readonly<Record<RankingEvidenceSource, { family: RankingEvidenceFamily; weight: number }>> = {
+	path: { family: "lexical", weight: 1 },
+	text: { family: "lexical", weight: 1 },
+	bm25: { family: "lexical", weight: 0.9 },
+	"ast-symbol": { family: "structural", weight: 1 },
+	"ast-graph": { family: "graph", weight: 0.35 },
+	"lsp-workspace-symbol": { family: "semantic", weight: 0.95 },
+	"lsp-reference": { family: "semantic", weight: 0.5 },
+	"repo-map-direct": { family: "structural", weight: 0.85 },
+	"repo-map-hop-1": { family: "graph", weight: 0.35 },
+	"repo-map-hop-2": { family: "graph", weight: 0.18 },
+};
+
+/** 排序热路径使用的固定宽度证据摘要；同 family 只保存最强来源贡献。 */
 export interface RankingEvidence {
 	readonly mask: number;
 	readonly lexical: number;
 	readonly semantic: number;
 	readonly structural: number;
+	readonly graph: number;
 	readonly familyCount: number;
-	readonly medianPercentile: number;
-	readonly bestPercentile: number;
+	readonly fusionScore: number;
+	readonly bestContribution: number;
 }
 
 const LEXICAL_BIT = 1;
 const SEMANTIC_BIT = 2;
 const STRUCTURAL_BIT = 4;
+const GRAPH_BIT = 8;
 
-export const EMPTY_RANKING_EVIDENCE: RankingEvidence = evidenceSummary(0, 0, 0, 0);
+export const EMPTY_RANKING_EVIDENCE: RankingEvidence = evidenceSummary(0, 0, 0, 0, 0);
 
-/** 来源内排名归一化；第一名为 1，单候选来源也视为 1。 */
-export function rankPercentile(index: number, total: number): number {
-	if (total <= 1) return 1;
-	return 1 - index / (total - 1);
+export function rrfContribution(rank: number, weight = 1, confidence = 1): number {
+	const safeRank = Math.max(1, Math.floor(rank));
+	const safeWeight = Math.max(0, weight);
+	const safeConfidence = Math.max(0, Math.min(1, confidence));
+	return safeWeight * safeConfidence / (RRF_K + safeRank);
 }
 
-export function createRankingEvidence(family: RankingEvidenceFamily, percentile: number): RankingEvidence {
-	if (family === "lexical") return evidenceSummary(LEXICAL_BIT, percentile, 0, 0);
-	if (family === "semantic") return evidenceSummary(SEMANTIC_BIT, 0, percentile, 0);
-	return evidenceSummary(STRUCTURAL_BIT, 0, 0, percentile);
+export function createSourceRankingEvidence(source: RankingEvidenceSource, rank: number, confidence = 1): RankingEvidence {
+	const policy = RANKING_SOURCE_POLICY[source];
+	return createRankingEvidence(policy.family, rank, policy.weight, confidence);
 }
 
-export function rescaleRankingEvidence(evidence: RankingEvidence, percentile: number): RankingEvidence {
-	return evidenceSummary(
-		evidence.mask,
-		(evidence.mask & LEXICAL_BIT) === 0 ? 0 : percentile,
-		(evidence.mask & SEMANTIC_BIT) === 0 ? 0 : percentile,
-		(evidence.mask & STRUCTURAL_BIT) === 0 ? 0 : percentile,
-	);
+export function createRankingEvidence(
+	family: RankingEvidenceFamily,
+	rank: number,
+	weight = 1,
+	confidence = 1,
+): RankingEvidence {
+	const contribution = rrfContribution(rank, weight, confidence);
+	if (contribution === 0) return EMPTY_RANKING_EVIDENCE;
+	if (family === "lexical") return evidenceSummary(LEXICAL_BIT, contribution, 0, 0, 0);
+	if (family === "semantic") return evidenceSummary(SEMANTIC_BIT, 0, contribution, 0, 0);
+	if (family === "structural") return evidenceSummary(STRUCTURAL_BIT, 0, 0, contribution, 0);
+	return evidenceSummary(GRAPH_BIT, 0, 0, 0, contribution);
 }
 
 export function mergeRankingEvidence(left: RankingEvidence, right: RankingEvidence): RankingEvidence {
@@ -45,30 +79,32 @@ export function mergeRankingEvidence(left: RankingEvidence, right: RankingEviden
 	const lexical = Math.max(left.lexical, right.lexical);
 	const semantic = Math.max(left.semantic, right.semantic);
 	const structural = Math.max(left.structural, right.structural);
-	if (mask === left.mask && lexical === left.lexical && semantic === left.semantic && structural === left.structural) return left;
-	if (mask === right.mask && lexical === right.lexical && semantic === right.semantic && structural === right.structural) return right;
-	return evidenceSummary(mask, lexical, semantic, structural);
+	const graph = Math.max(left.graph, right.graph);
+	if (mask === left.mask && lexical === left.lexical && semantic === left.semantic && structural === left.structural && graph === left.graph) return left;
+	if (mask === right.mask && lexical === right.lexical && semantic === right.semantic && structural === right.structural && graph === right.graph) return right;
+	return evidenceSummary(mask, lexical, semantic, structural, graph);
 }
 
-/** 证据共识的稳定比较：独立家族数、各家族最佳百分位的中位数与最佳值。 */
+/** tier 相同后只比较 weighted RRF 总和；familyCount 不是独立优先级。 */
 export function compareRankingEvidence(left: RankingEvidence, right: RankingEvidence): number {
-	return right.familyCount - left.familyCount
-		|| right.medianPercentile - left.medianPercentile
-		|| right.bestPercentile - left.bestPercentile;
+	return right.fusionScore - left.fusionScore
+		|| right.bestContribution - left.bestContribution;
 }
 
-function evidenceSummary(mask: number, lexical: number, semantic: number, structural: number): RankingEvidence {
+function evidenceSummary(mask: number, lexical: number, semantic: number, structural: number, graph: number): RankingEvidence {
 	const familyCount = Number((mask & LEXICAL_BIT) !== 0)
 		+ Number((mask & SEMANTIC_BIT) !== 0)
-		+ Number((mask & STRUCTURAL_BIT) !== 0);
-	const sum = lexical + semantic + structural;
-	const bestPercentile = Math.max(lexical, semantic, structural);
-	const medianPercentile = familyCount === 0
-		? 0
-		: familyCount === 1
-			? sum
-			: familyCount === 2
-				? sum / 2
-				: sum - Math.min(lexical, semantic, structural) - bestPercentile;
-	return { mask, lexical, semantic, structural, familyCount, medianPercentile, bestPercentile };
+		+ Number((mask & STRUCTURAL_BIT) !== 0)
+		+ Number((mask & GRAPH_BIT) !== 0);
+	const fusionScore = lexical + semantic + structural + graph;
+	return {
+		mask,
+		lexical,
+		semantic,
+		structural,
+		graph,
+		familyCount,
+		fusionScore,
+		bestContribution: Math.max(lexical, semantic, structural, graph),
+	};
 }
