@@ -8,7 +8,7 @@ export function serializeSkillContextEntry(entry: SkillContextEntry): string | u
 
 function serializeActivation(entry: SkillActivationEntry): string {
 	return [
-		`<skill name="${escapeXml(entry.name)}" status="active">`,
+		`<skill name="${escapeXml(entry.name)}" status="active" base_dir="${escapeXml(entry.baseDir)}">`,
 		entry.body,
 		"</skill>",
 	].join("\n");

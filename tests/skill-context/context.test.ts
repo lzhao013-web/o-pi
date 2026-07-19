@@ -14,7 +14,7 @@ describe("skill context injection", () => {
 	it("activation entry 按 branch 位置转换为 synthetic user message，当前 user 留在最后", () => {
 		const output = injectSkillContext([custom("1", activation("demo"))], [user("current task")]);
 		expect(output).toHaveLength(2);
-		expect(textOf(output[0])).toContain('<skill name="demo" status="active">');
+		expect(textOf(output[0])).toContain('<skill name="demo" status="active" base_dir="/skills/demo">');
 		expect(textOf(output[1])).toBe("current task");
 	});
 
@@ -25,7 +25,7 @@ describe("skill context injection", () => {
 			custom("3", activation("demo")),
 	], [user("next")]);
 		const text = output.map(textOf).join("\n");
-		expect(text.match(/<skill name="demo" status="active">/g)).toHaveLength(1);
+		expect(text.match(/<skill name="demo" status="active" base_dir="\/skills\/demo">/g)).toHaveLength(1);
 		expect(text).not.toContain('status="inactive"');
 		expect(textOf(output.at(-1))).toBe("next");
 	});
@@ -43,7 +43,7 @@ describe("skill context injection", () => {
 			message("4", "next"),
 	], [user("first"), user("next")]);
 		const text = output.map(textOf).join("\n");
-		expect(text).toContain('<skill name="demo" status="active">');
+		expect(text).toContain('<skill name="demo" status="active" base_dir="/skills/demo">');
 		expect(text).toContain('<skill name="demo" status="inactive"/>');
 	});
 
@@ -55,7 +55,7 @@ describe("skill context injection", () => {
 			message("4", "next"),
 		], [user("first"), user("next")]);
 		const text = output.map(textOf).join("\n");
-		expect(text).toContain('<skill name="demo" status="active">');
+		expect(text).toContain('<skill name="demo" status="active" base_dir="/skills/demo">');
 		expect(text).toContain('<skill status="previous all inactive"/>');
 	});
 

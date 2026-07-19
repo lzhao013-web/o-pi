@@ -7,7 +7,7 @@
 - `/skill:<name>` 由 extension host 直接读取对应 `SKILL.md`，写入 session custom entry。
 - 扩展不重复注册每个 `/skill:<name>`；命令列表使用 Pi 内置 skill 项，执行由 input hook 接管。
 - 加载/卸载状态显示为 skill 状态卡片；卡片不启动模型、不产生 assistant message、不触发 read 工具。
-- 下一次真实用户请求前，context hook 按 session 时间线注入 `<skill name="..." status="active">` user-role synthetic message。
+- 下一次真实用户请求前，context hook 按 session 时间线注入 `<skill name="..." status="active" base_dir="<skill directory>">` user-role synthetic message；模型可据此读取该目录下 `references/` 和 `scripts/` 的相关文件。
 - skill body 不进入 system prompt；扫描到 skill 时 `/system` 只显示 `<skill_policy>`，不显示 skill name、path 或 description。
 - 模型尝试 read 已加载 skill 的 `SKILL.md` 时会被阻止；需要读取引用文件时读取 reference 文件。
 
