@@ -6,7 +6,6 @@ import { joinParts } from "./text.js";
 import type { TuiBannerConfig, TuiFooterSnapshot } from "./types.js";
 
 const WORDMARK = String.raw`
-
  ██████╗     ██████╗ 
 ██╔═══██╗    ██╔══██╗██╗
 ██║   ██║    ██████╔╝
@@ -36,7 +35,7 @@ export function formatStartupBanner(
 			: layout === "side_by_side"
 				? renderSideBySide(snapshot, config, safeWidth, theme)
 				: renderStacked(snapshot, config, safeWidth, theme);
-	return lines.map((line) => truncateToWidth(line, safeWidth, "…"));
+	return ["", ...lines.map((line) => truncateToWidth(line, safeWidth, "…"))];
 }
 
 /** startup banner 组件只保存配置、theme 和快照读取函数。 */

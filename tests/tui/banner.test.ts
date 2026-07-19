@@ -26,6 +26,7 @@ const snapshot: TuiFooterSnapshot = {
 describe("startup banner", () => {
 	it("width 120 使用 side-by-side 并包含完整状态", () => {
 		const lines = formatStartupBanner(snapshot, baseConfig, 120, plainTheme());
+		expect(lines[0]).toBe("");
 		const output = lines.join("\n");
 		expect(output).toContain("██████");
 		expect(output).toContain("workspace");
