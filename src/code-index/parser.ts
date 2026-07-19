@@ -14,9 +14,10 @@ interface RawUnit {
 	endChar: number;
 }
 
-interface LineIndex {
-	lineStarts: number[];
-	lineStartChars: number[];
+export interface LineIndex {
+	readonly lineStarts: number[];
+	readonly lineStartChars: number[];
+	readonly byteLength: number;
 }
 
 const IDENTIFIER = /[A-Za-z_$][\w$]*|[A-Za-z_][A-Za-z0-9_]*[-_][A-Za-z0-9_-]+|\d+/g;
@@ -111,9 +112,12 @@ export function lineForByte(text: string, byteOffset: number): number {
 }
 
 export function byteRangeForLines(text: string, startLine: number, endLine: number): SourceRange {
-	const index = buildLineIndex(text);
+	return byteRangeForLinesWithIndex(buildLineIndex(text), startLine, endLine);
+}
+
+export function byteRangeForLinesWithIndex(index: LineIndex, startLine: number, endLine: number): SourceRange {
 	const startByte = index.lineStarts[Math.max(0, startLine - 1)] ?? 0;
-	const endByte = index.lineStarts[endLine] ?? Buffer.byteLength(text, "utf8");
+	const endByte = index.lineStarts[endLine] ?? index.byteLength;
 	return { startLine, endLine, startByte, endByte };
 }
 
@@ -350,7 +354,7 @@ function firstNonEmptyLine(text: string): string | undefined {
 	return text.split(/\n/u).find((line) => line.trim().length > 0)?.trim();
 }
 
-function buildLineIndex(text: string): LineIndex {
+export function buildLineIndex(text: string): LineIndex {
 	const lineStarts = [0];
 	const lineStartChars = [0];
 	let bytes = 0;
@@ -363,7 +367,7 @@ function buildLineIndex(text: string): LineIndex {
 			lineStartChars.push(chars);
 		}
 	}
-	return { lineStarts, lineStartChars };
+	return { lineStarts, lineStartChars, byteLength: bytes };
 }
 
 function byteForCharWithIndex(text: string, index: LineIndex, charOffset: number): number {

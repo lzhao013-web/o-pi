@@ -37,6 +37,7 @@ export interface GrepIndexResult {
 	root: GrepSearchRoot;
 	config: FileToolsConfig;
 	files: GrepCandidateFile[];
+	scopedFiles: Array<{ path: string; absolutePath: string }>;
 	sourceText: Map<string, string>;
 	skipped: GrepSkippedFiles;
 	scanComplete: boolean;
@@ -78,6 +79,8 @@ interface WalkState {
 	matchesGlob?: (candidate: string) => boolean;
 	signal?: AbortSignal;
 	files: GrepCandidateFile[];
+	scopedFiles: Array<{ path: string; absolutePath: string }>;
+	scopedFilePaths: Set<string>;
 	sourceText: Map<string, string>;
 	skipped: Required<GrepSkippedFiles>;
 	scannedFiles: number;
@@ -121,6 +124,8 @@ export async function getGrepIndex(
 			...(matchesGlob !== undefined ? { matchesGlob } : {}),
 			signal: controller.signal,
 			files: [],
+			scopedFiles: [],
+			scopedFilePaths: new Set(),
 			sourceText: new Map(),
 			skipped: { binary: 0, invalid_utf8: 0, access_denied: 0, too_large: 0 },
 			scannedFiles: 0,
@@ -159,6 +164,7 @@ async function buildGrepIndex(state: WalkState): Promise<ToolOutcome<GrepIndexRe
 		root,
 		config,
 		files: state.files,
+		scopedFiles: state.scopedFiles,
 		sourceText: state.sourceText,
 		skipped: compactSkipped(state.skipped),
 		scanComplete: state.scanComplete,
@@ -305,12 +311,13 @@ async function walkDirectory(
 			continue;
 		}
 		if (!entry.isFile()) continue;
-		if (state.matchesGlob !== undefined && !state.matchesGlob(childSearchPath)) continue;
 		if (!ignoreBypass) {
 			if (isIgnoredPath(state.config, identity)) continue;
 			const decision = childWorkspacePath === undefined ? { ignored: false } : state.ignoreSnapshot.evaluate({ path: childWorkspacePath, kind: "file", intent: "index" });
 			if (decision.ignored) continue;
 		}
+		addScopedFile(state, childDisplayPath, childAbsolutePath);
+		if (state.matchesGlob !== undefined && !state.matchesGlob(childSearchPath)) continue;
 		await indexFile(state, childAbsolutePath, childDisplayPath, false, childSearchPath);
 	}
 }
@@ -330,8 +337,6 @@ async function indexFile(
 	state.scannedFiles += 1;
 	state.seenPaths.add(displayPath);
 
-	if (explicit && state.matchesGlob !== undefined && !state.matchesGlob(path.basename(searchPath)) && !state.matchesGlob(searchPath)) return;
-
 	let info;
 	try {
 		info = await stat(absolutePath);
@@ -345,6 +350,8 @@ async function indexFile(
 		state.skipped.too_large += 1;
 		return;
 	}
+	addScopedFile(state, displayPath, absolutePath);
+	if (explicit && state.matchesGlob !== undefined && !state.matchesGlob(path.basename(searchPath)) && !state.matchesGlob(searchPath)) return;
 
 	const cached = state.cache.files.get(displayPath);
 	const cacheCurrent = cached !== undefined && cached.size === info.size && cached.mtimeMs === info.mtimeMs;
@@ -390,6 +397,12 @@ async function indexFile(
 	state.cache.files.set(displayPath, cachedFile);
 	state.files.push(toCandidate(cachedFile));
 	state.sourceText.set(displayPath, loaded.text);
+}
+
+function addScopedFile(state: WalkState, filePath: string, absolutePath: string): void {
+	if (state.scopedFilePaths.has(filePath) || state.scopedFiles.length >= state.config.limits.grep_max_files_scanned) return;
+	state.scopedFilePaths.add(filePath);
+	state.scopedFiles.push({ path: filePath, absolutePath });
 }
 
 async function readStableText(

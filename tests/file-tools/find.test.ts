@@ -1,9 +1,15 @@
+import { createHash } from "node:crypto";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mergeRankedFindSources } from "../../src/file-tools/find/fusion.js";
+import { createFindEntry } from "../../src/file-tools/find/ranker.js";
+import { createRankingEvidence } from "../../src/file-tools/ranking-evidence.js";
 import { findWorkspaceFiles } from "../../src/file-tools/tools/find.js";
 import { countTextTokensSync } from "../../src/token-counter.js";
 import type { FindMatch, FindSuccess, ToolOutcome } from "../../src/file-tools/types.js";
+import type { RepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
+import type { RepoMapQueryCandidate, RepoMapQueryResult } from "../../src/repo-map/query.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
 let workspace: string;
@@ -43,17 +49,58 @@ async function writeFixture(filePath: string): Promise<void> {
 	await writeFile(path.join(workspace, filePath), "");
 }
 
+function repoMapCandidate(
+	filePath: string,
+	content: string,
+	reasons: RepoMapQueryCandidate["reasons"],
+	overrides: Partial<Pick<RepoMapQueryCandidate, "score" | "confidence" | "hop">> = {},
+): RepoMapQueryCandidate {
+	return {
+		path: filePath,
+		fileId: `file:${filePath}`,
+		contentHash: createHash("sha256").update(content).digest("hex"),
+		score: overrides.score ?? 900,
+		confidence: overrides.confidence ?? 1,
+		hop: overrides.hop ?? 0,
+		reasons,
+		matchedAliases: [],
+		relatedEdges: [],
+	};
+}
+
+function repoMapQuery(query: RepoMapFileToolQuery["query"]): RepoMapFileToolQuery {
+	return {
+		query,
+		async readContext() { return undefined; },
+		async syncMutation() { return undefined; },
+	};
+}
+
 describe("find", () => {
-	it("使用新 query/path schema，默认从 workspace root 搜索并拒绝旧 pattern", async () => {
+	it("路径与结构通道融合时不修改输入候选", () => {
+		const entry = createFindEntry("src/target.ts", "file");
+		const lexical = { entry, tier: 3, evidence: createRankingEvidence("lexical", 0.8) };
+		const structural = { entry, tier: 2, evidence: createRankingEvidence("structural", 0.6) };
+
+		const merged = mergeRankedFindSources([lexical], [structural]);
+
+		expect(merged).toHaveLength(1);
+		expect(merged[0]?.tier).toBe(2);
+		expect(merged[0]?.evidence.familyCount).toBe(2);
+		expect(lexical.tier).toBe(3);
+		expect(lexical.evidence.familyCount).toBe(1);
+	});
+	it("使用独立 query/glob schema，默认从 workspace root 搜索并拒绝旧 pattern", async () => {
 		await writeFixture("src/nested/a.ts");
 		await writeFixture("root.ts");
 		await writeFixture("note.txt");
 
-		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/*.ts" }));
+		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ts", glob: "**/*.ts" }));
 		expect(result.details).toMatchObject({
-			query: "**/*.ts",
+			query: "ts",
 			path: ".",
-			strategy: "glob",
+			glob: "**/*.ts",
+			strategy: "fuzzy",
 			totalMatches: 2,
 			returnedMatches: 2,
 			truncated: false,
@@ -65,12 +112,15 @@ describe("find", () => {
 		});
 	});
 
-	it("校验空值、NUL 和越界 query，但允许 workspace 外搜索路径", async () => {
+	it("校验空值、NUL 和越界 query/glob，但允许 workspace 外搜索路径", async () => {
 		expect(await findWorkspaceFiles(workspace, { query: "" })).toMatchObject({ status: "failed", error: { code: "INVALID_PATH" } });
 		expect(await findWorkspaceFiles(workspace, { query: "a\0b" })).toMatchObject({ status: "failed", error: { code: "INVALID_PATH" } });
 		expect(await findWorkspaceFiles(workspace, { query: "/tmp/a" })).toMatchObject({ status: "failed", error: { code: "INVALID_PATH" } });
 		expect(await findWorkspaceFiles(workspace, { query: "../a" })).toMatchObject({ status: "failed", error: { code: "INVALID_PATH" } });
 		expect(await findWorkspaceFiles(workspace, { path: "", query: "a" })).toMatchObject({ status: "failed", error: { code: "INVALID_PATH" } });
+		for (const glob of ["", "a\0b", "/tmp/*.ts", "../*.ts", "src/../../*.ts"]) {
+			expect(await findWorkspaceFiles(workspace, { query: "a", glob })).toMatchObject({ status: "failed", error: { code: "INVALID_PATH" } });
+		}
 		await writeFile(path.join(outside, "external.ts"), "");
 		const external = expectFindSuccess(await findWorkspaceFiles(workspace, { path: outside, query: "external.ts" }));
 		expect(external.details).toMatchObject({
@@ -126,7 +176,7 @@ describe("find", () => {
 		expect(directory.content).toContain("src/auth/");
 	});
 
-	it("精确路径优先于 glob 判断，普通括号不会自动作为 glob", async () => {
+	it("query 不再推断 glob，普通括号仍按路径名称处理", async () => {
 		await writeFixture("foo(bar)");
 		await writeFixture("fooXbar");
 
@@ -135,7 +185,20 @@ describe("find", () => {
 		expect(paths(exact.details.matches)).toEqual(["foo(bar)"]);
 	});
 
-	it("glob 支持文件和目录，且 src/**/*.ts 与 path=src query=**/*.ts 等价", async () => {
+	it("glob 会过滤 exact 命中，随后继续 query 排名", async () => {
+		await writeFixture("service.ts");
+		await writeFixture("src/service.ts");
+
+		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "service.ts", glob: "src/**/*.ts" }));
+		expect(result.details).toMatchObject({ glob: "src/**/*.ts", strategy: "fuzzy" });
+		expect(paths(result.details.matches)).toEqual(["src/service.ts"]);
+		expect(result.content).toContain("glob src/**/*.ts");
+
+		const literalFilter = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "service", glob: "src/service.ts" }));
+		expect(paths(literalFilter.details.matches)).toEqual(["src/service.ts"]);
+	});
+
+	it("glob 独立过滤文件和目录，且 root 与 scoped pattern 等价", async () => {
 		await writeFixture("src/a.ts");
 		await writeFixture("src/b.tsx");
 		await writeFixture("src/deep/c.ts");
@@ -144,18 +207,181 @@ describe("find", () => {
 		await mkdir(path.join(workspace, "packages", "web"), { recursive: true });
 		await mkdir(path.join(workspace, "db", "migrations"), { recursive: true });
 
-		const rootGlob = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "src/**/*.ts" }));
-		const scopedGlob = expectFindSuccess(await findWorkspaceFiles(workspace, { path: "src", query: "**/*.ts" }));
+		const rootGlob = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ts", glob: "src/**/*.ts" }));
+		const scopedGlob = expectFindSuccess(await findWorkspaceFiles(workspace, { path: "src", query: "ts", glob: "**/*.ts" }));
 		expect(paths(rootGlob.details.matches)).toEqual(paths(scopedGlob.details.matches));
 		expect(paths(rootGlob.details.matches)).toEqual(["src/a.ts", "src/deep/c.ts"]);
 
-		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "packages/*/" })).details.matches)).toEqual([
+		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "packages", glob: "packages/*/" })).details.matches)).toEqual([
 			"packages/api",
 			"packages/web",
 		]);
-		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/migrations" })).details.matches)).toEqual([
+		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "migrations", glob: "**/migrations" })).details.matches)).toEqual([
 			"db/migrations",
 		]);
+	});
+
+	it("glob 仅合入真实匹配的 repo-map 候选，并以直接结构证据共识重排和去重", async () => {
+		const first = "export const FirstService = 1;\n";
+		const preferred = "export const PreferredService = 1;\n";
+		const wrongExtension = "export const WrongExtension = 1;\n";
+		await writeFixture("src/a-service.ts");
+		await writeFile(path.join(workspace, "src", "a-service.ts"), first);
+		await writeFixture("src/z-service.ts");
+		await writeFile(path.join(workspace, "src", "z-service.ts"), preferred);
+		await writeFixture("src/z-service.js");
+		await writeFile(path.join(workspace, "src", "z-service.js"), wrongExtension);
+		const preferredCandidate = repoMapCandidate("src/z-service.ts", preferred, ["exact symbol", "definition"]);
+		const query = vi.fn(async (input): Promise<RepoMapQueryResult> => ({
+			root: workspace,
+			explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+			candidates: [
+				preferredCandidate,
+				{ ...preferredCandidate, reasons: ["public api"] },
+				repoMapCandidate("src/a-service.ts", first, ["definition"], { confidence: 0.5, hop: 2 }),
+				repoMapCandidate("src/z-service.js", wrongExtension, ["exact symbol"]),
+			],
+		}));
+
+		const result = expectFindSuccess(await findWorkspaceFiles(
+			workspace,
+			{ query: "service", glob: "src/*-service.ts" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(query).toHaveBeenCalledWith(expect.objectContaining({ query: "service", limit: expect.any(Number) }));
+		expect(paths(result.details.matches)).toEqual(["src/z-service.ts", "src/a-service.ts"]);
+		expect(result.details.matches.filter((match) => match.path === "src/z-service.ts")).toHaveLength(1);
+		expect(paths(result.details.matches)).not.toContain("src/z-service.js");
+		expect(result.details.related).toEqual([{
+			path: "src/z-service.js",
+			kind: "file",
+			source: "repo-map",
+			relations: ["symbol"],
+			query_match: "not_guaranteed",
+		}]);
+		expect(result.content).toContain("Related (repo-map; query match not guaranteed):");
+		expect(result.content).toContain("src/z-service.js [symbol]");
+	});
+
+	it("主 glob 结果充足时不返回结构关联通道", async () => {
+		for (const name of ["a", "b", "c", "d"]) await writeFixture(`src/${name}-service.ts`);
+		const relatedText = "export const RelatedService = true;\n";
+		await writeFile(path.join(workspace, "src", "related-service.js"), relatedText);
+		const query = vi.fn(async (input): Promise<RepoMapQueryResult> => ({
+			root: workspace,
+			explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+			candidates: [repoMapCandidate("src/related-service.js", relatedText, ["definition"])],
+		}));
+
+		const result = expectFindSuccess(await findWorkspaceFiles(
+			workspace,
+			{ query: "service", glob: "src/*-service.ts" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(result.details.matches).toHaveLength(4);
+		expect(result.details.related).toBeUndefined();
+		expect(result.content).not.toContain("query match not guaranteed");
+	});
+
+	it("主 glob 结果为空时单独返回有界的 Repo Map 关联文件", async () => {
+		const content = "export const ServiceFixture = true;\n";
+		const lowConfidence = "export const LowConfidence = true;\n";
+		await writeFixture("tests/service-fixture.ts");
+		await writeFile(path.join(workspace, "tests", "service-fixture.ts"), content);
+		await writeFile(path.join(workspace, "low-confidence.ts"), lowConfidence);
+		const query = vi.fn(async (input): Promise<RepoMapQueryResult> => ({
+			root: workspace,
+			explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+			candidates: [
+				repoMapCandidate("tests/service-fixture.ts", content, ["test"]),
+				repoMapCandidate("low-confidence.ts", lowConfidence, ["definition"], { confidence: 0.2 }),
+			],
+		}));
+
+		const result = expectFindSuccess(await findWorkspaceFiles(
+			workspace,
+			{ query: "service", glob: "src/*-service.ts" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(result.details.matches).toEqual([]);
+		expect(result.details.missingPrefix).toBe("src");
+		expect(result.details.related).toEqual([{
+			path: "tests/service-fixture.ts",
+			kind: "file",
+			source: "repo-map",
+			relations: ["test"],
+			query_match: "not_guaranteed",
+		}]);
+		expect(result.content).toContain('No matches for "service" matching "src/*-service.ts"');
+		expect(result.content).toContain("Related (repo-map; query match not guaranteed):");
+	});
+
+	it("关联文件按导航价值排序并限制为三条", async () => {
+		await mkdir(path.join(workspace, "src"));
+		const fixtures = [
+			{ path: "related-definition.ts", reason: "definition" as const },
+			{ path: "related-alias.ts", reason: "alias" as const },
+			{ path: "related-caller.ts", reason: "caller" as const },
+			{ path: "related-test.ts", reason: "test" as const },
+			{ path: "related-entrypoint.ts", reason: "entrypoint" as const },
+		];
+		for (const fixture of fixtures) await writeFile(path.join(workspace, fixture.path), `export const ${fixture.reason} = true;\n`);
+		const query = vi.fn(async (input): Promise<RepoMapQueryResult> => ({
+			root: workspace,
+			explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+			candidates: fixtures.map((fixture) => repoMapCandidate(
+				fixture.path,
+				`export const ${fixture.reason} = true;\n`,
+				[fixture.reason],
+			)),
+		}));
+
+		const result = expectFindSuccess(await findWorkspaceFiles(
+			workspace,
+			{ query: "service", glob: "src/*-service.ts" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(result.details.related?.map((item) => item.relations[0])).toEqual(["definition", "alias", "caller"]);
+		expect(result.details.related).toHaveLength(3);
+		expect(countTextTokensSync(result.content).tokens).toBeLessThanOrEqual(600);
+	});
+
+	it("glob 在 repo-map 查询失效时保持原结果", async () => {
+		await writeFixture("src/a-service.ts");
+		await writeFixture("src/z-service.ts");
+		const baseline = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "service", glob: "src/*-service.ts" }));
+		const query = vi.fn(async () => { throw new Error("repo-map unavailable"); });
+		const degraded = expectFindSuccess(await findWorkspaceFiles(
+			workspace,
+			{ query: "service", glob: "src/*-service.ts" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(query).toHaveBeenCalledTimes(1);
+		expect(degraded).toEqual(baseline);
+	});
+
+	it("repo-map 始终接收语义 query，而非从 glob 提取词", async () => {
+		await writeFixture("src/a.ts");
+		const query = vi.fn(async (): Promise<RepoMapQueryResult | undefined> => undefined);
+		const result = expectFindSuccess(await findWorkspaceFiles(
+			workspace,
+			{ query: "a", glob: "**/*.ts" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(paths(result.details.matches)).toEqual(["src/a.ts"]);
+		expect(query).toHaveBeenCalledWith(expect.objectContaining({ query: "a" }));
 	});
 
 	it("按 basename、stem、segment、path fragment 和多词 token 定位路径", async () => {
@@ -228,16 +454,17 @@ describe("find", () => {
 			for (let index = 0; index < 30; index += 1) await writeFixture(`${directory}/file-${String(index).padStart(2, "0")}.ts`);
 		}
 
-		const first = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/*.ts" }));
-		const second = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/*.ts" }));
+		const first = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "file", glob: "**/*.ts" }));
+		const second = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "file", glob: "**/*.ts" }));
 		expect(first).toEqual(second);
 		expect(first.details.totalMatches).toBe(90);
 		expect(first.details.returnedMatches).toBe(50);
 		expect(first.content).toContain("Top matches:");
 		expect(first.content).toContain("Other matches:");
-		expect(first.content).toContain("a/");
-		expect(first.content).toContain("b/");
-		expect(first.content).toContain("c/");
+		const topMatches = first.content.split("Other matches:")[0] ?? "";
+		expect(topMatches).toContain("a/");
+		expect(topMatches).toContain("b/");
+		expect(topMatches).toContain("c/");
 	});
 
 	it("输出遵守 token budget，find_result_limit 和 find_max_entries_scanned 生效", async () => {
@@ -258,7 +485,7 @@ describe("find", () => {
 		process.env.PI_FILE_TOOLS_CONFIG = configPath;
 		for (let index = 0; index < 20; index += 1) await writeFixture(`many/file-${String(index).padStart(2, "0")}.ts`);
 
-		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/*.ts" }));
+		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "file", glob: "**/*.ts" }));
 		expect(countTextTokensSync(result.content).tokens).toBeLessThanOrEqual(12);
 		expect(result.details.returnedMatches).toBeLessThanOrEqual(3);
 		expect(result.details.scannedEntries).toBe(5);
@@ -273,7 +500,7 @@ describe("find", () => {
 		await writeFile(path.join(workspace, "ignored", "keep.ts"), "");
 		await writeFile(path.join(workspace, "pruned", "hidden.ts"), "");
 
-		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/*.ts" }));
+		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ts", glob: "**/*.ts" }));
 		expect(paths(result.details.matches)).toEqual(["ignored/keep.ts"]);
 		expect(result.details.ignoredCount).toBeGreaterThanOrEqual(2);
 	});
@@ -284,12 +511,12 @@ describe("find", () => {
 		await writeFile(path.join(workspace, "ignored.ts"), "");
 		await writeFile(path.join(workspace, "ignored-dir", "secret.ts"), "");
 
-		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/*.ts" })).details.matches)).toEqual([]);
+		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ts", glob: "**/*.ts" })).details.matches)).toEqual([]);
 		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ignored.ts" })).details.matches)).toEqual(["ignored.ts"]);
-		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { path: "ignored-dir", query: "**/*.ts" })).details.matches)).toEqual([
+		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { path: "ignored-dir", query: "secret", glob: "**/*.ts" })).details.matches)).toEqual([
 			"ignored-dir/secret.ts",
 		]);
-		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ignored-dir/**/*.ts" })).details.matches)).toEqual([
+		expect(paths(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ignored-dir", glob: "ignored-dir/**/*.ts" })).details.matches)).toEqual([
 			"ignored-dir/secret.ts",
 		]);
 	});
@@ -301,12 +528,13 @@ describe("find", () => {
 		await writeFile(path.join(workspace, ".github", "workflow.yml"), "");
 		await writeFile(path.join(workspace, ".git", "config"), "");
 
-		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/*" }));
-		expect(paths(result.details.matches)).toContain(".env.example");
-		expect(paths(result.details.matches)).toContain(".github");
-		expect(paths(result.details.matches)).not.toContain(".git/config");
-		expect(result.details.scannedEntries).toBe(3);
-		expect(await findWorkspaceFiles(workspace, { path: ".git", query: "**/*" })).toMatchObject({
+		const env = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "env", glob: "**/*" }));
+		expect(paths(env.details.matches)).toContain(".env.example");
+		const git = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "git", glob: "**/*" }));
+		expect(paths(git.details.matches)).toContain(".github");
+		expect(paths(git.details.matches)).not.toContain(".git/config");
+		expect(git.details.scannedEntries).toBe(3);
+		expect(await findWorkspaceFiles(workspace, { path: ".git", query: "file", glob: "**/*" })).toMatchObject({
 			status: "failed",
 			error: { code: "PROTECTED_PATH" },
 		});
@@ -327,7 +555,7 @@ describe("find", () => {
 		} catch {
 			return;
 		}
-		expect(await findWorkspaceFiles(workspace, { path: "protected-link", query: "**/*.ts" })).toMatchObject({
+		expect(await findWorkspaceFiles(workspace, { path: "protected-link", query: "ts", glob: "**/*.ts" })).toMatchObject({
 			status: "failed",
 			error: { code: "PROTECTED_PATH" },
 		});
@@ -344,7 +572,7 @@ describe("find", () => {
 			return;
 		}
 
-		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "**/*.ts" }));
+		const result = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ts", glob: "**/*.ts" }));
 		expect(paths(result.details.matches)).toEqual(["target.ts", "real-dir/real.ts"]);
 		expect(paths(result.details.matches)).not.toContain("link.ts");
 		expect(paths(result.details.matches)).not.toContain("link-dir/real.ts");
@@ -357,13 +585,13 @@ describe("find", () => {
 
 		expect(expectFindSuccess(await findWorkspaceFiles(workspace, { query: "no-such-file" })).content).toContain("No matches");
 
-		const missing = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "srcs/**/*.ts" }));
+		const missing = expectFindSuccess(await findWorkspaceFiles(workspace, { query: "ts", glob: "srcs/**/*.ts" }));
 		expect(missing.content).toContain("Missing prefix: srcs/");
 		expect(missing.content).toContain("Nearby directory: src/");
 
 		const controller = new AbortController();
 		controller.abort();
-		expect(await findWorkspaceFiles(workspace, { query: "**/*" }, controller.signal)).toMatchObject({
+		expect(await findWorkspaceFiles(workspace, { query: "file", glob: "**/*" }, controller.signal)).toMatchObject({
 			status: "failed",
 			error: { code: "OPERATION_ABORTED" },
 		});

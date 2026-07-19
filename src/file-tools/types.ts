@@ -69,10 +69,11 @@ export interface LsParams {
 	path?: string;
 }
 
-/** find 参数：path 是 workspace-relative 搜索根，query 相对该根解释为路径、glob 或名称查询。 */
+/** find 参数：query 用于名称、路径片段与语义召回；glob 独立执行严格路径过滤。 */
 export interface FindParams {
 	query: string;
 	path?: string;
+	glob?: string;
 }
 
 export type GrepMatchMode = "auto" | "literal" | "regex";
@@ -104,6 +105,18 @@ export interface GrepRegion {
 	content?: string;
 	callees?: string[];
 	imports?: string[];
+}
+
+export interface RepoMapRelatedResult {
+	path: string;
+	kind: string;
+	start_line?: number;
+	end_line?: number;
+	symbol?: string;
+	signature?: string;
+	source: "repo-map";
+	relations: string[];
+	query_match: "not_guaranteed";
 }
 
 /** LSP 诊断摘要状态；unavailable/timeout 只表示增强不可用，不影响文件工具主状态。 */
@@ -220,6 +233,7 @@ export interface GrepSuccess {
 	approx_tokens: number;
 	truncated: boolean;
 	regions: GrepRegion[];
+	related?: RepoMapRelatedResult[];
 	skipped_files?: GrepSkippedFiles;
 	near_symbols?: string[];
 }
@@ -327,7 +341,8 @@ export interface FindCollapsedGroup {
 export interface FindDetails {
 	query: string;
 	path: string;
-	strategy: "exact" | "glob" | "fuzzy";
+	glob?: string;
+	strategy: "exact" | "fuzzy";
 	totalMatches: number;
 	returnedMatches: number;
 	scannedEntries: number;
@@ -336,6 +351,7 @@ export interface FindDetails {
 	ignoredCount: number;
 	skippedCount: number;
 	truncated: boolean;
+	related?: RepoMapRelatedResult[];
 	suggestions?: FindMatch[];
 	missingPrefix?: string;
 	nearbyDirectory?: string;

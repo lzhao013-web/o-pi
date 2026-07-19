@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import pLimit from "p-limit";
 
@@ -9,16 +9,29 @@ import { getGrepIndex } from "../grep/indexer.js";
 import { decodeTextFile } from "../core/text-file.js";
 import { packGrepResults, renderGrepSuccess, selectGrepCandidatesForPacking } from "../grep/packer.js";
 import { rankGrepRegions, type RankedGrepRegion } from "../grep/ranker.js";
-import { byteRangeForLines, type IndexedCodeUnit } from "../../code-index/parser.js";
-import type { FileToolLspHooks, FileToolLspSymbolCandidate, GrepMatchMode, GrepParams, GrepSuccess, ToolOutcome } from "../types.js";
+import { fuseRankedGrepSources } from "../grep/fusion.js";
+import { createRankingEvidence, EMPTY_RANKING_EVIDENCE, rankPercentile, rescaleRankingEvidence } from "../ranking-evidence.js";
+import { buildLineIndex, byteRangeForLinesWithIndex, extractByteRange, parseCodeUnits, type IndexedCodeUnit, type LineIndex } from "../../code-index/parser.js";
+import type { FileToolLspHooks, FileToolLspSymbolCandidate, GrepMatchMode, GrepParams, GrepSuccess, RepoMapRelatedResult, ToolOutcome } from "../types.js";
 import type { RepoMapFileToolQuery } from "../../repo-map/file-tool-query.js";
 import type { RepoMapQueryCandidate } from "../../repo-map/query.js";
+import { hasDirectRepoMapEvidence, isRepoMapNavigationCandidate, repoMapNavigationRelation } from "../repo-map-ranking.js";
 
 interface NormalizedGrepParams {
 	query: string;
 	path: string;
 	match: GrepMatchMode;
 	glob?: string;
+}
+
+interface GrepRankingContext {
+	readonly unitsByPath: Map<string, IndexedCodeUnit[]>;
+	readonly unitsByIdByPath: Map<string, Map<string, IndexedCodeUnit>>;
+	readonly sourceHashes: Map<string, string>;
+	readonly lineIndexes: Map<string, LineIndex>;
+	readonly repoMapReasons: WeakMap<RepoMapQueryCandidate, string[]>;
+	readonly lspRegions: WeakMap<FileToolLspSymbolCandidate, RankedGrepRegion>;
+	readonly repoMapRegions: WeakMap<RepoMapQueryCandidate, RankedGrepRegion>;
 }
 
 export interface GrepRuntime {
@@ -31,6 +44,8 @@ export interface GrepRuntime {
 }
 
 const SOURCE_READ_CONCURRENCY = 8;
+const GREP_RELATED_TRIGGER = 4;
+const GREP_RELATED_LIMIT = 3;
 
 /** grep 是单入口代码检索器：自动路由文本、symbol、regex 和一跳关系，返回预算内代码区域。 */
 export async function grepWorkspaceFiles(cwd: string, params: GrepParams, signal?: AbortSignal, runtime: GrepRuntime = {}): Promise<ToolOutcome<GrepSuccess>> {
@@ -41,51 +56,73 @@ export async function grepWorkspaceFiles(cwd: string, params: GrepParams, signal
 	const index = await getGrepIndex(cwd, validation, signal);
 	if (isFailed(index)) return index;
 	const sourceText = new Map(index.sourceText);
-	const filesByPath = new Map(index.files.map((file) => [file.path, file]));
+	const filesByPath = new Map<string, { path: string; absolutePath: string; size?: number }>(index.scopedFiles.map((file) => [file.path, file]));
+	for (const file of index.files) filesByPath.set(file.path, file);
+	const rankingContext = createGrepRankingContext(index.files);
 	const rankInput = {
 		query: validation.query,
 		match: validation.match,
 		files: index.files.map((file) => ({ path: file.path, units: file.index.units })),
 		sourceText,
+		lineIndexes: rankingContext.lineIndexes,
 		allowMetadataCandidates: validation.match !== "auto",
 		...(regex !== undefined ? { regex } : {}),
 	};
 	let ranked = rankGrepRegions(rankInput);
+	const repoMapQuery = repoMapQueryForGrep(validation);
 	const [repoMapResult, lspSymbolCandidates] = await Promise.all([
-		validation.match === "auto"
-			? safeRepoMapCandidates(runtime.repoMap, {
+		repoMapQuery === undefined
+			? Promise.resolve(undefined)
+			: safeRepoMapCandidates(runtime.repoMap, {
 				requestedPath: index.root.realPath,
-				query: validation.query,
-				limit: Math.max(24, index.config.limits.grep_result_limit * 6),
-			})
-			: undefined,
+				query: repoMapQuery,
+				limit: validation.match === "auto"
+					? Math.max(24, index.config.limits.grep_result_limit * 6)
+					: Math.max(16, index.config.limits.grep_result_limit * 4),
+			}),
 		safeLspSymbolCandidates(runtime.lsp, {
 			workspaceRoot: index.workspaceRoot,
 			query: validation.query,
 			path: index.root.relativePath,
 		}, validation.match),
 	]);
-	const allowedPaths = new Set(index.files.map((file) => file.path));
+	const mainPaths = new Set(index.files.map((file) => file.path));
+	const scopePaths = new Set(index.scopedFiles.map((file) => file.path));
 	const scopedRepoMapCandidates = repoMapResult?.candidates.filter((candidate) =>
-		allowedPaths.has(candidate.path)
-		&& candidate.relatedEdges.every((edge) => edge.relatedFiles.every((file) => allowedPaths.has(file.path)))) ?? [];
+		(validation.match === "auto" ? mainPaths : scopePaths).has(candidate.path)
+		&& (validation.match !== "auto"
+			|| candidate.relatedEdges.every((edge) => edge.relatedFiles.every((file) => mainPaths.has(file.path))))) ?? [];
 	const lspSourcePaths = limitedUniquePaths(lspSymbolCandidates.map((candidate) => candidate.path), index.config.limits.grep_result_limit * 4);
 	const repoMapSourcePaths = limitedUniquePaths(
-		scopedRepoMapCandidates.flatMap((candidate) => [candidate.path, ...candidate.relatedEdges.flatMap((edge) => edge.relatedFiles.map((file) => file.path))]),
-		index.config.limits.grep_result_limit * 10,
+		scopedRepoMapCandidates.flatMap((candidate) => validation.match === "auto"
+			? [candidate.path, ...candidate.relatedEdges.flatMap((edge) => edge.relatedFiles.map((file) => file.path))]
+			: [candidate.path]),
+		index.config.limits.grep_result_limit * (validation.match === "auto" ? 10 : 4),
 	);
+	const candidatePaths = await filterCandidateSourcePaths(
+		limitedUniquePaths([...lspSourcePaths, ...repoMapSourcePaths], lspSourcePaths.length + repoMapSourcePaths.length),
+		filesByPath,
+		index.config.limits.grep_max_file_bytes,
+		signal,
+	);
+	if (isFailed(candidatePaths)) return candidatePaths;
 	const candidateSource = await loadCandidateSourceText(
 		sourceText,
 		filesByPath,
-		limitedUniquePaths([...lspSourcePaths, ...repoMapSourcePaths], lspSourcePaths.length + repoMapSourcePaths.length),
+		candidatePaths,
 		signal,
 		runtime,
 	);
 	if (isFailed(candidateSource)) return candidateSource;
-	const sourceHashes = new Map<string, string>();
-	let lspCandidates = lspRegionsFromCandidates(lspSymbolCandidates, validation.match, sourceText, allowedPaths);
-	let repoMapCandidates = repoMapRegionsFromCandidates(scopedRepoMapCandidates, index.files, sourceText, sourceHashes);
-	const regions = mergeRanked(mergeRanked(ranked.regions, lspCandidates), repoMapCandidates);
+	let lspCandidates = lspRegionsFromCandidates(lspSymbolCandidates, validation.match, sourceText, mainPaths, rankingContext);
+	let repoMapCandidates = repoMapRegionsFromCandidates(
+		scopedRepoMapCandidates,
+		sourceText,
+		rankingContext,
+		validation,
+		regex,
+	);
+	const regions = fuseRankedGrepSources(ranked.regions, lspCandidates, repoMapCandidates);
 	const hydrated = await loadCandidateSourceText(sourceText, filesByPath, hydrationPaths(regions, index.config.limits.grep_result_limit), signal, runtime);
 	if (isFailed(hydrated)) return hydrated;
 	ranked = rankGrepRegions({
@@ -93,9 +130,15 @@ export async function grepWorkspaceFiles(cwd: string, params: GrepParams, signal
 		sourceText,
 		allowMetadataCandidates: false,
 	});
-	lspCandidates = lspRegionsFromCandidates(lspSymbolCandidates, validation.match, sourceText, allowedPaths);
-	repoMapCandidates = repoMapRegionsFromCandidates(scopedRepoMapCandidates, index.files, sourceText, sourceHashes);
-	let finalRegions = mergeRanked(mergeRanked(ranked.regions, lspCandidates), repoMapCandidates);
+	lspCandidates = lspRegionsFromCandidates(lspSymbolCandidates, validation.match, sourceText, mainPaths, rankingContext);
+	repoMapCandidates = repoMapRegionsFromCandidates(
+		scopedRepoMapCandidates,
+		sourceText,
+		rankingContext,
+		validation,
+		regex,
+	);
+	let finalRegions = fuseRankedGrepSources(ranked.regions, lspCandidates, repoMapCandidates);
 	if (validation.match !== "auto" && finalRegions.length === 0) {
 		const scanned = await scanFallbackSourceText({
 			sourceText,
@@ -113,11 +156,21 @@ export async function grepWorkspaceFiles(cwd: string, params: GrepParams, signal
 			sourceText,
 			allowMetadataCandidates: false,
 		});
-		finalRegions = mergeRanked(mergeRanked(ranked.regions, lspCandidates), repoMapCandidates);
+		finalRegions = fuseRankedGrepSources(ranked.regions, lspCandidates, repoMapCandidates);
 	}
 	const strategy = [...ranked.strategy];
 	if (lspCandidates.length > 0) strategy.push("lsp");
 	if (repoMapCandidates.length > 0) strategy.push("repo-map");
+	const related = validation.match !== "auto" && finalRegions.length < GREP_RELATED_TRIGGER
+		? repoMapRelatedRegionsFromCandidates(
+			scopedRepoMapCandidates,
+			sourceText,
+			rankingContext,
+			mainPaths,
+			{ query: validation.query, match: validation.match },
+			regex,
+		)
+		: [];
 	return packGrepResults({
 		query: validation.query,
 		path: index.root.relativePath,
@@ -131,7 +184,47 @@ export async function grepWorkspaceFiles(cwd: string, params: GrepParams, signal
 		skipped: index.skipped,
 		scanComplete: index.scanComplete,
 		nearSymbols: ranked.nearSymbols,
+		...(related.length > 0 ? { related } : {}),
 	});
+}
+
+function createGrepRankingContext(files: Array<{ path: string; index: { units: IndexedCodeUnit[] } }>): GrepRankingContext {
+	const unitsByPath = new Map<string, IndexedCodeUnit[]>();
+	const unitsByIdByPath = new Map<string, Map<string, IndexedCodeUnit>>();
+	for (const file of files) {
+		unitsByPath.set(file.path, file.index.units);
+	}
+	return {
+		unitsByPath,
+		unitsByIdByPath,
+		sourceHashes: new Map(),
+		lineIndexes: new Map(),
+		repoMapReasons: new WeakMap(),
+		lspRegions: new WeakMap(),
+		repoMapRegions: new WeakMap(),
+	};
+}
+
+async function filterCandidateSourcePaths(
+	paths: string[],
+	filesByPath: Map<string, { path: string; absolutePath: string; size?: number }>,
+	maxBytes: number,
+	signal: AbortSignal | undefined,
+): Promise<ToolOutcome<string[]>> {
+	const limit = pLimit(SOURCE_READ_CONCURRENCY);
+	const checked = await Promise.all(paths.map((filePath) => limit(async () => {
+		if (signal?.aborted) return "aborted" as const;
+		const file = filesByPath.get(filePath);
+		if (file === undefined) return false;
+		if (file.size !== undefined) return file.size <= maxBytes;
+		try {
+			return (await stat(file.absolutePath)).size <= maxBytes;
+		} catch {
+			return false;
+		}
+	})));
+	if (checked.includes("aborted")) return fail("OPERATION_ABORTED", "grep was aborted.");
+	return paths.filter((_filePath, index) => checked[index] === true);
 }
 
 async function safeRepoMapCandidates(
@@ -177,6 +270,13 @@ function compileRegex(query: string): ToolOutcome<RegExp> {
 			details: { error: error instanceof Error ? error.message : String(error) },
 		});
 	}
+}
+
+/** regex 仅用最长字面标识片段召回图候选；严格验证仍使用原表达式。 */
+function repoMapQueryForGrep(params: Pick<NormalizedGrepParams, "query" | "match">): string | undefined {
+	if (params.match !== "regex") return params.query;
+	return params.query.match(/[A-Za-z_$][A-Za-z0-9_$]{2,}/gu)
+		?.sort((left, right) => right.length - left.length || compareStableString(left, right))[0];
 }
 
 async function loadCandidateSourceText(
@@ -242,6 +342,7 @@ function lspRegionsFromCandidates(
 	match: GrepMatchMode,
 	sourceText: Map<string, string>,
 	allowedPaths: Set<string>,
+	context: GrepRankingContext,
 ): RankedGrepRegion[] {
 	if (match !== "auto") return [];
 	const ranked: RankedGrepRegion[] = [];
@@ -249,8 +350,13 @@ function lspRegionsFromCandidates(
 		if (!allowedPaths.has(candidate.path)) continue;
 		const text = sourceText.get(candidate.path);
 		if (text === undefined) continue;
-		const range = byteRangeForLines(text, candidate.start_line, candidate.end_line);
-		ranked.push({
+		const cached = context.lspRegions.get(candidate);
+		if (cached !== undefined) {
+			ranked.push(cached);
+			continue;
+		}
+		const range = cachedByteRangeForLines(context, candidate.path, text, candidate.start_line, candidate.end_line);
+		const region: RankedGrepRegion = {
 			id: `${candidate.path}:${range.startByte}:${range.endByte}:lsp:${candidate.symbol}`,
 			path: candidate.path,
 			kind: candidate.kind,
@@ -260,41 +366,56 @@ function lspRegionsFromCandidates(
 			endByte: range.endByte,
 			symbol: candidate.symbol,
 			...(candidate.signature !== undefined ? { signature: candidate.signature } : {}),
-			score: candidate.reason === "lsp exact symbol" ? 980 : 720,
+			tier: candidate.reason === "lsp exact symbol" && candidate.symbol.includes(".") ? 1 : 3,
+			evidence: createRankingEvidence("semantic", 1),
 			reasons: [candidate.reason],
 			matchLines: [candidate.start_line],
 			callees: [],
 			imports: [],
-		});
+			lexicalRelevance: 0,
+			pathRelevance: 0,
+		};
+		context.lspRegions.set(candidate, region);
+		ranked.push(region);
 	}
-	return ranked;
+	return withSourcePercentiles(ranked);
 }
 
 function repoMapRegionsFromCandidates(
 	candidates: RepoMapQueryCandidate[],
-	files: Array<{ path: string; contentHash: string; index: { units: IndexedCodeUnit[] } }>,
 	sourceText: ReadonlyMap<string, string>,
-	sourceHashes: Map<string, string>,
+	context: GrepRankingContext,
+	query: Pick<NormalizedGrepParams, "query" | "match">,
+	regex: RegExp | undefined,
 ): RankedGrepRegion[] {
-	const filesByPath = new Map(files.map((file) => [file.path, file]));
 	const result: RankedGrepRegion[] = [];
 	for (const candidate of candidates) {
-		const file = filesByPath.get(candidate.path);
+		const cached = context.repoMapRegions.get(candidate);
+		if (cached !== undefined) {
+			result.push(cached);
+			continue;
+		}
 		const text = sourceText.get(candidate.path);
-		if (file === undefined || text === undefined || candidate.contentHash === undefined) continue;
-		if (sourceHash(candidate.path, text, sourceHashes) !== candidate.contentHash) continue;
-		if (!candidate.relatedEdges.every((edge) => edge.relatedFiles.every((related) => {
+		const units = context.unitsByPath.get(candidate.path);
+		if (units === undefined || text === undefined || candidate.contentHash === undefined) continue;
+		if (sourceHash(candidate.path, text, context.sourceHashes) !== candidate.contentHash) continue;
+		if (query.match === "auto" && !candidate.relatedEdges.every((edge) => edge.relatedFiles.every((related) => {
 			const relatedText = sourceText.get(related.path);
 			return related.contentHash !== undefined
 				&& relatedText !== undefined
-				&& sourceHash(related.path, relatedText, sourceHashes) === related.contentHash;
+				&& sourceHash(related.path, relatedText, context.sourceHashes) === related.contentHash;
 		}))) continue;
 		const liveUnit = candidate.symbol === undefined
-			? file.index.units[0]
-			: file.index.units.find((unit) => unit.id === candidate.symbol?.id);
+			? units[0]
+			: cachedUnitById(context, candidate.path, candidate.symbol.id);
 		if (liveUnit === undefined) continue;
-		const reasons = repoMapReasons(candidate);
-		result.push({
+		const matchLines = query.match === "auto" ? [] : strictMatchLines(liveUnit, text, query.query, query.match, regex);
+		if (query.match !== "auto" && matchLines.length === 0) continue;
+		const repoReasons = cachedRepoMapReasons(context, candidate);
+		const reasons = query.match === "auto"
+			? repoReasons
+			: [query.match === "regex" ? "regex" : "exact literal", ...repoReasons];
+		const region: RankedGrepRegion = {
 			id: liveUnit.id,
 			path: liveUnit.path,
 			kind: liveUnit.kind,
@@ -304,13 +425,91 @@ function repoMapRegionsFromCandidates(
 			endByte: liveUnit.endByte,
 			...(liveUnit.qualifiedName ?? liveUnit.name ? { symbol: liveUnit.qualifiedName ?? liveUnit.name } : {}),
 			...(liveUnit.signature !== undefined ? { signature: liveUnit.signature } : {}),
-			score: repoMapGrepScore(candidate),
-			reasons,
-			matchLines: [],
+			tier: repoMapGrepTier(candidate, query.match, liveUnit, query.query, regex),
+			evidence: hasDirectRepoMapEvidence(candidate) ? createRankingEvidence("structural", 1) : EMPTY_RANKING_EVIDENCE,
+			reasons: [...new Set(reasons)],
+			matchLines,
 			unit: liveUnit,
 			callees: candidate.reasons.includes("caller") ? liveUnit.calls.slice(0, 6) : [],
 			imports: candidate.reasons.includes("import") ? liveUnit.imports.slice(0, 4) : [],
+			repoMap: true,
+			lexicalRelevance: 0,
+			pathRelevance: 0,
+		};
+		context.repoMapRegions.set(candidate, region);
+		result.push(region);
+	}
+	return withSourcePercentiles(result);
+}
+
+function withSourcePercentiles(regions: RankedGrepRegion[]): RankedGrepRegion[] {
+	for (const [index, region] of regions.entries()) {
+		region.evidence = rescaleRankingEvidence(region.evidence, rankPercentile(index, regions.length));
+	}
+	return regions;
+}
+
+function repoMapRelatedRegionsFromCandidates(
+	candidates: RepoMapQueryCandidate[],
+	sourceText: ReadonlyMap<string, string>,
+	context: GrepRankingContext,
+	mainPaths: ReadonlySet<string>,
+	query: Pick<NormalizedGrepParams, "query" | "match"> & { match: Exclude<GrepMatchMode, "auto"> },
+	regex: RegExp | undefined,
+): RepoMapRelatedResult[] {
+	const byId = new Map<string, { result: RepoMapRelatedResult; order: number }>();
+	for (const [order, candidate] of candidates.entries()) {
+		const relation = repoMapNavigationRelation(candidate);
+		if (!isRepoMapNavigationCandidate(candidate) || relation === undefined) continue;
+		const text = sourceText.get(candidate.path);
+		if (text === undefined || candidate.contentHash === undefined) continue;
+		if (sourceHash(candidate.path, text, context.sourceHashes) !== candidate.contentHash) continue;
+		const units = cachedUnitsForPath(context, candidate.path, text);
+		const unit = candidate.symbol === undefined
+			? units[0]
+			: cachedUnitById(context, candidate.path, candidate.symbol.id);
+		if (unit === undefined) continue;
+		if (mainPaths.has(unit.path) && strictMatchLines(unit, text, query.query, query.match, regex).length > 0) continue;
+		const existing = byId.get(unit.id);
+		if (existing !== undefined) {
+			if (existing.result.relations.length < 2 && !existing.result.relations.includes(relation)) existing.result.relations.push(relation);
+			existing.order = Math.min(existing.order, order);
+			continue;
+		}
+		byId.set(unit.id, {
+			result: {
+				path: unit.path,
+				kind: unit.kind,
+				start_line: unit.startLine,
+				end_line: unit.endLine,
+				...(unit.qualifiedName ?? unit.name ? { symbol: unit.qualifiedName ?? unit.name } : {}),
+				...(unit.signature !== undefined ? { signature: unit.signature } : {}),
+				source: "repo-map",
+				relations: [relation],
+				query_match: "not_guaranteed",
+			},
+			order,
 		});
+	}
+	return [...byId.values()]
+		.sort((left, right) => left.order - right.order || compareStableString(left.result.path, right.result.path) || (left.result.start_line ?? 0) - (right.result.start_line ?? 0))
+		.slice(0, GREP_RELATED_LIMIT)
+		.map((item) => item.result);
+}
+
+function strictMatchLines(
+	unit: IndexedCodeUnit,
+	text: string,
+	query: string,
+	match: Exclude<GrepMatchMode, "auto">,
+	regex: RegExp | undefined,
+): number[] {
+	const content = extractByteRange(text, unit.startByte, unit.endByte);
+	const result: number[] = [];
+	for (const [index, line] of content.split(/\n/u).entries()) {
+		const matched = match === "literal" ? line.includes(query) : regex?.test(line) === true;
+		if (regex !== undefined) regex.lastIndex = 0;
+		if (matched) result.push(unit.startLine + index);
 	}
 	return result;
 }
@@ -340,19 +539,47 @@ function primaryRepoMapReason(candidate: RepoMapQueryCandidate): string {
 	return candidate.reasons[0] ?? "related";
 }
 
-function repoMapGrepScore(candidate: RepoMapQueryCandidate): number {
-	if (candidate.reasons.includes("exact qualified symbol")) return 940;
-	if (candidate.reasons.includes("exact symbol") || candidate.reasons.includes("short symbol")) return 880;
-	if (candidate.reasons.includes("alias")) return Math.max(420, 760 - candidate.hop * 150);
-	if (candidate.reasons.includes("definition")) return candidate.reasons.includes("export") ? 840 : 800;
-	if (candidate.reasons.includes("public api")) return 780;
-	if (candidate.reasons.includes("registration") || candidate.reasons.includes("entrypoint")) return 700;
-	if (candidate.reasons.includes("component") || candidate.reasons.includes("package")) return 520;
-	if (candidate.reasons.includes("caller")) return 390;
-	if (candidate.reasons.includes("reference")) return 360;
-	if (candidate.reasons.includes("callee")) return 340;
-	if (candidate.reasons.includes("import")) return 250;
-	return 220;
+function cachedRepoMapReasons(context: GrepRankingContext, candidate: RepoMapQueryCandidate): string[] {
+	const cached = context.repoMapReasons.get(candidate);
+	if (cached !== undefined) return cached;
+	const reasons = repoMapReasons(candidate);
+	context.repoMapReasons.set(candidate, reasons);
+	return reasons;
+}
+
+function cachedUnitsForPath(context: GrepRankingContext, filePath: string, text: string): IndexedCodeUnit[] {
+	const cached = context.unitsByPath.get(filePath);
+	if (cached !== undefined) return cached;
+	const units = parseCodeUnits(filePath, text).units;
+	context.unitsByPath.set(filePath, units);
+	context.unitsByIdByPath.set(filePath, new Map(units.map((unit) => [unit.id, unit])));
+	return units;
+}
+
+function cachedUnitById(context: GrepRankingContext, filePath: string, unitId: string): IndexedCodeUnit | undefined {
+	let byId = context.unitsByIdByPath.get(filePath);
+	if (byId === undefined) {
+		const units = context.unitsByPath.get(filePath);
+		if (units === undefined) return undefined;
+		byId = new Map(units.map((unit) => [unit.id, unit]));
+		context.unitsByIdByPath.set(filePath, byId);
+	}
+	return byId.get(unitId);
+}
+
+function cachedByteRangeForLines(
+	context: GrepRankingContext,
+	filePath: string,
+	text: string,
+	startLine: number,
+	endLine: number,
+) {
+	let lineIndex = context.lineIndexes.get(filePath);
+	if (lineIndex === undefined) {
+		lineIndex = buildLineIndex(text);
+		context.lineIndexes.set(filePath, lineIndex);
+	}
+	return byteRangeForLinesWithIndex(lineIndex, startLine, endLine);
 }
 
 function hashText(text: string): string {
@@ -452,20 +679,31 @@ async function fileHasLineMatch(
 	}
 }
 
-function mergeRanked(primary: RankedGrepRegion[], lsp: RankedGrepRegion[]): RankedGrepRegion[] {
-	if (lsp.length === 0) return primary;
-	const byId = new Map<string, RankedGrepRegion>();
-	for (const region of [...primary, ...lsp].sort((left, right) => right.score - left.score)) {
-		const existing = byId.get(region.id);
-		if (existing === undefined) {
-			byId.set(region.id, region);
-			continue;
-		}
-		for (const reason of region.reasons) if (!existing.reasons.includes(reason)) existing.reasons.push(reason);
-		for (const callee of region.callees) if (!existing.callees.includes(callee)) existing.callees.push(callee);
-		for (const imported of region.imports) if (!existing.imports.includes(imported)) existing.imports.push(imported);
+function repoMapGrepTier(
+	candidate: RepoMapQueryCandidate,
+	match: GrepMatchMode,
+	unit: IndexedCodeUnit,
+	query: string,
+	regex: RegExp | undefined,
+): number {
+	if (match !== "auto") {
+		const values = [unit.name, unit.qualifiedName, unit.signature].filter((value): value is string => value !== undefined);
+		const direct = match === "regex"
+			? values.some((value) => regexMatchesValue(value, regex))
+			: values.some((value) => value.includes(query));
+		return direct ? 0 : 1;
 	}
-	return Array.from(byId.values()).sort((left, right) => right.score - left.score || compareStableString(left.path, right.path) || left.startLine - right.startLine);
+	if (candidate.hop === 0 && candidate.reasons.includes("exact qualified symbol")) return 1;
+	if (candidate.hop === 0 && (candidate.reasons.includes("exact symbol") || candidate.reasons.includes("short symbol") || candidate.reasons.includes("definition"))) return 3;
+	if (candidate.hop === 0) return 5;
+	return candidate.hop === 1 ? 6 : 7;
+}
+
+function regexMatchesValue(value: string, regex: RegExp | undefined): boolean {
+	if (regex === undefined) return false;
+	const matched = regex.test(value);
+	regex.lastIndex = 0;
+	return matched;
 }
 
 function looksLikeSymbol(query: string): boolean {

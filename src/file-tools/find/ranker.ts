@@ -1,11 +1,13 @@
 import path from "node:path";
 import Fuse, { type FuseResult } from "fuse.js";
 
+import { createRankingEvidence, EMPTY_RANKING_EVIDENCE, rankPercentile, type RankingEvidence } from "../ranking-evidence.js";
 import type { FindEntry } from "../types.js";
 
 export interface RankedFindEntry {
 	entry: FindEntry;
-	score: number;
+	tier: number;
+	evidence: RankingEvidence;
 }
 
 export interface RankedFindEntries {
@@ -31,21 +33,21 @@ interface FuseFindDocument {
 	tokens: string[];
 }
 
+interface ExactRankedEntry extends RankedFindEntry {
+	caseExact: boolean;
+}
+
 interface FuseRankedEntry extends RankedFindEntry {
 	matchScore: number;
+	coveredTokens: number;
+	exactTokens: number;
+	testMatch: boolean;
+	caseMatch: boolean;
 }
 
 const TEST_TOKENS = new Set(["test", "spec", "fixture", "fixtures", "mock", "mocks"]);
 const FUSE_MATCH_THRESHOLD = 0.38;
 const FUSE_SUGGESTION_THRESHOLD = 0.55;
-const EXACT_PATH_SCORE = 100_000;
-const EXACT_BASENAME_SCORE = 90_000;
-const SMART_CASE_WORD_SCORE = 88_000;
-const EXACT_STEM_SCORE = 86_000;
-const EXACT_SEGMENT_SCORE = 82_000;
-const BASENAME_PREFIX_SCORE = 72_000;
-const BASENAME_CONTAINS_SCORE = 68_000;
-const PATH_CONTAINS_SCORE = 58_000;
 
 /** 构造路径条目；basename、segments 和 tokens 是 find 排序的唯一索引信息。 */
 export function createFindEntry(workspacePath: string, kind: FindEntry["kind"]): FindEntry {
@@ -89,52 +91,35 @@ export function rankFindEntries(entries: FindEntry[], query: string, rootPath: s
 	return { matches: strict, suggestions };
 }
 
-/** Glob 结果仍统一评分；glob 符号只用于路由，排序主要看静态字面量和路径短度。 */
-export function rankGlobEntries(entries: FindEntry[], query: string, rootPath: string): RankedFindEntry[] {
-	const rankingQuery = query.replace(/[!*?[\]{}()+@|,]/gu, " ");
-	const queryTokens = tokenizeQuery(rankingQuery);
-	if (queryTokens.tokens.length === 0) {
-		return entries.map((entry) => ({ entry, score: globFallbackScore(entry) })).sort(compareRankedEntries);
-	}
-	const exact = rankExactEntries(entries, queryTokens, rootPath);
-	const exactPaths = new Set(exact.map((item) => item.entry.path));
-	const fuzzy = entries
-		.filter((entry) => !exactPaths.has(entry.path))
-		.map((entry) => ({ entry, coverage: tokenCoverage(queryTokens.tokens, entry.tokens) }))
-		.filter((item) => item.coverage > 0)
-		.map(({ entry, coverage }) => ({ entry, score: globFallbackScore(entry) + coverage * 1_000 }));
-	return [...exact, ...fuzzy].sort(compareRankedEntries);
-}
-
 function rankExactEntries(entries: FindEntry[], query: QueryTokens, rootPath: string): RankedFindEntry[] {
-	return entries
-		.map((entry) => {
-			const score = exactScore(entry, query, rootPath);
-			return score === 0 ? undefined : { entry, score };
+	const ranked = entries
+		.map((entry): ExactRankedEntry | undefined => {
+			const baseTier = exactTier(entry, query, rootPath);
+			if (baseTier === undefined) return undefined;
+			const caseExact = smartCaseMatch(entry, query.raw, searchRelativePath(rootPath, entry.path));
+			return {
+				entry,
+				tier: query.smartCase && !caseExact ? Math.min(3, baseTier + 1) : baseTier,
+				evidence: EMPTY_RANKING_EVIDENCE,
+				caseExact,
+			};
 		})
-		.filter((item): item is RankedFindEntry => item !== undefined)
-		.sort(compareRankedEntries);
+		.filter((item): item is ExactRankedEntry => item !== undefined)
+		.sort(compareExactEntries);
+	return withPathEvidence(ranked);
 }
 
-function exactScore(entry: FindEntry, query: QueryTokens, rootPath: string): number {
+function exactTier(entry: FindEntry, query: QueryTokens, rootPath: string): number | undefined {
 	const searchPath = searchRelativePath(rootPath, entry.path);
 	const normalizedPath = normalizeToken(searchPath);
 	const basename = normalizeToken(entry.basename);
 	const stem = normalizeToken(entry.stem);
 	const segments = entry.segments.map(normalizeToken);
-	const exactCaseBonus = query.smartCase ? smartCaseBonus(entry, query.raw, searchPath) : 0;
-
-	if (normalizedPath === query.normalized) return EXACT_PATH_SCORE + exactCaseBonus - entry.depth;
-	if (basename === query.normalized) return EXACT_BASENAME_SCORE + kindBonus(entry) + exactCaseBonus - entry.depth;
-	if (query.smartCase && (entry.basename.startsWith(query.raw) || entry.stem.startsWith(query.raw))) {
-		return SMART_CASE_WORD_SCORE + kindBonus(entry) + exactCaseBonus - entry.depth;
-	}
-	if (stem === query.normalized) return EXACT_STEM_SCORE + kindBonus(entry) + exactCaseBonus - entry.depth;
-	if (segments.includes(query.normalized)) return EXACT_SEGMENT_SCORE + kindBonus(entry) + exactCaseBonus - entry.depth;
-	if (basename.startsWith(query.normalized)) return BASENAME_PREFIX_SCORE + query.normalized.length * 10 + exactCaseBonus - entry.depth;
-	if (basename.includes(query.normalized)) return BASENAME_CONTAINS_SCORE + query.normalized.length * 8 + exactCaseBonus - entry.depth;
-	if (normalizedPath.includes(query.normalized)) return PATH_CONTAINS_SCORE + query.normalized.length * 4 + exactCaseBonus - entry.depth;
-	return 0;
+	if (normalizedPath === query.normalized) return 0;
+	if (basename === query.normalized || stem === query.normalized) return 1;
+	if (segments.includes(query.normalized) || basename.startsWith(query.normalized)) return 2;
+	if (basename.includes(query.normalized) || normalizedPath.includes(query.normalized)) return 3;
+	return undefined;
 }
 
 function rankFuse(entries: FindEntry[], query: QueryTokens, rootPath: string): FuseRankedEntry[] {
@@ -157,32 +142,30 @@ function rankFuse(entries: FindEntry[], query: QueryTokens, rootPath: string): F
 			{ name: "path", weight: 0.1 },
 		],
 	});
-	return fuse.search(query.raw)
+	const ranked = fuse.search(query.raw)
 		.filter((result) => (result.score ?? 1) <= FUSE_SUGGESTION_THRESHOLD)
 		.map((result) => rankedFromFuse(result, query))
-		.sort(compareRankedEntries);
+		.sort(compareFuseEntries);
+	return withPathEvidence(ranked);
 }
 
 function rankedFromFuse(result: FuseResult<FuseFindDocument>, query: QueryTokens): FuseRankedEntry {
 	const entry = result.item.entry;
 	const fuseScore = result.score ?? 1;
-	let score = 50_000 - fuseScore * 20_000;
-	score += tokenCoverage(query.tokens, entry.tokens) * 750;
-	score += exactTokenCoverage(query.tokens, entry.tokens) * 2_000;
-	if (query.testIntent && hasTestPath(entry)) score += 2_000;
-	if (query.smartCase) score += smartCaseBonus(entry, query.raw, result.item.searchPath);
-	score += kindBonus(entry);
-	score -= entry.depth * 5;
-	score -= entry.path.length / 100;
-	return { entry, score, matchScore: fuseScore };
+	return {
+		entry,
+		tier: 4,
+		evidence: EMPTY_RANKING_EVIDENCE,
+		matchScore: fuseScore,
+		coveredTokens: tokenCoverage(query.tokens, entry.tokens),
+		exactTokens: exactTokenCoverage(query.tokens, entry.tokens),
+		testMatch: query.testIntent && hasTestPath(entry),
+		caseMatch: query.smartCase && smartCaseMatch(entry, query.raw, result.item.searchPath),
+	};
 }
 
-function withoutMatchScore({ entry, score }: FuseRankedEntry): RankedFindEntry {
-	return { entry, score };
-}
-
-function globFallbackScore(entry: FindEntry): number {
-	return 10_000 - entry.path.length * 10 - entry.depth;
+function withoutMatchScore({ entry, tier, evidence }: FuseRankedEntry): RankedFindEntry {
+	return { entry, tier, evidence };
 }
 
 function toFuseDocument(entry: FindEntry, rootPath: string): FuseFindDocument {
@@ -220,16 +203,12 @@ function tokenIndex(entryTokens: string[], queryToken: string): number {
 	return entryTokens.findIndex((token) => token.startsWith(queryToken) || token.includes(queryToken));
 }
 
-function smartCaseBonus(entry: FindEntry, rawQuery: string, searchPath: string): number {
-	if (searchPath === rawQuery) return 1_500;
-	if (entry.basename === rawQuery) return 1_200;
-	if (entry.stem === rawQuery) return 1_000;
-	if (entry.segments.includes(rawQuery)) return 800;
-	return searchPath.includes(rawQuery) ? 300 : 0;
-}
-
-function kindBonus(entry: FindEntry): number {
-	return entry.kind === "directory" ? 500 : 0;
+function smartCaseMatch(entry: FindEntry, rawQuery: string, searchPath: string): boolean {
+	return searchPath === rawQuery
+		|| entry.basename === rawQuery
+		|| entry.stem === rawQuery
+		|| entry.segments.includes(rawQuery)
+		|| searchPath.includes(rawQuery);
 }
 
 function hasTestPath(entry: FindEntry): boolean {
@@ -297,14 +276,34 @@ function unique(values: string[]): string[] {
 	return result;
 }
 
-function compareRankedEntries(left: RankedFindEntry, right: RankedFindEntry): number {
-	const score = right.score - left.score;
-	if (score !== 0) return score;
-	const length = left.entry.path.length - right.entry.path.length;
+function withPathEvidence<T extends RankedFindEntry>(ranked: T[]): T[] {
+	for (const [index, item] of ranked.entries()) {
+		item.evidence = createRankingEvidence("lexical", rankPercentile(index, ranked.length));
+	}
+	return ranked;
+}
+
+function compareExactEntries(left: ExactRankedEntry, right: ExactRankedEntry): number {
+	return left.tier - right.tier
+		|| Number(right.caseExact) - Number(left.caseExact)
+		|| compareStableEntry(left.entry, right.entry);
+}
+
+function compareFuseEntries(left: FuseRankedEntry, right: FuseRankedEntry): number {
+	return Number(right.testMatch) - Number(left.testMatch)
+		|| Number(right.caseMatch) - Number(left.caseMatch)
+		|| right.exactTokens - left.exactTokens
+		|| right.coveredTokens - left.coveredTokens
+		|| left.matchScore - right.matchScore
+		|| compareStableEntry(left.entry, right.entry);
+}
+
+function compareStableEntry(left: FindEntry, right: FindEntry): number {
+	const length = left.path.length - right.path.length;
 	if (length !== 0) return length;
-	const depth = left.entry.depth - right.entry.depth;
+	const depth = left.depth - right.depth;
 	if (depth !== 0) return depth;
-	return compareStableString(left.entry.path, right.entry.path);
+	return compareStableString(left.path, right.path);
 }
 
 function compareStableString(left: string, right: string): number {

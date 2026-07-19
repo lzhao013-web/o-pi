@@ -6,6 +6,7 @@ import type {
 	ReadFileSuccess,
 	ReadImageSuccess,
 	ReadSuccess,
+	RepoMapRelatedResult,
 	WriteSuccess,
 } from "../types.js";
 
@@ -27,11 +28,24 @@ export function isFindDetails(value: unknown): value is FindDetails {
 	return isPlainRecord(value)
 		&& typeof value["query"] === "string"
 		&& typeof value["path"] === "string"
-		&& (value["strategy"] === "exact" || value["strategy"] === "glob" || value["strategy"] === "fuzzy")
+		&& (value["glob"] === undefined || typeof value["glob"] === "string")
+		&& (value["strategy"] === "exact" || value["strategy"] === "fuzzy")
 		&& typeof value["totalMatches"] === "number"
 		&& typeof value["scannedEntries"] === "number"
 		&& Array.isArray(value["matches"])
-		&& Array.isArray(value["collapsedGroups"]);
+		&& Array.isArray(value["collapsedGroups"])
+		&& (value["related"] === undefined || isRepoMapRelatedResults(value["related"]));
+}
+
+export function isRepoMapRelatedResults(value: unknown): value is RepoMapRelatedResult[] {
+	return Array.isArray(value) && value.every((item) =>
+		isPlainRecord(item)
+		&& typeof item["path"] === "string"
+		&& typeof item["kind"] === "string"
+		&& item["source"] === "repo-map"
+		&& item["query_match"] === "not_guaranteed"
+		&& Array.isArray(item["relations"])
+		&& item["relations"].every((relation) => typeof relation === "string"));
 }
 
 export function isLsSuccess(value: unknown): value is LsSuccess {

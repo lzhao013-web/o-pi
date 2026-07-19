@@ -1,6 +1,6 @@
 import { createPathIndex, sortedChildren, type PathIndexNode } from "./path-index.js";
 import { countTextTokensSync } from "../../token-counter.js";
-import type { FindCollapsedGroup, FindDetails, FindMatch } from "../types.js";
+import type { FindCollapsedGroup, FindDetails, FindMatch, RepoMapRelatedResult } from "../types.js";
 
 const NARROW_RESULT_LIMIT = 20;
 const TOP_MATCH_LIMIT = 12;
@@ -8,6 +8,7 @@ const TOP_MATCH_LIMIT = 12;
 export interface RenderFindInput {
 	query: string;
 	path: string;
+	glob?: string;
 	strategy: FindDetails["strategy"];
 	totalMatches: number;
 	totalFiles: number;
@@ -18,6 +19,7 @@ export interface RenderFindInput {
 	skippedCount: number;
 	truncated: boolean;
 	outputTokenBudget: number;
+	related?: RepoMapRelatedResult[];
 	suggestions?: FindMatch[];
 	missingPrefix?: string;
 	nearbyDirectory?: string;
@@ -27,13 +29,17 @@ export interface RenderFindInput {
 export function renderFindResults(input: RenderFindInput): { content: string; details: FindDetails } {
 	const tokenBudget = input.outputTokenBudget;
 	const collapsedGroups = collapseMatches(input.matches);
-	const details = buildDetails(input, collapsedGroups);
-	if (input.totalMatches === 0) return { content: renderNoMatches(input, tokenBudget), details };
+	if (input.totalMatches === 0) {
+		const rendered = appendRelated(renderNoMatches(input, tokenBudget), input.related, tokenBudget);
+		return { content: rendered.content, details: buildDetails(input, collapsedGroups, rendered.related) };
+	}
 
-	const header = formatHeader(input.totalMatches, input.totalFiles, input.totalDirectories);
+	const header = formatHeader(input.totalMatches, input.totalFiles, input.totalDirectories, input.glob);
 	const narrowLines = [header, "", ...input.matches.map(formatMatchPath)];
 	if (input.matches.length <= NARROW_RESULT_LIMIT && fitsBudget(narrowLines, tokenBudget)) {
-		return { content: narrowLines.filter((_line, index) => index !== 1 || input.matches.length > 0).join("\n"), details };
+		const main = narrowLines.filter((_line, index) => index !== 1 || input.matches.length > 0).join("\n");
+		const rendered = appendRelated(main, input.related, tokenBudget);
+		return { content: rendered.content, details: buildDetails(input, collapsedGroups, rendered.related) };
 	}
 
 	const selected = selectConcreteMatches(input.matches);
@@ -46,7 +52,7 @@ export function renderFindResults(input: RenderFindInput): { content: string; de
 	return {
 		content,
 		details: {
-			...details,
+			...buildDetails(input, collapsedGroups, []),
 			collapsedGroups: groups,
 			truncated: input.truncated || selected.length + countCollapsed(groups) < input.matches.length,
 		},
@@ -56,7 +62,7 @@ export function renderFindResults(input: RenderFindInput): { content: string; de
 function renderNoMatches(input: RenderFindInput, tokenBudget: number): string {
 	const lines = input.ignoredCount > 0
 		? ["No visible matches.", `${input.ignoredCount} matching entries were excluded by ignore rules.`]
-		: [`No matches for "${input.query}"`];
+		: [`No matches for "${input.query}"${input.glob === undefined ? "" : ` matching "${input.glob}"`}`];
 	if (input.missingPrefix !== undefined) lines.push("", `Missing prefix: ${withDirectorySlash(input.missingPrefix)}`);
 	if (input.nearbyDirectory !== undefined) lines.push(`Nearby directory: ${withDirectorySlash(input.nearbyDirectory)}`);
 	if (input.suggestions !== undefined && input.suggestions.length > 0) {
@@ -65,11 +71,12 @@ function renderNoMatches(input: RenderFindInput, tokenBudget: number): string {
 	return takeBudgetedLines(lines, tokenBudget).join("\n");
 }
 
-function buildDetails(input: RenderFindInput, collapsedGroups: FindCollapsedGroup[]): FindDetails {
+function buildDetails(input: RenderFindInput, collapsedGroups: FindCollapsedGroup[], related: RepoMapRelatedResult[]): FindDetails {
 	const matches = input.matches.map(({ path, kind }) => ({ path, kind }));
 	return {
 		query: input.query,
 		path: input.path,
+		...(input.glob !== undefined ? { glob: input.glob } : {}),
 		strategy: input.strategy,
 		totalMatches: input.totalMatches,
 		returnedMatches: matches.length,
@@ -79,31 +86,52 @@ function buildDetails(input: RenderFindInput, collapsedGroups: FindCollapsedGrou
 		ignoredCount: input.ignoredCount,
 		skippedCount: input.skippedCount,
 		truncated: input.truncated,
+		...(related.length > 0 ? { related } : {}),
 		...(input.suggestions !== undefined && input.suggestions.length > 0 ? { suggestions: input.suggestions } : {}),
 		...(input.missingPrefix !== undefined ? { missingPrefix: input.missingPrefix } : {}),
 		...(input.nearbyDirectory !== undefined ? { nearbyDirectory: input.nearbyDirectory } : {}),
 	};
 }
 
-function formatHeader(totalMatches: number, files: number, directories: number): string {
+function appendRelated(
+	content: string,
+	candidates: RepoMapRelatedResult[] | undefined,
+	tokenBudget: number,
+): { content: string; related: RepoMapRelatedResult[] } {
+	if (candidates === undefined || candidates.length === 0) return { content, related: [] };
+	const header = "Related (repo-map; query match not guaranteed):";
+	const related: RepoMapRelatedResult[] = [];
+	let output = content;
+	for (const candidate of candidates) {
+		const nextRelated = [...related, candidate];
+		const next = `${content}\n\n${header}\n${nextRelated.map((item) => `${item.path} [${item.relations.join(" · ")}]`).join("\n")}`;
+		if (tokenCount(next) > tokenBudget) break;
+		related.push(candidate);
+		output = next;
+	}
+	if (related.length === 0) return { content, related };
+	return { content: output, related };
+}
+
+function formatHeader(totalMatches: number, files: number, directories: number, glob: string | undefined): string {
 	const parts = [`${totalMatches} ${totalMatches === 1 ? "match" : "matches"}`];
 	if (files > 0) parts.push(`${files} ${files === 1 ? "file" : "files"}`);
 	if (directories > 0) parts.push(`${directories} ${directories === 1 ? "directory" : "directories"}`);
+	if (glob !== undefined) parts.push(`glob ${glob}`);
 	return parts.join(" · ");
 }
 
 function selectConcreteMatches(matches: FindMatch[]): FindMatch[] {
 	const selected: FindMatch[] = [];
 	const selectedPaths = new Set<string>();
-	const perTopDirectory = new Map<string, number>();
+	const representedDirectories = new Set<string>();
 	for (const match of matches) {
 		if (selected.length >= Math.min(TOP_MATCH_LIMIT, matches.length)) break;
 		const group = topDirectory(match.path);
-		const count = perTopDirectory.get(group) ?? 0;
-		if (count >= 4 && hasUnrepresentedTopDirectory(matches, selectedPaths, perTopDirectory)) continue;
+		if (representedDirectories.has(group)) continue;
 		selected.push(match);
 		selectedPaths.add(match.path);
-		perTopDirectory.set(group, count + 1);
+		representedDirectories.add(group);
 	}
 	for (const match of matches) {
 		if (selected.length >= Math.min(TOP_MATCH_LIMIT, matches.length)) break;
@@ -112,14 +140,6 @@ function selectConcreteMatches(matches: FindMatch[]): FindMatch[] {
 		selectedPaths.add(match.path);
 	}
 	return selected;
-}
-
-function hasUnrepresentedTopDirectory(matches: FindMatch[], selectedPaths: Set<string>, counts: Map<string, number>): boolean {
-	for (const match of matches) {
-		if (selectedPaths.has(match.path)) continue;
-		if (!counts.has(topDirectory(match.path))) return true;
-	}
-	return false;
 }
 
 function collapseMatches(matches: FindMatch[]): FindCollapsedGroup[] {

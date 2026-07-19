@@ -382,11 +382,12 @@ function formatFindCall(args: unknown, theme: Pick<Theme, "fg" | "bold">, cwd: s
 	const record = isPlainRecord(args) ? args : {};
 	const query = stringArg(record["query"]);
 	const rawPath = stringArg(record["path"]) ?? ".";
+	const glob = stringArg(record["glob"]);
 	return formatToolCard({
 		tool: "find",
 		status: "running",
 		target: `${query === null ? "?" : `"${query}"`} in ${displayToolPath(rawPath, cwd)}`,
-		summary: "locating files/directories",
+		summary: joinParts(["locating files/directories", glob === null ? undefined : `glob ${glob}`]),
 	}, theme);
 }
 
@@ -406,6 +407,8 @@ function formatFindDetails(details: FindDetails, expanded: boolean, theme: Pick<
 		`${files} ${files === 1 ? "file" : "files"}`,
 		`${directories} ${directories === 1 ? "directory" : "directories"}`,
 		details.strategy,
+		details.glob === undefined ? undefined : `glob ${details.glob}`,
+		details.related === undefined ? undefined : `${details.related.length} related`,
 		details.truncated ? "truncated" : undefined,
 	]);
 	const header = formatToolCard({ tool: "find", status: "success", target: `"${details.query}" in ${details.path}`, summary }, theme);
@@ -424,6 +427,10 @@ function formatFindDetails(details: FindDetails, expanded: boolean, theme: Pick<
 			if (group.directories > 0) counts.push(`${group.directories} ${group.directories === 1 ? "directory" : "directories"}`);
 			lines.push(`${group.path}/** (${counts.join(", ")})`);
 		}
+	}
+	if (details.related !== undefined && details.related.length > 0) {
+		lines.push("", "Related (repo-map; query match not guaranteed):");
+		for (const result of details.related) lines.push(`${result.path} [${result.relations.join(", ")}]`);
 	}
 	lines.push("", `Scanned ${details.scannedEntries} entries; skipped ${details.skippedCount}; ignored ${details.ignoredCount}.`);
 	if (details.truncated) lines.push("Truncated.");
@@ -583,7 +590,11 @@ function findTarget(args: unknown, cwd: string): string {
 	const record = isPlainRecord(args) ? args : {};
 	const query = stringArg(record["query"]);
 	const rawPath = stringArg(record["path"]) ?? ".";
-	return `${query === null ? "?" : `"${query}"`} in ${displayToolPath(rawPath, cwd)}`;
+	const glob = stringArg(record["glob"]);
+	return joinParts([
+		`${query === null ? "?" : `"${query}"`} in ${displayToolPath(rawPath, cwd)}`,
+		glob === null ? undefined : `glob ${glob}`,
+	]);
 }
 
 function readTarget(args: unknown, cwd: string): string {

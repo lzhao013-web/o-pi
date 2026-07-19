@@ -50,6 +50,14 @@ npm run bench -- --suites=startup,agent-loop,lazy
 npm run bench -- --runs=3 --suites=repo-map --repo-sizes=100,1000,10000
 ```
 
+多通道排序的独立 CPU 基准不进入统一 suite，可直接运行：
+
+```bash
+npm run bench:file-tools:ranking -- --runs=15
+```
+
+该基准对比 `find`/`grep` 的完整融合排序与精确多样性 Top-K，使用固定合成候选和 50% identity 重叠，不访问文件系统、LSP 或 Repo Map 后端。
+
 ## 启动场景
 
 统一启动 benchmark 轮换场景执行顺序，降低 CPU 温度、JIT 和后台负载造成的顺序偏差：

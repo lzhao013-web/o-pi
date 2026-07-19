@@ -7,6 +7,7 @@
 		"bench": "node scripts/bench.mjs",
 		"bench:file-tools": "node scripts/bench-file-tools.mjs",
 		"bench:file-tools:search": "node scripts/bench-file-tools-search.mjs",
+		"bench:file-tools:ranking": "node scripts/bench-file-tools-ranking.mjs",
 		"bench:repo-map": "node scripts/bench-repo-map.mjs",
 		"bench:web-tools": "node scripts/bench-web-tools.mjs",
 		"test": "vitest --run",

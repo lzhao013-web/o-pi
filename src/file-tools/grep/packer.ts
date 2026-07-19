@@ -1,7 +1,8 @@
 import { countTextTokensSync } from "../../token-counter.js";
 import { byteRangeForLines, extractByteRange } from "../../code-index/parser.js";
 import type { RankedGrepRegion } from "./ranker.js";
-import type { GrepMatchMode, GrepRegion, GrepSkippedFiles, GrepSuccess } from "../types.js";
+import { selectRankedGrepCandidates } from "./fusion.js";
+import type { GrepMatchMode, GrepRegion, GrepSkippedFiles, GrepSuccess, RepoMapRelatedResult } from "../types.js";
 
 export interface GrepPackInput {
 	query: string;
@@ -16,6 +17,7 @@ export interface GrepPackInput {
 	skipped?: GrepSkippedFiles;
 	scanComplete: boolean;
 	nearSymbols: string[];
+	related?: RepoMapRelatedResult[];
 }
 
 interface PackState {
@@ -24,6 +26,8 @@ interface PackState {
 	usedTokens: number;
 	regions: GrepRegion[];
 	usedFiles: Set<string>;
+	repoMapUsed: boolean;
+	related: RepoMapRelatedResult[];
 }
 
 /** 在预算内选择正文、片段和签名；不会对已选 UTF-8 文本做任意字节截断。 */
@@ -32,65 +36,85 @@ export function packGrepResults(input: GrepPackInput): GrepSuccess {
 	const state: PackState = {
 		budgetTokens: input.tokenBudget,
 		bodyCount: 0,
-		usedTokens: tokenCount(headerText(input, false)),
+		usedTokens: tokenCount(headerText(effectiveInput(input, false), false)),
 		regions: [],
 		usedFiles: new Set(),
+		repoMapUsed: false,
+		related: [],
 	};
 
 	for (const candidate of selected) {
 		const region = packRegion(candidate, input.sourceText.get(candidate.path), state);
-		const projected = projectedTokens(input, state, region);
+		const projected = projectedTokens(input, state, region, candidate);
 		if (state.regions.length > 0 && projected > state.budgetTokens) {
 			const signature = signatureRegion(candidate);
-			const signatureCost = projectedTokens(input, state, signature);
+			const signatureCost = projectedTokens(input, state, signature, candidate);
 			if (signatureCost > state.budgetTokens) break;
-			addRegion(input, state, signature);
+			addRegion(input, state, signature, candidate);
 			continue;
 		}
-		addRegion(input, state, region);
+		addRegion(input, state, region, candidate);
+	}
+	const mainTruncated = !input.scanComplete || state.regions.length < input.regions.length;
+	for (const candidate of input.related ?? []) {
+		const next = [...state.related, candidate];
+		const projected = tokenCount(renderPackedBody(
+			effectiveInput(input, state.repoMapUsed),
+			state.regions,
+			state.usedFiles.size,
+			mainTruncated,
+			next,
+		));
+		if (projected > state.budgetTokens) break;
+		state.related.push(candidate);
 	}
 
-	const totalFiles = new Set(input.regions.map((region) => region.path)).size;
 	const returnedFiles = state.usedFiles.size;
-	const truncated = !input.scanComplete || state.regions.length < input.regions.length;
-	const approxTokens = tokenCount(renderPackedBody(input, state.regions, returnedFiles, truncated));
+	const truncated = mainTruncated;
+	const outputInput = effectiveInput(input, state.repoMapUsed);
+	const strategy = outputInput.strategy;
+	const approxTokens = tokenCount(renderPackedBody(outputInput, state.regions, returnedFiles, truncated, state.related));
 	const success: GrepSuccess = {
 		status: "success",
 		query: input.query,
 		path: input.path,
 		match: input.match,
-		strategy: input.strategy,
+		strategy,
 		total_candidates: input.totalCandidates,
 		returned_regions: state.regions.length,
 		returned_files: returnedFiles,
 		approx_tokens: approxTokens,
 		truncated,
 		regions: state.regions,
+		...(state.related.length > 0 ? { related: state.related } : {}),
 	};
 	if (input.skipped !== undefined && Object.keys(input.skipped).length > 0) success.skipped_files = input.skipped;
 	if (input.nearSymbols.length > 0) success.near_symbols = input.nearSymbols;
-	void totalFiles;
 	return success;
 }
 
 export function renderGrepSuccess(result: GrepSuccess): string {
 	const lines = [grepOpenTag(result)];
 	if (result.regions.length === 0) {
-		lines.push(result.near_symbols !== undefined && result.near_symbols.length > 0 ? `near symbols: ${result.near_symbols.join(", ")}` : "no regions");
-		lines.push("</grep>");
-		return lines.join("\n");
-	}
-	for (const region of result.regions) {
-		lines.push("", renderRegion(region));
+		lines.push(result.near_symbols !== undefined && result.near_symbols.length > 0 ? `near symbols: ${result.near_symbols.join(", ")}` : "no matching regions");
+	} else {
+		for (const region of result.regions) lines.push("", renderRegion(region, result.match));
 	}
 	const omitted = result.total_candidates - result.returned_regions;
 	if (omitted > 0) lines.push("", `... ${omitted} lower-ranked regions omitted`);
 	if (result.skipped_files !== undefined) lines.push("", `skipped: ${formatSkipped(result.skipped_files)}`);
+	if (result.related !== undefined && result.related.length > 0) lines.push("", renderRelated(result.related));
 	lines.push("</grep>");
 	return lines.join("\n");
 }
 
-function renderPackedBody(input: GrepPackInput, regions: GrepRegion[], returnedFiles: number, truncated: boolean): string {
+function renderPackedBody(
+	input: GrepPackInput,
+	regions: GrepRegion[],
+	returnedFiles: number,
+	truncated: boolean,
+	related: RepoMapRelatedResult[] = [],
+): string {
 	return renderGrepSuccess({
 		status: "success",
 		query: input.query,
@@ -103,6 +127,7 @@ function renderPackedBody(input: GrepPackInput, regions: GrepRegion[], returnedF
 		approx_tokens: 0,
 		truncated,
 		regions,
+		...(related.length > 0 ? { related } : {}),
 	});
 }
 
@@ -153,10 +178,12 @@ function baseRegion(candidate: RankedGrepRegion, detail: GrepRegion["detail"], c
 	return region;
 }
 
-function renderRegion(region: GrepRegion): string {
+function renderRegion(region: GrepRegion, match: GrepMatchMode): string {
 	const headerSymbol = region.symbol ?? region.signature;
 	const header = `${region.path}:${region.start_line}${region.end_line === region.start_line ? "" : `-${region.end_line}`}`;
-	const label = headerSymbol === undefined ? `${region.kind} [${region.reasons.join(" · ")}]` : `${headerSymbol} [${region.reasons.join(" · ")}]`;
+	const reasons = visibleReasons(region.reasons, match);
+	const subject = headerSymbol ?? region.kind;
+	const label = reasons.length === 0 ? subject : `${subject} [${reasons.join(" · ")}]`;
 	const lines = [`${header}`, label];
 	if (region.callees !== undefined) lines.push(`calls: ${region.callees.join(", ")}`);
 	if (region.imports !== undefined) lines.push(`imports: ${region.imports.join(", ")}`);
@@ -164,52 +191,34 @@ function renderRegion(region: GrepRegion): string {
 	return lines.join("\n");
 }
 
-function addRegion(input: GrepPackInput, state: PackState, region: GrepRegion): void {
+function visibleReasons(reasons: string[], match: GrepMatchMode): string[] {
+	return reasons.filter((reason) =>
+		reason !== "hop 1"
+		&& !(match === "literal" && reason === "exact literal")
+		&& !(match === "regex" && reason === "regex"));
+}
+
+function renderRelated(related: RepoMapRelatedResult[]): string {
+	const lines = ['<related source="repo-map" query_match="not_guaranteed">'];
+	for (const result of related) {
+		const range = result.start_line === undefined
+			? result.path
+			: `${result.path}:${result.start_line}${result.end_line === undefined || result.end_line === result.start_line ? "" : `-${result.end_line}`}`;
+		lines.push(`${range} ${result.symbol ?? result.signature ?? result.kind} [${result.relations.join(" · ")}]`);
+	}
+	lines.push("</related>");
+	return lines.join("\n");
+}
+
+function addRegion(input: GrepPackInput, state: PackState, region: GrepRegion, candidate: RankedGrepRegion): void {
 	state.regions.push(region);
 	state.usedFiles.add(region.path);
-	state.usedTokens = tokenCount(renderPackedBody(input, state.regions, state.usedFiles.size, false));
+	if (candidate.repoMap === true) state.repoMapUsed = true;
+	state.usedTokens = tokenCount(renderPackedBody(effectiveInput(input, state.repoMapUsed), state.regions, state.usedFiles.size, false));
 }
 
 export function selectGrepCandidatesForPacking(regions: RankedGrepRegion[], limit: number): RankedGrepRegion[] {
-	const selected: RankedGrepRegion[] = [];
-	const used = new Set<string>();
-	const categoryCounts = new Map<string, number>();
-	const categoryCap = Math.max(1, Math.ceil(limit / 2));
-	for (const region of regions) {
-		if (selected.length >= limit) break;
-		if (used.has(region.path)) continue;
-		const category = relationCategory(region);
-		if ((categoryCounts.get(category) ?? 0) >= categoryCap && hasUnrepresentedCategory(regions, selected, categoryCounts, categoryCap)) continue;
-		selected.push(region);
-		used.add(region.path);
-		categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
-	}
-	for (const region of regions) {
-		if (selected.length >= limit) break;
-		if (selected.some((item) => item.id === region.id)) continue;
-		selected.push(region);
-	}
-	return selected.sort((left, right) => regions.indexOf(left) - regions.indexOf(right));
-}
-
-function relationCategory(region: RankedGrepRegion): string {
-	if (region.reasons.some((reason) => reason === "exact literal" || reason === "regex" || reason === "exact symbol" || reason === "exact qualified symbol")) return "direct";
-	if (region.reasons.includes("definition") || region.reasons.includes("export")) return "definition";
-	if (region.reasons.includes("caller")) return "caller";
-	if (region.reasons.includes("callee")) return "callee";
-	if (region.reasons.includes("reference")) return "reference";
-	if (region.reasons.includes("import")) return "import";
-	return "related";
-}
-
-function hasUnrepresentedCategory(
-	regions: RankedGrepRegion[],
-	selected: RankedGrepRegion[],
-	counts: ReadonlyMap<string, number>,
-	cap: number,
-): boolean {
-	const selectedIds = new Set(selected.map((region) => region.id));
-	return regions.some((region) => !selectedIds.has(region.id) && (counts.get(relationCategory(region)) ?? 0) < cap);
+	return selectRankedGrepCandidates(regions, limit);
 }
 
 function headerText(input: GrepPackInput, truncated: boolean): string {
@@ -219,10 +228,15 @@ function headerText(input: GrepPackInput, truncated: boolean): string {
 	});
 }
 
-function projectedTokens(input: GrepPackInput, state: PackState, region: GrepRegion): number {
+function projectedTokens(input: GrepPackInput, state: PackState, region: GrepRegion, candidate: RankedGrepRegion): number {
 	const files = new Set(state.usedFiles);
 	files.add(region.path);
-	return tokenCount(renderPackedBody(input, [...state.regions, region], files.size, false));
+	return tokenCount(renderPackedBody(effectiveInput(input, state.repoMapUsed || candidate.repoMap === true), [...state.regions, region], files.size, false));
+}
+
+function effectiveInput(input: GrepPackInput, repoMapUsed: boolean): GrepPackInput {
+	if (repoMapUsed || !input.strategy.includes("repo-map")) return input;
+	return { ...input, strategy: input.strategy.filter((item) => item !== "repo-map") };
 }
 
 function tokenCount(text: string): number {

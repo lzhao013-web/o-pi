@@ -96,6 +96,41 @@ describe("file-tools extension", () => {
 		expect(expanded).not.toContain('"status": "failed"');
 	});
 
+	it("find UI details 独立展示 Repo Map 关联文件和语义声明", () => {
+		const registered: Array<{ name: string; renderResult?: RenderResult }> = [];
+		fileTools({
+			registerTool(tool: { name: string; renderResult?: RenderResult }) { registered.push(tool); },
+			on() {},
+		} as unknown as ExtensionAPI);
+		const details = {
+			query: "main",
+			path: ".",
+			glob: "src/*.ts",
+			strategy: "fuzzy",
+			totalMatches: 1,
+			returnedMatches: 1,
+			scannedEntries: 4,
+			matches: [{ path: "src/main.ts", kind: "file" }],
+			collapsedGroups: [],
+			ignoredCount: 0,
+			skippedCount: 0,
+			truncated: false,
+			related: [{
+				path: "tests/main.test.ts",
+				kind: "file",
+				source: "repo-map",
+				relations: ["test"],
+				query_match: "not_guaranteed",
+			}],
+		};
+
+		expect(renderToolResult(registered, "find", details)).toContain("1 related");
+		const expanded = renderToolResult(registered, "find", details, true);
+		expect(expanded).toContain("glob src/*.ts");
+		expect(expanded).toContain("Related (repo-map; query match not guaranteed):");
+		expect(expanded).toContain("tests/main.test.ts [test]");
+	});
+
 	it("注册阶段零预热，首次执行按工具加载，并发复用且失败可重试", async () => {
 		const registered: Array<{ name: string; execute?: ExecuteTool }> = [];
 		const handlers = new Map<string, LifecycleHandler>();

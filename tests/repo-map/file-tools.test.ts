@@ -10,6 +10,7 @@ import { CODE_INDEX_FORMAT_VERSION } from "../../src/code-index/identity.js";
 import { ReadVersionCache } from "../../src/file-tools/core/read-cache.js";
 import { formatReadModelResult } from "../../src/file-tools/pi/model-output-with-repo.js";
 import { editWorkspace } from "../../src/file-tools/tools/edit.js";
+import { findWorkspaceFiles } from "../../src/file-tools/tools/find.js";
 import { readWorkspaceFile } from "../../src/file-tools/tools/read.js";
 import { writeWorkspaceFile } from "../../src/file-tools/tools/write.js";
 import { grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
@@ -77,6 +78,36 @@ describe("Repo Map file-tool read and mutation integration", () => {
 		expect(grep.details).toMatchObject({ strategy: expect.arrayContaining(["repo-map"]), regions: expect.arrayContaining([
 			expect.objectContaining({ symbol: "ExtensionAdded" }),
 		]) });
+	});
+
+	it("enhances find glob and strict grep modes against a live generation", async () => {
+		const root = path.join(temp.path, "strict-search-repo");
+		await mkdir(path.join(root, ".git"), { recursive: true });
+		await writeFile(path.join(root, "a-service.ts"), "export function Alpha() { return 'Preferred'; }\n");
+		await writeFile(path.join(root, "z-service.ts"), "export function service() { return Preferred(); }\nexport function Preferred() { return true; }\n");
+		const initialized = await initializeRepoMap({ cwd: root }, serviceDependencies(root));
+		const branch = [activationEntry(initialized.metadata)];
+		const query = createRepoMapFileToolQuery(() => branch, {
+			async readActivated(activation) {
+				return await readActivatedRepoMap(activation, path.join(temp.path, "cache"));
+			},
+		});
+		const found = await findWorkspaceFiles(root, { query: "service", glob: "*-service.ts" }, undefined, { repoMap: query });
+		if ("status" in found) throw new Error(found.error.message);
+		expect(found.details.matches.map((match) => match.path)).toEqual(["z-service.ts", "a-service.ts"]);
+		expect(found.details.matches.every((match) => /^.+-service\.ts$/u.test(match.path))).toBe(true);
+
+		for (const params of [
+			{ query: "Preferred", match: "literal" as const },
+			{ query: "Preferred(?:\\(\\))?", match: "regex" as const },
+		]) {
+			clearGrepIndex();
+			const grep = await grepWorkspaceFiles(root, params, undefined, { repoMap: query });
+			if (grep.status === "failed") throw new Error(grep.error.message);
+			expect(grep.strategy).toContain("repo-map");
+			expect(grep.regions.find((region) => region.symbol === "Preferred")?.reasons).toContain(params.match === "literal" ? "definition" : "alias");
+			expect(grep.regions.every((region) => (region.match_lines?.length ?? 0) > 0)).toBe(true);
+		}
 	});
 
 	it("adds compact, budgeted context to partial/truncated reads but leaves a short full read unchanged", async () => {

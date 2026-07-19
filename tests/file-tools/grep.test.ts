@@ -1,11 +1,19 @@
+import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { parseCodeUnits, type IndexedCodeUnit } from "../../src/code-index/parser.js";
 import { clearGrepIndex } from "../../src/file-tools/grep/indexer.js";
+import { mergeRankedGrepSources } from "../../src/file-tools/grep/fusion.js";
+import { packGrepResults } from "../../src/file-tools/grep/packer.js";
+import type { RankedGrepRegion } from "../../src/file-tools/grep/ranker.js";
+import { createRankingEvidence } from "../../src/file-tools/ranking-evidence.js";
 import { countTextTokensSync } from "../../src/token-counter.js";
 import { formatCompactGrepResult, grepWorkspaceFiles } from "../../src/file-tools/tools/grep.js";
-import type { GrepSuccess, ToolOutcome } from "../../src/file-tools/types.js";
+import type { GrepMatchMode, GrepSuccess, ToolOutcome } from "../../src/file-tools/types.js";
+import type { RepoMapFileToolQuery } from "../../src/repo-map/file-tool-query.js";
+import type { RepoMapQueryCandidate, RepoMapQueryResult } from "../../src/repo-map/query.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
 let workspace: string;
@@ -58,6 +66,65 @@ function firstRegion(result: GrepSuccess) {
 	const region = result.regions[0];
 	if (region === undefined) throw new Error("missing region");
 	return region;
+}
+
+function repoMapCandidate(
+	filePath: string,
+	content: string,
+	unit: IndexedCodeUnit,
+	reasons: RepoMapQueryCandidate["reasons"],
+	contentHash = createHash("sha256").update(content).digest("hex"),
+): RepoMapQueryCandidate {
+	return {
+		path: filePath,
+		fileId: `file:${filePath}`,
+		contentHash,
+		symbol: {
+			id: unit.id,
+			kind: unit.kind,
+			...(unit.name !== undefined ? { name: unit.name } : {}),
+			...(unit.qualifiedName !== undefined ? { qualifiedName: unit.qualifiedName } : {}),
+			...(unit.signature !== undefined ? { signature: unit.signature } : {}),
+			range: {
+				startLine: unit.startLine,
+				endLine: unit.endLine,
+				startByte: unit.startByte,
+				endByte: unit.endByte,
+			},
+		},
+		range: {
+			startLine: unit.startLine,
+			endLine: unit.endLine,
+			startByte: unit.startByte,
+			endByte: unit.endByte,
+		},
+		score: 900,
+		confidence: 1,
+		hop: 0,
+		reasons,
+		matchedAliases: [],
+		relatedEdges: [],
+	};
+}
+
+function repoMapQuery(query: RepoMapFileToolQuery["query"]): RepoMapFileToolQuery {
+	return {
+		query,
+		async readContext() { return undefined; },
+		async syncMutation() { return undefined; },
+	};
+}
+
+async function assertStrictMatches(result: GrepSuccess, query: string, match: Exclude<GrepMatchMode, "auto">): Promise<void> {
+	for (const region of result.regions) {
+		const text = await readFile(path.join(workspace, region.path), "utf8");
+		const lines = text.split(/\n/u);
+		expect(region.match_lines?.length).toBeGreaterThan(0);
+		for (const lineNumber of region.match_lines ?? []) {
+			const line = lines[lineNumber - 1] ?? "";
+			expect(match === "literal" ? line.includes(query) : new RegExp(query, "u").test(line)).toBe(true);
+		}
+	}
 }
 
 describe("grep", () => {
@@ -129,6 +196,270 @@ describe("grep", () => {
 		expect(await grepWorkspaceFiles(workspace, { query: "(", match: "regex" })).toMatchObject({ status: "failed", error: { code: "INVALID_REGEX" } });
 	});
 
+	it.each([
+		{ match: "literal" as const, queryText: "Needle42", expectedReason: "exact literal" },
+		{ match: "regex" as const, queryText: "Needle\\d+", expectedReason: "regex" },
+	])("$match 严格验证 repo-map region，并增强排序、reasons 和去重", async ({ match, queryText, expectedReason }) => {
+		const firstText = "export function Alpha() { return 'Needle42'; }\n";
+		const preferredText = "export function Preferred() { return 'Needle42'; }\n";
+		const mixedText = "export function Unrelated() { return 'other'; }\nexport function Matching() { return 'Needle42'; }\n";
+		const excludedText = "export function Excluded() { return 'other'; }\n";
+		await writeFile(path.join(workspace, "a.ts"), firstText);
+		await writeFile(path.join(workspace, "z.ts"), preferredText);
+		await writeFile(path.join(workspace, "mixed.ts"), mixedText);
+		await writeFile(path.join(workspace, "excluded.ts"), excludedText);
+		const preferredUnit = parseCodeUnits("z.ts", preferredText).units.find((unit) => unit.name === "Preferred");
+		const unrelatedUnit = parseCodeUnits("mixed.ts", mixedText).units.find((unit) => unit.name === "Unrelated");
+		const excludedUnit = parseCodeUnits("excluded.ts", excludedText).units.find((unit) => unit.name === "Excluded");
+		const firstUnit = parseCodeUnits("a.ts", firstText).units.find((unit) => unit.name === "Alpha");
+		if (preferredUnit === undefined || unrelatedUnit === undefined || excludedUnit === undefined || firstUnit === undefined) {
+			throw new Error("missing parsed fixture unit");
+		}
+		const preferred = repoMapCandidate("z.ts", preferredText, preferredUnit, ["definition"]);
+		const unrelated = repoMapCandidate("mixed.ts", mixedText, unrelatedUnit, ["caller"]);
+		const query = vi.fn(async (input): Promise<RepoMapQueryResult> => ({
+			root: workspace,
+			explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+			candidates: [
+				preferred,
+				{ ...preferred, reasons: ["public api"] },
+				unrelated,
+				{ ...unrelated, reasons: ["test"] },
+				repoMapCandidate("excluded.ts", excludedText, excludedUnit, ["exact symbol"]),
+				repoMapCandidate("a.ts", firstText, firstUnit, ["public api"], "stale-hash"),
+			],
+		}));
+
+		const result = expectGrepSuccess(await grepWorkspaceFiles(
+			workspace,
+			{ query: queryText, match },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(query).toHaveBeenCalledWith({ requestedPath: workspace, query: match === "regex" ? "Needle" : queryText, limit: 32 });
+		expect(result.strategy).toContain("repo-map");
+		expect(firstRegion(result)).toMatchObject({ path: "z.ts", symbol: "Preferred" });
+		expect(firstRegion(result).reasons).toEqual(expect.arrayContaining([expectedReason, "definition", "public api"]));
+		const compact = formatCompactGrepResult(result);
+		expect(compact).toContain("definition");
+		expect(compact).not.toContain(expectedReason);
+		expect(compact).not.toContain("hop 1");
+		expect(result.regions.filter((region) => region.path === "z.ts" && region.symbol === "Preferred")).toHaveLength(1);
+		expect(result.regions.some((region) => region.symbol === "Unrelated")).toBe(false);
+		expect(result.regions.some((region) => region.path === "excluded.ts")).toBe(false);
+		expect(result.related).toEqual(expect.arrayContaining([
+			expect.objectContaining({ path: "mixed.ts", symbol: "Unrelated", source: "repo-map", relations: ["caller", "test"], query_match: "not_guaranteed" }),
+		]));
+		expect(result.related?.length).toBeLessThanOrEqual(3);
+		expect(compact).toContain('<related source="repo-map" query_match="not_guaranteed">');
+		expect(compact).toContain("Unrelated [caller · test]");
+		expect(result.regions.find((region) => region.path === "a.ts")?.reasons).not.toContain("public api");
+		await assertStrictMatches(result, queryText, match);
+	});
+
+	it("严格主结果为空时单独返回有界的 Repo Map 关联区域", async () => {
+		const content = "export function RelatedDefinition() { return 'other'; }\n";
+		await writeFile(path.join(workspace, "related.ts"), content);
+		const unit = parseCodeUnits("related.ts", content).units.find((item) => item.name === "RelatedDefinition");
+		if (unit === undefined) throw new Error("missing parsed fixture unit");
+		const query = vi.fn(async (input): Promise<RepoMapQueryResult> => ({
+			root: workspace,
+			explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+			candidates: [repoMapCandidate("related.ts", content, unit, ["definition"])],
+		}));
+
+		const result = expectGrepSuccess(await grepWorkspaceFiles(
+			workspace,
+			{ query: "MissingNeedle", match: "literal" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(result.regions).toEqual([]);
+		expect(result.strategy).not.toContain("repo-map");
+		expect(result.related).toEqual([expect.objectContaining({
+			path: "related.ts",
+			symbol: "RelatedDefinition",
+			source: "repo-map",
+			relations: ["definition"],
+			query_match: "not_guaranteed",
+		})]);
+		const compact = formatCompactGrepResult(result);
+		expect(compact).toContain("no matching regions");
+		expect(compact).toContain('<related source="repo-map" query_match="not_guaranteed">');
+		expect(countTextTokensSync(compact).tokens).toBeLessThanOrEqual(1600);
+	});
+
+	it("grep glob 之外的 Repo Map 候选只能进入关联通道", async () => {
+		await mkdir(path.join(workspace, "src"));
+		await mkdir(path.join(workspace, "tests"));
+		await writeFile(path.join(workspace, "src", "match.ts"), "export const match = 'Needle42';\n");
+		const relatedText = "export function RelatedTest() { return 'Needle42'; }\n";
+		await writeFile(path.join(workspace, "tests", "related.test.ts"), relatedText);
+		const relatedUnit = parseCodeUnits("tests/related.test.ts", relatedText).units.find((item) => item.name === "RelatedTest");
+		if (relatedUnit === undefined) throw new Error("missing parsed fixture unit");
+		const query = vi.fn(async (input): Promise<RepoMapQueryResult> => ({
+			root: workspace,
+			explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+			candidates: [repoMapCandidate("tests/related.test.ts", relatedText, relatedUnit, ["test"])],
+		}));
+
+		const result = expectGrepSuccess(await grepWorkspaceFiles(
+			workspace,
+			{ query: "Needle42", match: "literal", glob: "src/**/*.ts" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(result.regions.map((region) => region.path)).toEqual(["src/match.ts"]);
+		expect(result.related).toEqual([expect.objectContaining({
+			path: "tests/related.test.ts",
+			relations: ["test"],
+			query_match: "not_guaranteed",
+		})]);
+	});
+
+	it("严格主结果充足时不返回结构关联通道", async () => {
+		for (const name of ["a", "b", "c", "d"]) {
+			await writeFile(path.join(workspace, `${name}.ts`), `export const ${name} = 'Needle42';\n`);
+		}
+		const relatedText = "export function RelatedDefinition() { return 'other'; }\n";
+		await writeFile(path.join(workspace, "related.ts"), relatedText);
+		const unit = parseCodeUnits("related.ts", relatedText).units.find((item) => item.name === "RelatedDefinition");
+		if (unit === undefined) throw new Error("missing parsed fixture unit");
+		const query = vi.fn(async (input): Promise<RepoMapQueryResult> => ({
+			root: workspace,
+			explanation: { queryTerms: [input.query], expandedTerms: [input.query], seedCount: 1, maxHop: 2 },
+			candidates: [repoMapCandidate("related.ts", relatedText, unit, ["definition"])],
+		}));
+
+		const result = expectGrepSuccess(await grepWorkspaceFiles(
+			workspace,
+			{ query: "Needle42", match: "literal" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(result.regions).toHaveLength(4);
+		expect(result.related).toBeUndefined();
+	});
+
+	it("只在最终打包结果使用结构增强时标记 repo-map strategy", () => {
+		const native: RankedGrepRegion = {
+			id: "native",
+			path: "native.ts",
+			kind: "function",
+			startLine: 1,
+			endLine: 1,
+			startByte: 0,
+			endByte: 1,
+			tier: 1,
+			evidence: createRankingEvidence("lexical", 1),
+			lexicalRelevance: 0,
+			pathRelevance: 0,
+			reasons: ["exact literal"],
+			matchLines: [1],
+			callees: [],
+			imports: [],
+		};
+		const structural: RankedGrepRegion = {
+			...native,
+			id: "structural",
+			path: "structural.ts",
+			evidence: createRankingEvidence("structural", 1),
+			reasons: ["exact literal", "definition"],
+			repoMap: true,
+		};
+		const result = packGrepResults({
+			query: "needle",
+			path: ".",
+			match: "literal",
+			strategy: ["literal", "repo-map"],
+			totalCandidates: 2,
+			regions: [native, structural],
+			sourceText: new Map(),
+			tokenBudget: 200,
+			resultLimit: 1,
+			scanComplete: true,
+			nearSymbols: [],
+		});
+
+		expect(result.strategy).toEqual(["literal"]);
+		expect(formatCompactGrepResult(result)).toContain("<grep truncated=\"true\">");
+		expect(formatCompactGrepResult(result)).not.toContain("repo_map");
+	});
+
+	it("单次融合跨通道共识且不修改输入候选", () => {
+		const native: RankedGrepRegion = {
+			id: "native",
+			path: "target.ts",
+			kind: "function",
+			symbol: "Target",
+			startLine: 2,
+			endLine: 4,
+			startByte: 10,
+			endByte: 40,
+			tier: 3,
+			evidence: createRankingEvidence("structural", 0.8),
+			lexicalRelevance: 0,
+			pathRelevance: 0,
+			reasons: ["exact symbol"],
+			matchLines: [2],
+			callees: [],
+			imports: [],
+		};
+		const semantic: RankedGrepRegion = {
+			...native,
+			id: "lsp",
+			symbol: "target",
+			evidence: createRankingEvidence("semantic", 0.6),
+			reasons: ["lsp symbol"],
+			matchLines: [3],
+		};
+
+		const merged = mergeRankedGrepSources([native], [semantic], []);
+
+		expect(merged).toHaveLength(1);
+		expect(merged[0]?.evidence.familyCount).toBe(2);
+		expect(merged[0]?.reasons).toEqual(["exact symbol", "lsp symbol"]);
+		expect(merged[0]?.matchLines).toEqual([2, 3]);
+		expect(native.reasons).toEqual(["exact symbol"]);
+		expect(native.matchLines).toEqual([2]);
+	});
+
+	it.each(["literal", "regex"] as const)("%s 在 repo-map 查询失效时保持原结果", async (match) => {
+		const content = "export function Target() { return 'Needle42'; }\n";
+		await writeFile(path.join(workspace, "target.ts"), content);
+		const queryText = match === "literal" ? "Needle42" : "Needle\\d+";
+		const baseline = expectGrepSuccess(await grepWorkspaceFiles(workspace, { query: queryText, match }));
+		clearGrepIndex();
+		const query = vi.fn(async () => { throw new Error("repo-map unavailable"); });
+		const degraded = expectGrepSuccess(await grepWorkspaceFiles(
+			workspace,
+			{ query: queryText, match },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(query).toHaveBeenCalledTimes(1);
+		expect(degraded).toEqual(baseline);
+	});
+
+	it("无字面标识片段的 regex 不发起无收益的 repo-map 查询", async () => {
+		await writeFile(path.join(workspace, "number.ts"), "export const value = 42;\n");
+		const query = vi.fn(async (): Promise<RepoMapQueryResult | undefined> => undefined);
+		const result = expectGrepSuccess(await grepWorkspaceFiles(
+			workspace,
+			{ query: "\\d+", match: "regex" },
+			undefined,
+			{ repoMap: repoMapQuery(query) },
+		));
+
+		expect(result.regions.length).toBeGreaterThan(0);
+		expect(query).not.toHaveBeenCalled();
+	});
+
 	it("超大函数围绕命中压缩并保留 signature", async () => {
 		const configPath = path.join(outside, "small-budget.jsonc");
 		await writeConfig(configPath, { grep_output_token_budget: 220, grep_result_limit: 4 });
@@ -142,7 +473,7 @@ describe("grep", () => {
 		expect(countTextTokensSync(formatCompactGrepResult(result)).tokens).toBeLessThanOrEqual(220);
 	});
 
-	it("多文件结果保持多样性，测试文件默认降权但 test 查询取消降权", async () => {
+	it("多文件结果先覆盖不同文件，test 查询把测试意图作为来源内排序依据", async () => {
 		await writeFile(path.join(workspace, "service.ts"), "export function login() { return true; }\n");
 		await writeFile(path.join(workspace, "service.test.ts"), "export function loginTest() { return login(); }\n");
 		await writeFile(path.join(workspace, "controller.ts"), "export function handleLogin() { return login(); }\n");

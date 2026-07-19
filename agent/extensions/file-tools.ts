@@ -23,52 +23,53 @@ import {
 import type { EditParams, FindParams, GrepParams, LsParams, ReadParams, WriteParams } from "../../src/file-tools/types.js";
 import { repairableTool } from "../../src/tool-repair/index.js";
 
-const lsParameters = Type.Object({ path: Type.Optional(Type.String({ minLength: 1, description: "Directory path; defaults to workspace." })) }, { additionalProperties: false });
+const lsParameters = Type.Object({ path: Type.Optional(Type.String({ minLength: 1, description: "Directory; default workspace." })) }, { additionalProperties: false });
 const findParameters = Type.Object(
 	{
 		query: Type.String({
 			minLength: 1,
-			description: "File or directory name, path fragment, or glob. Searches recursively under path; use ** only inside recursive glob patterns.",
+			description: "Name, path fragment, or concept.",
 		}),
-		path: Type.Optional(Type.String({ minLength: 1, description: "Search root; defaults to workspace." })),
+		path: Type.Optional(Type.String({ minLength: 1, description: "Search root; default workspace." })),
+		glob: Type.Optional(Type.String({ minLength: 1, description: "Strict relative path filter for main results." })),
 	},
 	{ additionalProperties: false },
 );
 const grepParameters = Type.Object(
 	{
-		query: Type.String({ minLength: 1, description: "Text, symbol, or code intent. Set match=regex for regular expressions." }),
-		path: Type.Optional(Type.String({ minLength: 1, description: "File or directory scope; defaults to workspace." })),
-		match: Type.Optional(StringEnum(["auto", "literal", "regex"] as const, { description: "Query interpretation; defaults to auto." })),
-		glob: Type.Optional(Type.String({ minLength: 1, description: "Relative file glob within path." })),
+		query: Type.String({ minLength: 1, description: "Text, symbol, concept, definition, or relationship." }),
+		path: Type.Optional(Type.String({ minLength: 1, description: "File or directory scope; default workspace." })),
+		match: Type.Optional(StringEnum(["auto", "literal", "regex"] as const, { description: "Matching strategy. literal: case-sensitive text; regex: regular expression; default auto." })),
+		glob: Type.Optional(Type.String({ minLength: 1, description: "Strict relative file-path filter." })),
 	},
 	{ additionalProperties: false },
 );
 const readParameters = Type.Object(
 	{
-		path: Type.String({ description: "Text or image file path." }),
-		start_line: Type.Optional(Type.Integer({ minimum: 1, description: "Text files only: 1-based inclusive start line." })),
-		end_line: Type.Optional(Type.Integer({ minimum: 1, description: "Text files only: 1-based inclusive end line." })),
+		path: Type.String({ description: "Text or image path." }),
+		start_line: Type.Optional(Type.Integer({ minimum: 1, description: "1-based inclusive start line for text." })),
+		end_line: Type.Optional(Type.Integer({ minimum: 1, description: "1-based inclusive end line for text." })),
 	},
 	{ additionalProperties: false },
 );
 const writeParameters = Type.Object(
 	{
-		path: Type.String({ description: "File path to create or overwrite." }),
-		content: Type.String({ description: "UTF-8 content to write." }),
+		path: Type.String({ description: "Destination path." }),
+		content: Type.String(),
 	},
 	{ additionalProperties: false },
 );
 const editParameters = Type.Object({
-	path: Type.String({ description: "Existing file path." }),
+	path: Type.String({ description: "Previously read file." }),
 	edits: Type.Array(
 		Type.Object(
 			{
-				old: Type.String({ minLength: 1, description: "Exact text that appears once in the original file. Must be UNIQUE in the original file." }),
-				new: Type.String({ description: "Replacement text." }),
+				old: Type.String({ minLength: 1, description: "Exact text occurring once in original content." }),
+				new: Type.String(),
 			},
 			{ additionalProperties: false },
 		),
-		{ minItems: 1, description: "Non-overlapping replacements matched against the original file." },
+		{ minItems: 1, description: "Non-overlapping replacements against original content." },
 	),
 }, { additionalProperties: false });
 
@@ -130,7 +131,7 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 	pi.registerTool(repairableTool({
 		name: "ls",
 		label: "ls",
-		description: "List direct entries of one directory; no recursion or file contents.",
+		description: "List direct entries of one directory.",
 		promptSnippet: "list one directory",
 		parameters: lsParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -143,8 +144,8 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 	pi.registerTool(repairableTool({
 		name: "find",
 		label: "find",
-		description: "Find files or directories by name, path fragment, or glob; does not search contents.",
-		promptSnippet: "locate files or directories by path",
+		description: "Locate files or directories by name, path, or concept. Does not search contents.",
+		promptSnippet: "locate files or directories",
 		parameters: findParameters,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return (await loaders.find()).executeFind(params as FindParams, {
@@ -160,8 +161,8 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 	pi.registerTool(repairableTool({
 		name: "grep",
 		label: "grep",
-		description: "Search code content by text, symbol, regex, or intent; return ranked syntax-aware regions.",
-		promptSnippet: "locate relevant code by content or symbol",
+		description: "Locate code regions by text, symbol, concept, definition, or relationship.",
+		promptSnippet: "locate relevant code",
 		parameters: grepParameters,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return (await loaders.grep()).executeGrep(params as GrepParams, {
@@ -178,8 +179,8 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 	pi.registerTool(repairableTool({
 		name: "read",
 		label: "read",
-		description: "Read one UTF-8 text file or image file. Line ranges apply only to text. Records file version for edit.",
-		promptSnippet: "read text or image files",
+		description: "Read one text or image file.",
+		promptSnippet: "read one file",
 		parameters: readParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return (await loaders.read()).executeRead(params as ReadParams, {
@@ -204,9 +205,8 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 	pi.registerTool(repairableTool({
 		name: "write",
 		label: "write",
-		description: "Create or replace one file in a whole.",
-		promptSnippet: "create or replace one file in a whole",
-		promptGuidelines: ["Use write to create or replace a whole file."],
+		description: "Create or overwrite one whole file.",
+		promptSnippet: "write one whole file",
 		parameters: writeParameters,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return (await loaders.write()).executeWrite(params as WriteParams, {
@@ -229,12 +229,8 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 	pi.registerTool(repairableTool({
 		name: "edit",
 		label: "edit",
-		description: "Partially update one file using exact replacements; existing source files must be read first.",
-		promptSnippet: "make exact replacements of one file",
-		promptGuidelines: [
-			"Read existing source files with read before editing them with edit.",
-			"Use edit for direct file modifications to one existing file.",
-		],
+		description: "Edit one previously read file with exact replacements.",
+		promptSnippet: "edit one read file",
 		parameters: editParameters,
 		renderShell: "self",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

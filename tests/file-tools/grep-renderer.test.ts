@@ -22,12 +22,14 @@ describe("grep renderer", () => {
 		const result = formatGrepResult(success(), false, theme);
 		expect(result.split("\n")).toHaveLength(2);
 		expect(result).toContain('✓ grep');
-		expect(result).toContain("1 regions · 1 files · symbol+lexical · truncated");
+		expect(result).toContain("1 regions · 1 files · 1 related · symbol+lexical · truncated");
 	});
 
 	it("展开状态显示区域元数据但不显示源码正文", () => {
 		const output = formatGrepResult(success(), true, theme);
 		expect(output).toContain("src/auth.ts:4-9 AuthService.login [body; exact symbol]");
+		expect(output).toContain("Related (repo-map; query match not guaranteed):");
+		expect(output).toContain("tests/auth.test.ts:2-6 auth flow [test]");
 		expect(output).toContain("truncated");
 		expect(output).not.toContain("async login");
 	});
@@ -57,5 +59,15 @@ function success(): GrepSuccess {
 				content: "async login() {}",
 			},
 		],
+		related: [{
+			path: "tests/auth.test.ts",
+			start_line: 2,
+			end_line: 6,
+			kind: "test",
+			symbol: "auth flow",
+			source: "repo-map",
+			relations: ["test"],
+			query_match: "not_guaranteed",
+		}],
 	};
 }

@@ -305,34 +305,44 @@ seed 最多保留 64 个。图遍历为双向、最多两跳，并同时衰减 e
 | 工具 | Repo Map 行为 | 不变的边界 |
 | --- | --- | --- |
 | `ls` | 不增强。 | 原目录列表逻辑。 |
-| `find` | 仅 fuzzy 搜索合入结构候选。 | exact path、glob、scope、ignore、blocked path、symlink 和结果预算。 |
-| `grep` | 仅 `match=auto` 合入符号与局部图候选。 | literal/regex、LSP、scope、glob、源码读取、结果数和 token budget。 |
+| `find` | `query` 的名称、路径与语义召回合入结构候选，可由独立 `glob` 过滤。 | exact path、glob 严格匹配、scope、ignore、blocked path、symlink 和结果预算。 |
+| `grep` | `auto`、`literal` 和 `regex` 均可合入已实时验证的结构候选。 | literal/regex 严格匹配、LSP、scope、glob、源码读取、结果数和 token budget。 |
 | `read` | partial/truncated text read 追加紧凑结构上下文。 | 图片、完整短读取、实时正文、行数和字节预算。 |
 | `write` | 成功写盘后刷新 Repo Map，并附加影响建议。 | 写入成功不依赖 Repo Map。 |
 | `edit` | 成功替换后刷新 Repo Map，并附加影响建议。 | version 校验、替换与 LSP 结果不依赖 Repo Map。 |
 
 ### `find`
 
-`find` 先执行原有 exact、glob 或 fuzzy 路由。只有 fuzzy 分支查询 Repo Map，候选可能来自 symbol definition、alias、package/component、entrypoint、registration、public API 和测试关系。
+`find` 的 `query` 始终用于 exact/fuzzy 路径排名和 Repo Map 语义召回；可选 `glob` 只做严格路径过滤，不再从查询文本推断模式，也不从 glob 提取图查询词。候选可能来自 symbol definition、alias、package/component、entrypoint、registration、public API 和测试关系。
 
-查询层先验证每个候选及其 evidence 相关文件的实时 content hash；`find` 再逐项检查搜索 scope、workspace scope、blocked/ignored 规则、真实文件类型和 symlink。Repo Map 候选与原 fuzzy 结果按 path 去重，分数较高者保留，最终仍使用原 result limit 和输出预算。
+查询层先验证每个候选及其 evidence 相关文件的实时 content hash；`find` 再逐项检查搜索 scope、workspace scope、blocked/ignored 规则、真实文件类型和 symlink。设置 `glob` 时，普通候选与 Repo Map 主候选必须通过同一个 picomatch 判定。按 path 去重、跨来源融合和 result limit 规则见 [文件工具排序算法](file-tools-ranking.md)。glob 的静态前缀继续缩小遍历范围。
 
 Repo Map 从不排除原本能找到的文件，也不会把 graph node 当成虚拟文件返回。
 
+设置严格 `glob` 且主结果少于 4 条时，最多附加 3 条高置信度结构关联文件。关联候选仍需通过 scope、ignore、blocked path、symlink 和实时 hash 校验，但不要求满足 glob；它们只进入独立的 `related` 字段。模型输出以 `Related (repo-map; query match not guaranteed)` 明确声明来源和非匹配语义。
+
 ### `grep`
 
-`grep` 只在 `match=auto` 请求 Repo Map；显式 `literal` 和 `regex` 完全保持文本语义。Repo Map 可补充：
+`grep` 的 `auto`、`literal` 和 `regex` 都可请求 Repo Map；regex 只提取最长字面标识片段召回候选，没有有效片段时跳过图查询，最终匹配仍使用原表达式。Repo Map 可补充：
 
 - symbol、qualified name、signature 和 definition；
 - caller、callee、reference、import/export；
 - alias、package、component、entrypoint、registration 和 public API；
 - test、mock、fixture、snapshot 和 test config。
 
-Repo Map、原文本/syntax ranker 和可选 LSP 候选先独立生成，再读取实时源码 hydration。Repo Map symbol ID 必须能在当前 grep code unit 中找到，候选文件和相关 edge 文件的 live text hash 必须与 generation 一致。通过验证的候选转成真实源码 region，与其他 region 合并、去重、重排，最后交给原 packer 执行 result limit、token budget 和多样性选择。
+Repo Map、原文本/syntax ranker 和可选 LSP 候选先独立生成，再读取实时源码 hydration。Repo Map symbol ID 必须能在当前 grep code unit 中找到，候选文件的 live text hash 必须与 generation 一致；`auto` 还复核相关 edge 文件。`literal` region 必须在该 code unit 的实时源码中包含原始大小写敏感文本，`regex` region 必须逐行通过原正则，并据此生成真实 `match_lines`。通过验证的候选与其他 region 合并、去重、重排，最后交给原 packer 执行 result limit、token budget 和多样性选择。
+
+Repo Map、Tree-sitter/text 和可选 LSP 的无训练融合、证据家族与 hop 排名规则统一记录在 [文件工具排序算法](file-tools-ranking.md)。
+
+严格模式只预读有界数量的直接候选文件，不为关系边额外 hydration 源码；查询 limit、源码读取并发和 hash 缓存沿用 file-tools 预算。没有满足严格条件的图候选时，主结果与未启用 Repo Map 相同，候选只能按以下规则进入独立关联通道。
+
+`literal`/`regex` 主结果少于 4 个 region 时，可在同一 token budget 内附加最多 3 个 `related` region。结构关联候选必须位于搜索 scope、通过实时 hash 与 symbol ID 校验，并且经过原 literal/regex 后确认不能进入主结果；grep glob 之外的候选同样只能进入此通道。严格索引仅额外保留轻量 scope 路径，之后只对 Repo Map 预选文件执行有界 stat、源码读取和按需解析。
+
+`find` 和 `grep` 共用 `RepoMapRelatedResult`：`source="repo-map"`、`relations` 和 `query_match="not_guaranteed"` 是必需字段。关联结果保留 Repo Map 已生成的来源顺序，以路径和范围稳定打破平局，并过滤 confidence 低于 0.5 或没有可导航关系的候选；文件工具不再维护另一套手写关系权重。模型文本与展开 UI 均显示来源、关系和非匹配声明；主结果充足、预算不足、候选 stale 或 Repo Map 不可用时不返回 `related`。
 
 因此模型看到的始终是当前文件系统中的代码片段，而不是缓存中的历史正文。每个 Repo Map region 只保留一个最高价值的命中原因和可选 hop；alias 只在 term 与 canonical 不同时显示映射，不输出内部 source。calls/imports 仅在对应关系促成命中且 packer 只能保留 signature 时输出，完整 body 或 snippet 不重复摘要源码中已经可见的关系。
 
-结构化 `strategy` 只有实际保留 Repo Map region 时才包含 `repo-map`，此时模型头从 `<grep>` 变为 `<grep repo_map="true">`；query、path、match 和计数已存在于 tool call/details，不在模型结果中重复。未激活、越界、stale、验证失败或查询异常时，候选为 `undefined`，后续 ranking、packing 和模型文本与没有配置 Repo Map 时完全一致。
+结构化 `strategy` 只有最终打包结果实际保留 Repo Map region 时才包含 `repo-map`，此时模型头从 `<grep>` 变为 `<grep repo_map="true">`；query、path、match 和计数已存在于 tool call/details，不在模型结果中重复。模型文本省略默认 `hop 1`，严格模式再省略可由调用参数推导的 `exact literal`/`regex`；结构化 details 仍完整保留。未激活、越界、stale、验证失败或查询异常时，候选为 `undefined`，后续 ranking、packing 和模型文本与没有配置 Repo Map 时完全一致。
 
 ### `read`
 
@@ -502,6 +512,6 @@ generation ID 是以下稳定快照的 SHA-256：
 - LSP semantic edge 写入 Repo Map；
 - Git history、rename、co-change 或 churn 分析；
 - 自动运行测试、自动修改文件或阻止成功 mutation；
-- 对 `ls`、显式 literal/regex `grep`、exact/glob `find` 和完整短 `read` 的增强。
+- 对 `ls`、命中 exact path 的 `find` 和完整短 `read` 的增强。
 
 这些边界保证 Repo Map 保持本地、确定、可解释，并且在任何失败情况下都能安全退化。

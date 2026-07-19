@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { formatToolCard } from "../../tui/tool-card.js";
 import { joinParts } from "../../tui/text.js";
+import { isRepoMapRelatedResults } from "../pi/guards.js";
 import type { GrepParams, GrepRegion, GrepSuccess } from "../types.js";
 
 /** 渲染 grep 调用标题；TUI 只显示查询、scope 和 match mode。 */
@@ -26,6 +27,7 @@ export function formatGrepResult(details: unknown, expanded: boolean, theme: Pic
 		summary: joinParts([
 			`${details.returned_regions} regions`,
 			`${details.returned_files} files`,
+			details.related === undefined ? undefined : `${details.related.length} related`,
 			details.strategy.join("+"),
 			details.truncated ? "truncated" : undefined,
 		]),
@@ -33,6 +35,15 @@ export function formatGrepResult(details: unknown, expanded: boolean, theme: Pic
 	if (!expanded) return header;
 	const lines = [header];
 	for (const region of details.regions) lines.push(formatRegion(region, theme));
+	if (details.related !== undefined && details.related.length > 0) {
+		lines.push(theme.fg("muted", "Related (repo-map; query match not guaranteed):"));
+		for (const result of details.related) {
+			const range = result.start_line === undefined
+				? result.path
+				: `${result.path}:${result.start_line}${result.end_line === undefined || result.end_line === result.start_line ? "" : `-${result.end_line}`}`;
+			lines.push(`${theme.fg("accent", range)} ${result.symbol ?? result.signature ?? result.kind} [${result.relations.join(", ")}]`);
+		}
+	}
 	if (details.truncated) lines.push(theme.fg("muted", "truncated"));
 	if (details.skipped_files !== undefined) lines.push(theme.fg("muted", `skipped ${Object.entries(details.skipped_files).map(([key, value]) => `${key}:${value}`).join(" ")}`));
 	if (details.near_symbols !== undefined && details.near_symbols.length > 0) lines.push(theme.fg("muted", `near ${details.near_symbols.join(", ")}`));
@@ -46,7 +57,10 @@ function formatRegion(region: GrepRegion, theme: Pick<Theme, "fg">): string {
 }
 
 function isGrepSuccess(value: unknown): value is GrepSuccess {
-	return isRecord(value) && value["status"] === "success" && Array.isArray(value["regions"]);
+	return isRecord(value)
+		&& value["status"] === "success"
+		&& Array.isArray(value["regions"])
+		&& (value["related"] === undefined || isRepoMapRelatedResults(value["related"]));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
