@@ -16,13 +16,13 @@
 
 	"limits": {
 		"ls_entries": 200,
-		"read_lines": 2000,
+		"read_lines": 3000,
 		"read_bytes": 51200,
-		"find_output_token_budget": 800,
-		"find_result_limit": 50,
+		"find_output_token_budget": 1000,
+		"find_result_limit": 80,
 		"find_max_entries_scanned": 100000,
-		"grep_output_token_budget": 1600,
-		"grep_result_limit": 8,
+		"grep_output_token_budget": 4000,
+		"grep_result_limit": 16,
 		"grep_max_file_bytes": 1048576,
 		"grep_max_files_scanned": 100000
 	},
