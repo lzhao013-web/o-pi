@@ -107,7 +107,7 @@ describe("Repo Map file-tool read and mutation integration", () => {
 			callers: ["b.ts:Caller"],
 			publicApi: true,
 		});
-		expect(formatReadModelResult(partial)).toContain('<repo-map>\nsymbol="function Target 1-19"');
+		expect(formatReadModelResult(partial)).toContain('<repo_map>\nsymbol="function Target 1-19"');
 
 		const truncated = await readWorkspaceFile(root, { path: "a.ts" }, runtime);
 		if (!("content" in truncated) || "media_type" in truncated) throw new Error("truncated read failed");
@@ -171,8 +171,8 @@ describe("Repo Map file-tool read and mutation integration", () => {
 			lsp: { enclosing_symbol: { name: "Target", kind: "function", line: 1, end_line: 150 } },
 		};
 		const withDuplicateLsp = formatReadModelResult(duplicateLspResult);
-		expect(withDuplicateLsp).toContain("<repo-map>\n");
-		expect(withDuplicateLsp).toContain("\n</repo-map>");
+		expect(withDuplicateLsp).toContain("<repo_map>\n");
+		expect(withDuplicateLsp).toContain("\n</repo_map>");
 		expect(withDuplicateLsp).not.toContain("<lsp ");
 	});
 

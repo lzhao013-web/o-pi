@@ -240,7 +240,7 @@ function formatSkipped(skipped: GrepSkippedFiles): string {
 
 function grepOpenTag(result: Pick<GrepSuccess, "strategy" | "truncated">): string {
 	const attrs: string[] = [];
-	if (result.strategy.includes("repo-map")) attrs.push('repo-map="true"');
+	if (result.strategy.includes("repo-map")) attrs.push('repo_map="true"');
 	if (result.truncated) attrs.push(`truncated="true"`);
 	return attrs.length === 0 ? "<grep>" : `<grep ${attrs.join(" ")}>`;
 }

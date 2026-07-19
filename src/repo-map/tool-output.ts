@@ -12,7 +12,7 @@ export function formatRepoMapReadContext(context: RepoMapReadContext | undefined
 	const attrs = [
 		`symbol="${escapeXmlAttribute(compact(`${context.symbol.kind} ${symbolName} ${context.symbol.startLine}-${context.symbol.endLine}`, 120))}"`,
 	];
-	if (context.publicApi) attrs.push('public-api="true"');
+	if (context.publicApi) attrs.push('public_api="true"');
 	if (context.package !== undefined) attrs.push(`package="${escapeXmlAttribute(compact(context.package, 64))}"`);
 	if (context.component !== undefined) attrs.push(`component="${escapeXmlAttribute(compact(context.component, 64))}"`);
 	if (context.relatedTests !== undefined && context.relatedTests.length > 0) {
@@ -29,7 +29,7 @@ export function formatRepoMapReadContext(context: RepoMapReadContext | undefined
 	if (context.entrypoints !== undefined && context.entrypoints.length > 0) {
 		attrs.push(`entrypoints="${escapeXmlAttribute(context.entrypoints.slice(0, 2).map((value) => compact(value, 80)).join(", "))}"`);
 	}
-	return budgetedBlock("repo-map", attrs, READ_REPO_MAP_TOKEN_BUDGET);
+	return budgetedBlock("repo_map", attrs, READ_REPO_MAP_TOKEN_BUDGET);
 }
 
 /** Render mutation impact without repeating facts already present on the outer write/edit result. */
@@ -49,7 +49,7 @@ export function formatRepoMapImpact(impact: RepoMapImpactResult | undefined): st
 		&& !testPaths.has(candidate.path)), 4);
 	if (affected.length > 0) attrs.push(`affected="${escapeXmlAttribute(affected.map((candidate) => `${compact(candidate.path, 72)}:${candidate.role}`).join(", "))}"`);
 	if (tests.length > 0) attrs.push(`tests="${escapeXmlAttribute(tests.map((candidate) => compact(candidate.path, 80)).join(", "))}"`);
-	return budgetedBlock("repo-impact", attrs, REPO_IMPACT_TOKEN_BUDGET);
+	return budgetedBlock("repo_impact", attrs, REPO_IMPACT_TOKEN_BUDGET);
 }
 
 function uniquePaths<T extends { path: string }>(values: readonly T[], limit: number): T[] {

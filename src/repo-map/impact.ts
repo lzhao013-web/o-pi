@@ -3,7 +3,7 @@ import { compareText } from "./graph.js";
 import { fileEvidence, symbolEvidence } from "./source.js";
 import type { RepoMapEdge, RepoMapEvidence, RepoMapFileRecord, RepoMapSymbolNode } from "./types.js";
 
-export type RepoMapImpactRole = "changed" | "dependent" | "caller" | "test" | "public-api" | "entrypoint" | "component";
+export type RepoMapImpactRole = "changed" | "dependent" | "caller" | "test" | "public_api" | "entrypoint" | "component";
 
 export interface RepoMapImpactCandidate {
 	path: string;
@@ -75,7 +75,7 @@ export function analyzeRepoMapImpact(input: AnalyzeRepoMapImpactInput): RepoMapI
 			confidence: 1,
 			graphDistance: 0,
 			evidence: [symbolEvidence(file, symbol)],
-			role: change.publicLabel === undefined ? "changed" : "public-api",
+			role: change.publicLabel === undefined ? "changed" : "public_api",
 			priority: change.publicLabel === undefined ? 1_160 : 1_180,
 		});
 	}
@@ -121,7 +121,7 @@ export function analyzeRepoMapImpact(input: AnalyzeRepoMapImpactInput): RepoMapI
 			for (const edge of generation.edges) {
 				if (!(edge.kind === "imports" || edge.kind === "calls" || edge.kind === "references") || !seedIds.has(edge.to)) continue;
 				const candidate = candidateForNode(edge.from, lookup);
-				if (candidate !== undefined) addRelationCandidate(candidates, candidate, edge, "depends on changed public API", "public-api", 1, 930);
+				if (candidate !== undefined) addRelationCandidate(candidates, candidate, edge, "depends on changed public API", "public_api", 1, 930);
 			}
 		}
 	}

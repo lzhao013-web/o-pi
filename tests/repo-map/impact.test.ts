@@ -28,7 +28,7 @@ describe("Repo Map change impact", () => {
 		expect(impact.candidates).toEqual(expect.arrayContaining([
 			expect.objectContaining({ path: "src/user.ts", impactReason: expect.stringContaining("directly changed"), graphDistance: 0 }),
 			expect.objectContaining({ path: "src/caller.ts", role: "caller", impactReason: "direct caller", graphDistance: 1 }),
-			expect.objectContaining({ path: "src/caller.ts", role: "public-api", impactReason: "depends on changed public API" }),
+			expect.objectContaining({ path: "src/caller.ts", role: "public_api", impactReason: "depends on changed public API" }),
 			expect.objectContaining({ path: "tests/user.test.ts", role: "test", impactReason: "explicit test relation" }),
 		]));
 		expect(impact.candidates.every((candidate) => candidate.evidence.length > 0 && candidate.graphDistance <= 2)).toBe(true);
@@ -65,14 +65,14 @@ describe("Repo Map change impact", () => {
 		const writeText = formatWriteModelResult({ status: "written", path: "src/user.ts", bytes: 1, diff: "", repo_map: mutation });
 		const editText = formatEditModelResult({ status: "applied", path: "src/user.ts", replacements: 1, old_version: "old", new_version: "new", diff: "", repo_map: mutation });
 		for (const text of [writeText, editText]) {
-			expect(text).toContain('<repo-impact>\nsymbols="api changed function loadUser"');
-			expect(text).toContain("\n</repo-impact>");
+			expect(text).toContain('<repo_impact>\nsymbols="api changed function loadUser"');
+			expect(text).toContain("\n</repo_impact>");
 			expect(text).not.toContain('candidate="true"');
 			expect(text).not.toContain('changed="src/user.ts"');
-			expect(text).not.toContain('public-api=');
+			expect(text).not.toContain('public_api=');
 			expect(text).toContain('tests="tests/user.test.ts"');
 			expect(text.length).toBeLessThan(1_000);
-			const tag = text.match(/<repo-impact>\n[^<]+\n<\/repo-impact>/u)?.[0];
+			const tag = text.match(/<repo_impact>\n[^<]+\n<\/repo_impact>/u)?.[0];
 			expect(tag).toBeDefined();
 			expect(countTextTokensSync(tag ?? "").tokens).toBeLessThanOrEqual(REPO_IMPACT_TOKEN_BUDGET);
 		}
