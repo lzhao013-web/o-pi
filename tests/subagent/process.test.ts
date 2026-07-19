@@ -62,6 +62,28 @@ describe("subagent execution", () => {
 		expect(result.details.results[0]?.cwd).toBe(path.join(workspace, "pkg"));
 	});
 
+	it("通过 --system-prompt 直接传递原始 Agent Markdown 路径", async () => {
+		let capturedArgs: readonly string[] = [];
+		setSubagentSpawnForTests((_command, args, options) => {
+			capturedArgs = args;
+			expect(options.env?.PI_SUBAGENT_CHILD).toBe("1");
+			const proc = new FakeChildProcess();
+			queueMicrotask(() => {
+				proc.stdout.write(`${JSON.stringify(messageEnd([{ type: "text", text: "done" }]))}\n`);
+				proc.exitCode = 0;
+				proc.emit("close", 0);
+			});
+			return proc;
+		});
+
+		await runPiProcess(input());
+
+		const systemPromptIndex = capturedArgs.indexOf("--system-prompt");
+		expect(systemPromptIndex).toBeGreaterThanOrEqual(0);
+		expect(capturedArgs[systemPromptIndex + 1]).toBe(agent().filePath);
+		expect(capturedArgs).not.toContain("--append-system-prompt");
+	});
+
 	it("输出超过 inline token 边界时只返回一行文件提示", async () => {
 		const output = "alpha beta gamma delta ".repeat(200);
 		const tokenLimit = countTextTokensSync(output, { modelId: "test-model" }).tokens - 1;
@@ -277,7 +299,6 @@ function agent(): AgentDefinition {
 		name: "scout",
 		description: "Scout",
 		tools: ["read"],
-		systemPrompt: "",
 		source: "user",
 		filePath: "/agents/scout.md",
 		hasWriteCapability: false,

@@ -44,7 +44,6 @@ export interface AgentDefinition {
 	tools: string[];
 	timeoutMs?: number;
 	retries?: number;
-	systemPrompt: string;
 	source: SubagentSource;
 	filePath: string;
 	hasWriteCapability: boolean;

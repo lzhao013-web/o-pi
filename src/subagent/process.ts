@@ -1,9 +1,6 @@
 import { spawn as nodeSpawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { formatSubagentSystemPrompt } from "../../agent/extensions/system-prompt.js";
 import type { ProcessRunInput, ProcessRunOutput, ProcessRunProgress, RenderEvent, UsageStats } from "./types.js";
 
 type SpawnFunction = (
@@ -37,7 +34,6 @@ export async function runPiProcess(input: ProcessRunInput, options: { signal?: A
 	const start = Date.now();
 	const usage = emptyUsage();
 	const events: RenderEvent[] = [];
-	let tmpDir: string | undefined;
 	let stdoutBuffer = "";
 	let stderr = "";
 	let output = "";
@@ -50,162 +46,152 @@ export async function runPiProcess(input: ProcessRunInput, options: { signal?: A
 	let providerError: string | undefined;
 	let exitCode = 1;
 
-	try {
-		const args = ["--mode", "json", "-p", "--no-session"];
-		if (input.model !== undefined) args.push("--model", input.model);
-		args.push("--tools", input.tools.join(","));
-		if (input.agent.systemPrompt.trim() !== "") {
-			tmpDir = await mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
-			const promptPath = path.join(tmpDir, `prompt-${sanitizeName(input.agent.name)}.md`);
-			await writeFile(promptPath, formatSubagentSystemPrompt(input.agent), { encoding: "utf8", mode: 0o600 });
-			args.push("--append-system-prompt", promptPath);
-		}
-		args.push(`Task: ${input.task}`);
+	const args = ["--mode", "json", "-p", "--no-session", "--system-prompt", input.agent.filePath];
+	if (input.model !== undefined) args.push("--model", input.model);
+	args.push("--tools", input.tools.join(","));
+	args.push(`Task: ${input.task}`);
 
-		const invocation = getPiInvocation(args);
-		exitCode = await new Promise<number>((resolve) => {
-			const proc = spawnImpl(invocation.command, invocation.args, {
-				cwd: input.cwd,
-				shell: false,
-				stdio: ["pipe", "pipe", "pipe"],
-				env: { ...buildChildEnv(), PI_SUBAGENT_CHILD: "1" },
+	const invocation = getPiInvocation(args);
+	exitCode = await new Promise<number>((resolve) => {
+		const proc = spawnImpl(invocation.command, invocation.args, {
+			cwd: input.cwd,
+			shell: false,
+			stdio: ["pipe", "pipe", "pipe"],
+			env: { ...buildChildEnv(), PI_SUBAGENT_CHILD: "1" },
+		});
+		proc.stdin.end();
+		let settled = false;
+		let terminating = false;
+		let graceTimer: NodeJS.Timeout | undefined;
+		let abortListener: (() => void) | undefined;
+		let timeout: NodeJS.Timeout | undefined;
+		const finish = (code: number) => {
+			if (settled) return;
+			settled = true;
+			if (timeout !== undefined) clearTimeout(timeout);
+			if (graceTimer !== undefined) clearTimeout(graceTimer);
+			if (abortListener !== undefined) options.signal?.removeEventListener("abort", abortListener);
+			if (stdoutBuffer.trim() !== "") processJsonLine(stdoutBuffer);
+			resolve(code);
+		};
+		const abort = () => {
+			aborted = true;
+			terminateProcess(proc);
+		};
+		const terminateProcess = (procToKill: SpawnedProcess) => {
+			if (terminating || settled) return;
+			terminating = true;
+			procToKill.kill("SIGTERM");
+			if (settled || procToKill.exitCode !== null) return;
+			graceTimer = setTimeout(() => {
+				if (procToKill.exitCode === null) procToKill.kill("SIGKILL");
+			}, 2_000);
+		};
+		timeout = setTimeout(() => {
+			timedOut = true;
+			terminateProcess(proc);
+		}, input.timeoutMs);
+		const processJsonLine = (line: string) => {
+			if (line.trim() === "") return;
+			const parsed = parseJsonObject(line);
+			if (parsed === undefined) {
+				parseErrors++;
+				return;
+			}
+			const type = stringField(parsed, "type");
+			if (type === "message_end") {
+				const message = recordField(parsed, "message");
+				if (message !== undefined) handleMessage(message);
+			} else if (type === "tool_result_end") {
+				const message = recordField(parsed, "message");
+				if (message !== undefined) handleToolMessage(message);
+			}
+		};
+		const emitProgress = () => {
+			options.onUpdate?.({
+				output,
+				stderr,
+				usage: { ...usage },
+				events: events.map((event) => ({ ...event })),
+				durationMs: Date.now() - start,
+				...(stopReason !== undefined ? { stopReason } : {}),
+				...(error !== undefined ? { error } : {}),
+				parseErrors,
+				wrote,
 			});
-			proc.stdin.end();
-			let settled = false;
-			let terminating = false;
-			let graceTimer: NodeJS.Timeout | undefined;
-			let abortListener: (() => void) | undefined;
-			let timeout: NodeJS.Timeout | undefined;
-			const finish = (code: number) => {
-				if (settled) return;
-				settled = true;
-				if (timeout !== undefined) clearTimeout(timeout);
-				if (graceTimer !== undefined) clearTimeout(graceTimer);
-				if (abortListener !== undefined) options.signal?.removeEventListener("abort", abortListener);
-				if (stdoutBuffer.trim() !== "") processJsonLine(stdoutBuffer);
-				resolve(code);
-			};
-			const abort = () => {
-				aborted = true;
-				terminateProcess(proc);
-			};
-			const terminateProcess = (procToKill: SpawnedProcess) => {
-				if (terminating || settled) return;
-				terminating = true;
-				procToKill.kill("SIGTERM");
-				if (settled || procToKill.exitCode !== null) return;
-				graceTimer = setTimeout(() => {
-					if (procToKill.exitCode === null) procToKill.kill("SIGKILL");
-				}, 2_000);
-			};
-			timeout = setTimeout(() => {
-				timedOut = true;
-				terminateProcess(proc);
-			}, input.timeoutMs);
-			const processJsonLine = (line: string) => {
-				if (line.trim() === "") return;
-				const parsed = parseJsonObject(line);
-				if (parsed === undefined) {
-					parseErrors++;
-					return;
-				}
-				const type = stringField(parsed, "type");
-				if (type === "message_end") {
-					const message = recordField(parsed, "message");
-					if (message !== undefined) handleMessage(message);
-				} else if (type === "tool_result_end") {
-					const message = recordField(parsed, "message");
-					if (message !== undefined) handleToolMessage(message);
-				}
-			};
-			const emitProgress = () => {
-				options.onUpdate?.({
-					output,
-					stderr,
-					usage: { ...usage },
-					events: events.map((event) => ({ ...event })),
-					durationMs: Date.now() - start,
-					...(stopReason !== undefined ? { stopReason } : {}),
-					...(error !== undefined ? { error } : {}),
-					parseErrors,
-					wrote,
-				});
-			};
-			const handleMessage = (message: Record<string, unknown>) => {
-				if (stringField(message, "role") !== "assistant") return;
-				usage.turns++;
-				const reason = stringField(message, "stopReason");
-				if (reason !== undefined) stopReason = reason;
-				const errorMessage = stringField(message, "errorMessage");
-				if (errorMessage !== undefined) error = errorMessage;
-				mergeUsage(usage, recordField(message, "usage"));
-				for (const part of contentParts(message)) {
-					if (stringField(part, "type") === "text") {
-						const text = stringField(part, "text");
-						if (text !== undefined) {
-							output = text;
-							events.push({ type: "text", text });
-						}
-					} else if (stringField(part, "type") === "toolCall") {
-						const name = stringField(part, "name") ?? "tool";
-						const args = recordField(part, "arguments") ?? {};
-						if (name === "write" || name === "edit" || name === "bash") wrote = true;
-						events.push({ type: "tool", name, args });
+		};
+		const handleMessage = (message: Record<string, unknown>) => {
+			if (stringField(message, "role") !== "assistant") return;
+			usage.turns++;
+			const reason = stringField(message, "stopReason");
+			if (reason !== undefined) stopReason = reason;
+			const errorMessage = stringField(message, "errorMessage");
+			if (errorMessage !== undefined) error = errorMessage;
+			mergeUsage(usage, recordField(message, "usage"));
+			for (const part of contentParts(message)) {
+				if (stringField(part, "type") === "text") {
+					const text = stringField(part, "text");
+					if (text !== undefined) {
+						output = text;
+						events.push({ type: "text", text });
 					}
-				}
-				emitProgress();
-			};
-			const handleToolMessage = (message: Record<string, unknown>) => {
-				for (const part of contentParts(message)) {
-					if (stringField(part, "type") === "toolResult") {
-						const name = stringField(part, "name");
-						if (name === "write" || name === "edit" || name === "bash") wrote = true;
-					}
-				}
-				emitProgress();
-			};
-
-			proc.stdout.on("data", (chunk) => {
-				stdoutBuffer += chunk.toString();
-				const lines = stdoutBuffer.split(/\r?\n/);
-				stdoutBuffer = lines.pop() ?? "";
-				for (const line of lines) processJsonLine(line);
-			});
-			proc.stderr.on("data", (chunk) => {
-				stderr += chunk.toString();
-			});
-			proc.on("error", (spawnError) => {
-				error = spawnError.message;
-				finish(1);
-			});
-			proc.on("close", (code) => finish(code ?? 0));
-			if (options.signal !== undefined) {
-				if (options.signal.aborted) abort();
-				else {
-					abortListener = abort;
-					options.signal.addEventListener("abort", abortListener, { once: true });
+				} else if (stringField(part, "type") === "toolCall") {
+					const name = stringField(part, "name") ?? "tool";
+					const args = recordField(part, "arguments") ?? {};
+					if (name === "write" || name === "edit" || name === "bash") wrote = true;
+					events.push({ type: "tool", name, args });
 				}
 			}
-		});
-		providerError = detectProviderError(stderr) ?? detectProviderError(error ?? "");
-		return {
-			exitCode,
-			...(stopReason !== undefined ? { stopReason } : {}),
-			...(error !== undefined ? { error } : {}),
-			output,
-			stderr,
-			usage,
-			events,
-			durationMs: Date.now() - start,
-			timedOut,
-			aborted,
-			...(providerError !== undefined ? { providerError } : {}),
-			parseErrors,
-			wrote,
+			emitProgress();
 		};
-	} finally {
-		if (tmpDir !== undefined) await rm(tmpDir, { recursive: true, force: true });
-	}
+		const handleToolMessage = (message: Record<string, unknown>) => {
+			for (const part of contentParts(message)) {
+				if (stringField(part, "type") === "toolResult") {
+					const name = stringField(part, "name");
+					if (name === "write" || name === "edit" || name === "bash") wrote = true;
+				}
+			}
+			emitProgress();
+		};
+
+		proc.stdout.on("data", (chunk) => {
+			stdoutBuffer += chunk.toString();
+			const lines = stdoutBuffer.split(/\r?\n/);
+			stdoutBuffer = lines.pop() ?? "";
+			for (const line of lines) processJsonLine(line);
+		});
+		proc.stderr.on("data", (chunk) => {
+			stderr += chunk.toString();
+		});
+		proc.on("error", (spawnError) => {
+			error = spawnError.message;
+			finish(1);
+		});
+		proc.on("close", (code) => finish(code ?? 0));
+		if (options.signal !== undefined) {
+			if (options.signal.aborted) abort();
+			else {
+				abortListener = abort;
+				options.signal.addEventListener("abort", abortListener, { once: true });
+			}
+		}
+	});
+	providerError = detectProviderError(stderr) ?? detectProviderError(error ?? "");
+	return {
+		exitCode,
+		...(stopReason !== undefined ? { stopReason } : {}),
+		...(error !== undefined ? { error } : {}),
+		output,
+		stderr,
+		usage,
+		events,
+		durationMs: Date.now() - start,
+		timedOut,
+		aborted,
+		...(providerError !== undefined ? { providerError } : {}),
+		parseErrors,
+		wrote,
+	};
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -280,8 +266,4 @@ function numberField(record: Record<string, unknown>, key: string): number {
 
 function emptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, contextTokens: 0, turns: 0 };
-}
-
-function sanitizeName(name: string): string {
-	return name.replace(/[^\w.-]+/g, "_");
 }

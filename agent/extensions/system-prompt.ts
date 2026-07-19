@@ -1,5 +1,10 @@
 import * as os from "os";
-import type { BuildSystemPromptOptions, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import {
+	parseFrontmatter,
+	type BuildSystemPromptOptions,
+	type ExtensionAPI,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { type Component, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../../src/subagent/agents.js";
 import { loadSubagentConfig } from "../../src/subagent/config.js";
@@ -36,6 +41,17 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions, extraSectio
 	return formatDefaultPrompt(sections);
 }
 
+/** 从 Pi 加载的原始 Agent Markdown 构建子 Agent system prompt，以独立角色取代默认 role。 */
+export function buildSubagentSystemPrompt(options: BuildSystemPromptOptions): string {
+	if (!options.customPrompt) throw new Error("Subagent Agent Markdown is required.");
+	const { body } = parseFrontmatter(normalizeLineEndings(options.customPrompt));
+	const sections = collectPromptSections(options, []);
+	return joinSections([
+		formatSubagentRole(body),
+		...formatSharedPromptSections(sections),
+	]);
+}
+
 /** 主 Agent 可见的精简 subagent 索引；只暴露选择所需信息，避免把子 Agent 系统提示泄露给主 Agent。 */
 export function formatAvailableSubagentsPrompt(agents: AgentDefinition[]): string {
 	if (agents.length === 0) return "";
@@ -46,15 +62,6 @@ export function formatAvailableSubagentsPrompt(agents: AgentDefinition[]): strin
 	}
 	lines.push("</subagents>");
 	return lines.join("\n");
-}
-
-/** 子 Agent 专属追加提示；正文放入 XML 标签以明确当前运行身份并隔离任意用户内容。 */
-export function formatSubagentSystemPrompt(agent: AgentDefinition): string {
-	return [
-		`<subagent name="${escapeXml(agent.name)}" description="${escapeXml(agent.description)}">`,
-		normalizeLineEndings(agent.systemPrompt),
-		"</subagent>",
-	].join("\n");
 }
 
 /** 注册 /system 命令，用只读浮层查看当前 system prompt；内容不会写入会话历史。 */
@@ -104,6 +111,17 @@ function formatDefaultPrompt(sections: PromptSections): string {
 		`<role>You are an expert coding assistant operating inside pi, a coding agent harness. You ALWAYS respond in user's language.</role>`,
 		...formatSharedPromptSections(sections),
 	]);
+}
+
+function formatSubagentRole(agentInstructions: string): string {
+	const instructions = normalizeLineEndings(agentInstructions).trim();
+	const lines = [
+		"<subagent_role>",
+		"You are a subagent working for the primary agent. Complete the assigned task within its scope and return the result to the primary agent. You ALWAYS respond in user's language.",
+	];
+	if (instructions.length > 0) lines.push("", instructions);
+	lines.push("</subagent_role>");
+	return lines.join("\n");
 }
 
 function formatCustomPrompt(customPrompt: string, sections: PromptSections): string {
@@ -359,13 +377,14 @@ function wrapByColumns(text: string, width: number): string[] {
 	return lines.length > 0 ? lines : [" "];
 }
 
-async function buildRuntimeSystemPrompt(options: BuildSystemPromptOptions, cwd: string): Promise<string> {
+export async function buildRuntimeSystemPrompt(options: BuildSystemPromptOptions, cwd: string): Promise<string> {
+	if (process.env.PI_SUBAGENT_CHILD === "1") {
+		return buildSubagentSystemPrompt(options);
+	}
 	return buildSystemPrompt(options, await getMainAgentExtraSystemPrompt(cwd));
 }
 
 async function getMainAgentExtraSystemPrompt(cwd: string): Promise<string[]> {
-	if (process.env.PI_SUBAGENT_CHILD === "1") return [];
-
 	const config = await loadSubagentConfig(cwd);
 	const discovery = discoverAgents(cwd, config);
 	const subagents = formatAvailableSubagentsPrompt(discovery.agents);

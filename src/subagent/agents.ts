@@ -119,25 +119,22 @@ function loadAgentsFromDir(
 
 function parseAgentFile(filePath: string, source: SubagentSource, config: SubagentConfig, warnings: string[]): AgentDefinition {
 	const content = readFileSync(filePath, "utf8");
-	const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+	const { frontmatter } = parseFrontmatter<Record<string, unknown>>(content);
 	const known = new Set(["name", "description", "model", "tools", "timeout_ms", "retries"]);
 	for (const key of Object.keys(frontmatter)) {
 		if (!known.has(key)) warnings.push(`${filePath}: ignored unknown frontmatter field "${key}"`);
 	}
-	const name = requireString(frontmatter["name"], "name");
-	const description = requireString(frontmatter["description"], "description");
 	const tools = parseTools(frontmatter["tools"], config.defaultTools, filePath);
 	const model = optionalString(frontmatter["model"], "model");
 	const timeoutMs = optionalInteger(frontmatter["timeout_ms"], "timeout_ms");
 	const retries = optionalInteger(frontmatter["retries"], "retries");
 	return {
-		name,
-		description,
+		name: requireString(frontmatter["name"], "name"),
+		description: requireString(frontmatter["description"], "description"),
 		...(model !== undefined ? { model } : {}),
 		tools,
 		...(timeoutMs !== undefined ? { timeoutMs } : {}),
 		...(retries !== undefined ? { retries } : {}),
-		systemPrompt: body.trim(),
 		source,
 		filePath,
 		hasWriteCapability: hasWriteCapability(tools),

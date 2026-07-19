@@ -1,6 +1,7 @@
 import type { BuildSystemPromptOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { preserveEnv } from "../helpers/lifecycle.js";
 
 vi.mock(import("os"), async (importOriginal) => ({
 	...(await importOriginal()),
@@ -8,12 +9,19 @@ vi.mock(import("os"), async (importOriginal) => ({
 	release: () => "7.1.2-arch",
 }));
 
-import { buildSystemPrompt, registerSystemCommand, SystemPromptViewer } from "../../agent/extensions/system-prompt.js";
+import {
+	buildRuntimeSystemPrompt,
+	buildSubagentSystemPrompt,
+	buildSystemPrompt,
+	registerSystemCommand,
+	SystemPromptViewer,
+} from "../../agent/extensions/system-prompt.js";
 
 const toolSnippets = {
 	read: "read files",
 	bash: "run commands",
 };
+preserveEnv("PI_SUBAGENT_CHILD");
 
 describe("system prompt extension", () => {
 	afterEach(() => {
@@ -108,6 +116,64 @@ describe("system prompt extension", () => {
 		expect(prompt).not.toContain("- read: read files");
 		expect(prompt).toContain("<context>");
 		expect(prompt).not.toContain("<role>");
+	});
+
+	it("从标准 Agent Markdown 合成 subagent_role，同时保留 append 与项目规则", () => {
+		const prompt = buildSubagentSystemPrompt({
+			cwd: "C:\\repo",
+			customPrompt: `---\nname: 'scout<&"'\ndescription: 'Inspect <code> & "report"'\ntools: read, grep\n---\nReturn evidence.\r\nDo not modify files.`,
+			appendSystemPrompt: "Shared append rule.",
+			promptGuidelines: ["Use read before edit."],
+			contextFiles: [{ path: "AGENTS.md", content: "Project rule.\r\nSecond line." }],
+		});
+
+		expect(prompt).toMatch(/^<subagent_role>\n/);
+		expect(prompt).toContain("working for the primary agent");
+		expect(prompt).toContain("You ALWAYS respond in user's language.");
+		expect(prompt).toContain("Return evidence.\nDo not modify files.");
+		expect(prompt).toContain("<tool_policy>\n- Use the narrowest active tool that directly matches the operation.\n- Use read before edit.\n</tool_policy>");
+		expect(prompt).toContain("<append_system_prompt>\nShared append rule.\n</append_system_prompt>");
+		expect(prompt).toContain('<project_instructions path="AGENTS.md">\nProject rule.\nSecond line.\n</project_instructions>');
+		expect(prompt).toContain("<workspace>C:/repo</workspace>");
+		expect(prompt).not.toContain("<custom_prompt>");
+		expect(prompt).not.toContain("scout<&\"");
+		expect(prompt).not.toContain('Inspect <code> & "report"');
+		expect(prompt).not.toContain("tools: read, grep");
+		expect(prompt).not.toContain("<role>");
+		expect(prompt).not.toContain("<subagents>");
+		expect(prompt).not.toContain("\r");
+	});
+
+	it("空 Agent 正文仍生成完整 subagent 身份", () => {
+		const prompt = buildSubagentSystemPrompt({
+			cwd: "/repo",
+			customPrompt: "---\nname: worker\ndescription: Execute a bounded task\ntools: read, edit\n---\n",
+		});
+
+		expect(prompt).toContain("<subagent_role>");
+		expect(prompt).not.toContain("Execute a bounded task");
+		expect(prompt).toContain("You ALWAYS respond in user's language.");
+		expect(prompt).toContain("</subagent_role>");
+	});
+
+	it("子进程把 Pi 读取的原始 Agent Markdown 合成为角色", async () => {
+		process.env.PI_SUBAGENT_CHILD = "1";
+
+		const prompt = await buildRuntimeSystemPrompt({
+			cwd: "/repo",
+			customPrompt: "---\nname: reviewer\ndescription: Review changes\ntools: read, bash\n---\nReport defects first.",
+		}, "/repo");
+
+		expect(prompt).toContain("<subagent_role>");
+		expect(prompt).not.toContain("Review changes");
+		expect(prompt).toContain("Report defects first.");
+		expect(prompt).not.toContain("tools: read, bash");
+	});
+
+	it("子进程缺少 Agent Markdown 时拒绝合成角色", async () => {
+		process.env.PI_SUBAGENT_CHILD = "1";
+
+		await expect(buildRuntimeSystemPrompt({ cwd: "/repo" }, "/repo")).rejects.toThrow("Subagent Agent Markdown is required");
 	});
 
 	it("注册 /system 命令并用只读 custom UI 展示当前构建结果", async () => {

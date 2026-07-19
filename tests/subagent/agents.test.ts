@@ -1,7 +1,7 @@
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { formatAvailableSubagentsPrompt, formatSubagentSystemPrompt } from "../../agent/extensions/system-prompt.js";
+import { buildSubagentSystemPrompt, formatAvailableSubagentsPrompt } from "../../agent/extensions/system-prompt.js";
 import { formatAgents } from "../../src/subagent/commands.js";
 import { discoverAgents, resolveSubagentTools } from "../../src/subagent/agents.js";
 import { defaultSubagentConfig } from "../../src/subagent/config.js";
@@ -24,6 +24,24 @@ describe("subagent agent discovery", () => {
 		await writeFile(path.join(dir, "agent", "agents", "scout.md"), agentMarkdown("scout", "Scout", "read, grep"));
 		const found = discoverAgents(dir, defaultSubagentConfig());
 		expect(found.agents[0]).toMatchObject({ name: "scout", tools: ["read", "grep"], source: "user" });
+	});
+
+	it("统一解析 Agent Markdown 的执行元数据", async () => {
+		await writeFile(
+			path.join(dir, "agent", "agents", "worker.md"),
+			"---\nname: worker\ndescription: Worker\nmodel: provider/model\ntools: read, edit\ntimeout_ms: 120000\nretries: 2\n---\nImplement the task.",
+		);
+
+		const found = discoverAgents(dir, defaultSubagentConfig());
+
+		expect(found.agents[0]).toMatchObject({
+			name: "worker",
+			description: "Worker",
+			model: "provider/model",
+			tools: ["read", "edit"],
+			timeoutMs: 120000,
+			retries: 2,
+		});
 	});
 
 	it("加载 ~/.agents/agents 下的用户 Agent", async () => {
@@ -85,15 +103,16 @@ describe("subagent agent discovery", () => {
 		expect(prompt).not.toContain("body");
 	});
 
-	it("子 Agent 提示只包裹 agent 名称、描述和正文", async () => {
+	it("子 Agent 提示只包含身份说明和正文，不暴露选择元数据", async () => {
 		await writeFile(path.join(dir, "agent", "agents", "scout.md"), agentMarkdown("scout", "Scout", "read"));
 		const agent = discoverAgents(dir, defaultSubagentConfig()).agents[0];
 		expect(agent).toBeDefined();
-		const prompt = formatSubagentSystemPrompt(agent!);
-		expect(prompt).toContain("scout");
-		expect(prompt).toContain("Scout");
+		const prompt = buildSubagentSystemPrompt({ cwd: dir, customPrompt: agentMarkdown("scout", "Scout", "read") });
+		expect(prompt).not.toContain("scout");
+		expect(prompt).not.toContain("Scout");
 		expect(prompt).toContain("body");
-		expect(prompt).not.toContain("<available_subagents>");
+		expect(prompt).toContain("<subagent_role>");
+		expect(prompt).not.toContain("<subagents>");
 	});
 
 	it("实际传递工具取配置与 registered tools 的交集", async () => {
