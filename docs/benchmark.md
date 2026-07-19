@@ -32,6 +32,15 @@ npm run bench -- --quick
 npm run bench -- --suites=startup,agent-loop,lazy
 ```
 
+统一入口通过 `scripts/benchmark/registry.mjs` 注册 suite；运行时和统计逻辑分别集中在
+`scripts/benchmark/runtime.mjs` 与 `scripts/benchmark/stats.mjs`，专项入口只保留场景编排。
+所有独立进程 worker 集中在 `scripts/workers/`，同一领域的不同模式通过参数复用 worker。
+也可以加载外部 suite（模块导出一个 `{ id, execute }`，或 suite 数组）：
+
+```bash
+npm run bench -- --plugin=./scripts/my-benchmark.mjs --suites=my-benchmark
+```
+
 可用参数：
 
 ```text
@@ -94,4 +103,4 @@ npm run bench -- --runs=9 --suites=startup,agent-loop,lazy --json=bench-before.j
 # 修改后再次运行，输出到 bench-after.json
 ```
 
-不要把不同模型、真实网络请求或不同 Repo Map fixture 的数据直接比较。少于 7 次的 P95 只能用于冒烟，不适合作为回归结论。CPU 调频、杀毒/索引任务、首次磁盘读取和 Node/Pi 依赖升级也会显著影响结果。
+不要把不同模型、真实网络请求或不同 Repo Map fixture 的数据直接比较。少于 7 次的 P95 只能用于冒烟，不适合作为回归结论。专项入口保留各自的采样策略：file-tools/web 默认 2 次预热，file-search/repo-map 默认 1 次预热，ranking 固定 3 次预热。CPU 调频、杀毒/索引任务、首次磁盘读取和 Node/Pi 依赖升级也会显著影响结果。

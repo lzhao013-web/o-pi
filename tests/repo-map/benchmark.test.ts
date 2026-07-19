@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
-const worker = fileURLToPath(new URL("../../scripts/bench-repo-map-worker.mjs", import.meta.url));
+const worker = fileURLToPath(new URL("../../scripts/workers/bench-repo-map-worker.mjs", import.meta.url));
 
 interface BenchmarkResult {
 	readonly size: number;

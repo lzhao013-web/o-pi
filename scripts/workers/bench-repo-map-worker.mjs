@@ -3,8 +3,7 @@ import { mkdir, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { fileURLToPath } from "node:url";
-import { createJiti } from "jiti/static";
+import { loadTypeScript } from "../benchmark/loader.mjs";
 
 const size = readSize(process.argv.slice(2));
 const userId = typeof process.getuid === "function" ? process.getuid() : "user";
@@ -19,11 +18,10 @@ try {
 	await rm(temp, { recursive: true, force: true });
 	await writeFixture(workspace, size, initialTime);
 	const runtimeStarted = performance.now();
-	const jiti = createJiti(import.meta.url, { moduleCache: false });
-	const service = await jiti.import(fileURLToPath(new URL("../src/repo-map/service.ts", import.meta.url)));
-	const config = await jiti.import(fileURLToPath(new URL("../src/repo-map/config.ts", import.meta.url)));
-	const fileConfig = await jiti.import(fileURLToPath(new URL("../src/file-tools/config.ts", import.meta.url)));
-	const queryModule = await jiti.import(fileURLToPath(new URL("../src/repo-map/file-tool-query.ts", import.meta.url)));
+	const service = await loadTypeScript("src/repo-map/service.ts");
+	const config = await loadTypeScript("src/repo-map/config.ts");
+	const fileConfig = await loadTypeScript("src/file-tools/config.ts");
+	const queryModule = await loadTypeScript("src/repo-map/file-tool-query.ts");
 	const runtimeImported = performance.now();
 
 	const dependencies = benchmarkDependencies(workspace, cacheRoot, config, fileConfig);

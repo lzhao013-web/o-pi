@@ -1,14 +1,10 @@
 import { performance } from "node:perf_hooks";
-import { fileURLToPath } from "node:url";
-import { createJiti } from "jiti/static";
-
-const entry = fileURLToPath(new URL("../agent/extensions/repo-map.ts", import.meta.url));
+import { loadTypeScript } from "../benchmark/loader.mjs";
 const branch = [];
 const commands = new Map();
 const notifications = [];
 const started = performance.now();
-const jiti = createJiti(import.meta.url, { moduleCache: false });
-const extension = await jiti.import(entry, { default: true });
+const extension = await loadTypeScript("agent/extensions/repo-map.ts", { defaultExport: true });
 extension({
 	on() {},
 	registerCommand(name, options) {

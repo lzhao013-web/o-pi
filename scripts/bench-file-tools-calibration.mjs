@@ -2,21 +2,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { fileURLToPath } from "node:url";
-import { createJiti } from "jiti/static";
-
-const root = fileURLToPath(new URL("..", import.meta.url));
+import { loadTypeScript, root } from "./benchmark/loader.mjs";
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "o-pi-ranking-calibration-"));
 process.env.PI_REPO_MAP_CACHE_DIR = path.join(temporaryRoot, "cache");
 process.env.PI_REPO_MAP_CONFIG = path.join(root, "agent/configs/repo-map.jsonc");
 process.env.PI_FILE_TOOLS_CONFIG = path.join(root, "agent/configs/file-tools.jsonc");
 
-const jiti = createJiti(import.meta.url, { moduleCache: false });
-const { initializeRepoMap, readActivatedRepoMap } = await jiti.import(fileURLToPath(new URL("../src/repo-map/service.ts", import.meta.url)));
-const { RepoMapQueryIndex } = await jiti.import(fileURLToPath(new URL("../src/repo-map/query.ts", import.meta.url)));
-const { findWorkspaceFiles } = await jiti.import(fileURLToPath(new URL("../src/file-tools/tools/find.ts", import.meta.url)));
-const { grepWorkspaceFiles } = await jiti.import(fileURLToPath(new URL("../src/file-tools/tools/grep.ts", import.meta.url)));
-const { clearGrepIndex } = await jiti.import(fileURLToPath(new URL("../src/file-tools/grep/indexer.ts", import.meta.url)));
+const { initializeRepoMap, readActivatedRepoMap } = await loadTypeScript("src/repo-map/service.ts");
+const { RepoMapQueryIndex } = await loadTypeScript("src/repo-map/query.ts");
+const { findWorkspaceFiles } = await loadTypeScript("src/file-tools/tools/find.ts");
+const { grepWorkspaceFiles } = await loadTypeScript("src/file-tools/tools/grep.ts");
+const { clearGrepIndex } = await loadTypeScript("src/file-tools/grep/indexer.ts");
 
 const findCases = [
 	{ query: "ranking evidence", relevant: ["src/file-tools/ranking-evidence.ts"] },

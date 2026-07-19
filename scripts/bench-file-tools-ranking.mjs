@@ -1,16 +1,16 @@
-import { performance } from "node:perf_hooks";
-import { fileURLToPath } from "node:url";
-import { createJiti } from "jiti/static";
+import { readRuns } from "./benchmark/cli.mjs";
+import { createTypeScriptLoader } from "./benchmark/loader.mjs";
+import { measureOperation } from "./benchmark/runtime.mjs";
+import { row as summaryRow } from "./benchmark/stats.mjs";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
-const jiti = createJiti(import.meta.url);
-const { compareRankedGrepRegions, fuseRankedGrepSources, mergeRankedGrepSources, selectRankedGrepCandidates } = await jiti.import(fileURLToPath(new URL("../src/file-tools/grep/fusion.ts", import.meta.url)));
-const { compareRankedFindEntries, fuseRankedFindSources, mergeRankedFindSources, selectRankedFindEntries } = await jiti.import(fileURLToPath(new URL("../src/file-tools/find/fusion.ts", import.meta.url)));
-const { createFindEntry } = await jiti.import(fileURLToPath(new URL("../src/file-tools/find/ranker.ts", import.meta.url)));
-const { createSourceRankingEvidence, mergeRankingEvidence } = await jiti.import(fileURLToPath(new URL("../src/file-tools/ranking-evidence.ts", import.meta.url)));
-const { MMR_LAMBDA, RELEVANCE_HEAD_SIZE, SAME_TIER_SCORE_RATIO_CUTOFF } = await jiti.import(fileURLToPath(new URL("../src/file-tools/ranking-selection.ts", import.meta.url)));
-const { renderFindResults } = await jiti.import(fileURLToPath(new URL("../src/file-tools/find/renderer.ts", import.meta.url)));
-const runs = readRuns(process.argv.slice(2));
+const loadTypeScript = createTypeScriptLoader({ moduleCache: true });
+const { compareRankedGrepRegions, fuseRankedGrepSources, mergeRankedGrepSources, selectRankedGrepCandidates } = await loadTypeScript("src/file-tools/grep/fusion.ts");
+const { compareRankedFindEntries, fuseRankedFindSources, mergeRankedFindSources, selectRankedFindEntries } = await loadTypeScript("src/file-tools/find/fusion.ts");
+const { createFindEntry } = await loadTypeScript("src/file-tools/find/ranker.ts");
+const { createSourceRankingEvidence, mergeRankingEvidence } = await loadTypeScript("src/file-tools/ranking-evidence.ts");
+const { MMR_LAMBDA, RELEVANCE_HEAD_SIZE, SAME_TIER_SCORE_RATIO_CUTOFF } = await loadTypeScript("src/file-tools/ranking-selection.ts");
+const { renderFindResults } = await loadTypeScript("src/file-tools/find/renderer.ts");
+const runs = readRuns(process.argv.slice(2), { defaultRuns: 15 });
 const sizes = [1_000, 5_000, 20_000];
 const rows = [];
 
@@ -27,10 +27,10 @@ for (const size of sizes) {
 	if (selected.some((item, index) => item !== expected[index])) {
 		throw new Error("grep selector changed the reference head+MMR result");
 	}
-	rows.push(row(`fusion + full sort N=${size}`, sample(runs, () => mergeRankedGrepSources(...sources))));
-	rows.push(row(`fusion + head+MMR top-32 N=${size}`, sample(runs, () => selectRankedGrepCandidates(fuseGrepSources(sources), limit))));
-	rows.push(row(`full sort only N=${merged.length}`, sample(runs, () => [...unsorted].sort(compareRankedGrepRegions))));
-	rows.push(row(`head+MMR top-32 N=${merged.length}`, sample(runs, () => selectRankedGrepCandidates(unsorted, limit))));
+	rows.push(row(`fusion + full sort N=${size}`, sample(() => mergeRankedGrepSources(...sources))));
+	rows.push(row(`fusion + head+MMR top-32 N=${size}`, sample(() => selectRankedGrepCandidates(fuseGrepSources(sources), limit))));
+	rows.push(row(`full sort only N=${merged.length}`, sample(() => [...unsorted].sort(compareRankedGrepRegions))));
+	rows.push(row(`head+MMR top-32 N=${merged.length}`, sample(() => selectRankedGrepCandidates(unsorted, limit))));
 
 	const findSources = buildFindSources(size);
 	const mergedFind = mergeRankedFindSources(...findSources);
@@ -39,10 +39,10 @@ for (const size of sizes) {
 	const expectedFind = referenceHeadMmr(unsortedFind, findLimit, compareRankedFindEntries, (item) => item.tier, (item) => item.evidence.fusionScore, (item) => item.evidence.familyCount >= 2, (item) => item.entry.path, findSimilarity);
 	const selectedFind = selectRankedFindEntries(unsortedFind, findLimit);
 	if (selectedFind.some((item, index) => item !== expectedFind[index])) throw new Error("bounded find selector changed the diverse top-K result");
-	rows.push(row(`find fusion + full sort N=${size}`, sample(runs, () => mergeRankedFindSources(...findSources))));
-	rows.push(row(`find fusion + head+MMR top-50 N=${size}`, sample(runs, () => selectRankedFindEntries(fuseFindSources(findSources), findLimit))));
-	rows.push(row(`find full sort only N=${mergedFind.length}`, sample(runs, () => [...unsortedFind].sort(compareRankedFindEntries))));
-	rows.push(row(`find head+MMR top-50 N=${mergedFind.length}`, sample(runs, () => selectRankedFindEntries(unsortedFind, findLimit))));
+	rows.push(row(`find fusion + full sort N=${size}`, sample(() => mergeRankedFindSources(...findSources))));
+	rows.push(row(`find fusion + head+MMR top-50 N=${size}`, sample(() => selectRankedFindEntries(fuseFindSources(findSources), findLimit))));
+	rows.push(row(`find full sort only N=${mergedFind.length}`, sample(() => [...unsortedFind].sort(compareRankedFindEntries))));
+	rows.push(row(`find head+MMR top-50 N=${mergedFind.length}`, sample(() => selectRankedFindEntries(unsortedFind, findLimit))));
 }
 
 console.log(`file-tools multi-channel ranking benchmark (${runs} measured runs, 3 warmups; synthetic channels, 50% identity overlap)`);
@@ -231,37 +231,10 @@ function validateFixedRelevanceScenarios() {
 	}
 }
 
-function sample(measuredRuns, operation) {
-	const samples = [];
-	for (let index = 0; index < measuredRuns + 3; index += 1) {
-		const started = performance.now();
-		operation();
-		if (index >= 3) samples.push(performance.now() - started);
-	}
-	return samples;
+function sample(operation) {
+	return measureOperation(operation, { warmups: 3, runs });
 }
 
 function row(metric, samples) {
-	const sorted = [...samples].sort((left, right) => left - right);
-	return {
-		metric,
-		"p50 ms": round(percentile(sorted, 0.5)),
-		"p95 ms": round(percentile(sorted, 0.95)),
-		"min ms": round(sorted[0]),
-	};
-}
-
-function percentile(sorted, quantile) {
-	return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * quantile) - 1)];
-}
-
-function round(value) {
-	return Math.round(value * 100) / 100;
-}
-
-function readRuns(args) {
-	const flag = args.find((arg) => arg.startsWith("--runs="));
-	const value = Number(flag?.slice("--runs=".length) ?? 15);
-	if (!Number.isInteger(value) || value < 3) throw new Error("--runs must be an integer >= 3");
-	return value;
+	return summaryRow(metric, samples, 2);
 }

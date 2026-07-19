@@ -6,11 +6,13 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createSuiteRegistry, loadSuitePlugin } from "./benchmark/registry.mjs";
+import { aggregateObjectSamples, numericMetricRows, round, samplesToObject, summarize } from "./benchmark/stats.mjs";
+import { benchmarkEnv, run } from "./benchmark/runtime.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const agentRoot = path.join(root, "agent");
-const lazyWorker = fileURLToPath(new URL("./bench-lazy-components-worker.mjs", import.meta.url));
+const lazyWorker = fileURLToPath(new URL("./workers/bench-lazy-components-worker.mjs", import.meta.url));
 const pi = process.env.PI_BIN ?? "pi";
 const SCRIPT_BIN = "/usr/bin/script";
 const MAIN_TIMING_HEADER = "--- Startup Timings: main ---";
@@ -42,17 +44,32 @@ if (options.help) {
 	process.exit(0);
 }
 
+const registry = createSuiteRegistry([
+	{ id: "startup", execute: () => runStartupSuite(), resultKey: "startup" },
+	{ id: "agent-loop", execute: () => runAgentLoopSuite(), resultKey: "agentLoop" },
+	{ id: "lazy", execute: () => runLazyComponentsSuite(), resultKey: "lazy" },
+	{ id: "file-tools", execute: () => runExternalSuite("file-tools", "bench-file-tools.mjs", [`--runs=${options.runs}`]) },
+	{ id: "file-search", execute: () => runExternalSuite("file-tools search", "bench-file-tools-search.mjs", [`--runs=${options.runs}`]) },
+	{ id: "repo-map", execute: () => runExternalSuite("repo-map", "bench-repo-map.mjs", [`--runs=${options.runs}`, `--sizes=${options.repoSizes.join(",")}`]) },
+	{ id: "web-tools", execute: () => runExternalSuite("web-tools", "bench-web-tools.mjs", [`--runs=${options.runs}`]) },
+]);
+for (const pluginPath of options.pluginPaths) {
+	const resolved = path.resolve(root, pluginPath);
+	await loadSuitePlugin(registry, pathToFileURL(resolved).href);
+}
+const unknownSuites = [...options.suites].filter((suite) => !registry.has(suite));
+if (unknownSuites.length > 0) throw new Error(`unknown suites: ${unknownSuites.join(", ")}`);
+
 const environment = readEnvironment();
 printEnvironment(environment, options);
 const results = { environment, options: serializableOptions(options) };
-
-if (options.suites.has("startup")) results.startup = await runStartupSuite();
-if (options.suites.has("agent-loop")) results.agentLoop = await runAgentLoopSuite();
-if (options.suites.has("lazy")) results.lazy = runLazyComponentsSuite();
-if (options.suites.has("file-tools")) runExternalSuite("file-tools", "bench-file-tools.mjs", [`--runs=${options.runs}`]);
-if (options.suites.has("file-search")) runExternalSuite("file-tools search", "bench-file-tools-search.mjs", [`--runs=${options.runs}`]);
-if (options.suites.has("repo-map")) runExternalSuite("repo-map", "bench-repo-map.mjs", [`--runs=${options.runs}`, `--sizes=${options.repoSizes.join(",")}`]);
-if (options.suites.has("web-tools")) runExternalSuite("web-tools", "bench-web-tools.mjs", [`--runs=${options.runs}`]);
+for (const suiteId of options.suites) {
+	const value = await registry.run(suiteId, { root, environment, options });
+	if (value !== undefined) {
+		const suite = registry.get(suiteId);
+		results[suite?.resultKey ?? suiteId] = value;
+	}
+}
 
 if (options.jsonPath !== undefined) {
 	const target = path.resolve(root, options.jsonPath);
@@ -443,24 +460,8 @@ function aggregateExtensionProfiles(profiles) {
 	}));
 }
 
-function numericMetricRows(samples) {
-	return Object.keys(samples[0]).map((metric) => {
-		const summary = summarize(samples.map((sample) => sample[metric]));
-		const unit = metric.endsWith("Mb") ? "MB" : "ms";
-		return { metric, unit, p50: summary.p50, p95: summary.p95, min: summary.min, max: summary.max };
-	});
-}
-
-function aggregateObjectSamples(samples) {
-	return Object.fromEntries(Object.keys(samples[0]).map((metric) => [metric, summarize(samples.map((sample) => sample[metric]))]));
-}
-
 function createScenarioSamples(scenarios) {
 	return new Map(scenarios.map((scenario) => [scenario.id, []]));
-}
-
-function samplesToObject(samples) {
-	return Object.fromEntries([...samples].map(([id, values]) => [id, summarize(values)]));
 }
 
 function scenarioRows(scenarios, samples) {
@@ -499,46 +500,9 @@ function deltaRow(metric, baseline, measured) {
 	};
 }
 
-function summarize(values) {
-	if (values.length === 0) return { samples: [], min: 0, p50: 0, p95: 0, max: 0 };
-	const sorted = [...values].sort((left, right) => left - right);
-	return {
-		samples: values.map(round),
-		min: round(sorted[0]),
-		p50: round(percentile(sorted, 0.5)),
-		p95: round(percentile(sorted, 0.95)),
-		max: round(sorted.at(-1)),
-	};
-}
-
-function percentile(sorted, quantile) {
-	return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * quantile) - 1)];
-}
-
 function rotate(values, offset) {
 	const index = offset % values.length;
 	return [...values.slice(index), ...values.slice(0, index)];
-}
-
-function benchmarkEnv() {
-	return {
-		...process.env,
-		PI_CODING_AGENT_DIR: agentRoot,
-		PI_OFFLINE: "1",
-	};
-}
-
-function run(command, args, capture) {
-	const result = spawnSync(command, args, {
-		cwd: root,
-		env: benchmarkEnv(),
-		encoding: "utf8",
-		maxBuffer: 20 * 1024 * 1024,
-		stdio: capture ? ["ignore", "pipe", "pipe"] : "ignore",
-	});
-	if (result.error !== undefined) throw result.error;
-	if (result.status !== 0) throw new Error(`${command} exited with ${result.status}: ${result.stderr ?? ""}`);
-	return result.stdout?.trim() ?? "";
 }
 
 function readEnvironment() {
@@ -576,10 +540,6 @@ function shellQuote(value) {
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function round(value) {
-	return Math.round(value * 10) / 10;
-}
-
 function stringifyError(error) {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -592,8 +552,6 @@ function readOptions(args) {
 	const suitesFlag = readStringFlag(args, "--suites");
 	const suiteNames = suitesFlag === undefined || suitesFlag === "all" ? DEFAULT_SUITES : suitesFlag.split(",").filter(Boolean);
 	if (suiteNames.length === 0) throw new Error("--suites must select at least one suite");
-	const unknownSuites = suiteNames.filter((suite) => !DEFAULT_SUITES.includes(suite));
-	if (unknownSuites.length > 0) throw new Error(`unknown suites: ${unknownSuites.join(", ")}`);
 	const minimumThreeSuites = new Set(["file-tools", "file-search", "web-tools"]);
 	if (runs < 3 && suiteNames.some((suite) => minimumThreeSuites.has(suite))) {
 		throw new Error("file-tools, file-search and web-tools suites require --runs >= 3");
@@ -604,13 +562,15 @@ function readOptions(args) {
 	}
 	const jsonPath = readStringFlag(args, "--json");
 	if (jsonPath === "") throw new Error("--json requires a non-empty path");
+	const pluginPaths = args.filter((arg) => arg.startsWith("--plugin=")).map((arg) => arg.slice("--plugin=".length));
+	if (pluginPaths.some((pluginPath) => pluginPath === "")) throw new Error("--plugin requires a non-empty path");
 	const known = ["--help", "-h", "--quick"];
 	for (const arg of args) {
 		if (known.includes(arg)) continue;
-		if (["--runs=", "--warmups=", "--suites=", "--repo-sizes=", "--json="].some((prefix) => arg.startsWith(prefix))) continue;
+		if (["--runs=", "--warmups=", "--suites=", "--repo-sizes=", "--json=", "--plugin="].some((prefix) => arg.startsWith(prefix))) continue;
 		throw new Error(`unknown benchmark option: ${arg}`);
 	}
-	return { help, quick, runs, warmups, suites: new Set(suiteNames), repoSizes: [...new Set(repoSizes)], jsonPath };
+	return { help, quick, runs, warmups, suites: new Set(suiteNames), repoSizes: [...new Set(repoSizes)], jsonPath, pluginPaths };
 }
 
 function readIntegerFlag(args, name, fallback, minimum) {
@@ -639,6 +599,7 @@ Options:
                           startup,agent-loop,lazy,file-tools,file-search,repo-map,web-tools
   --repo-sizes=LIST       Repo Map fixture sizes (default: 100).
   --json=PATH             Write structured unified-suite results to PATH.
+  --plugin=PATH            Load an external suite module (repeatable).
   --help                  Show this help.
 
 Examples:
