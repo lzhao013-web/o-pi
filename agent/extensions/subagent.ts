@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
 	executeSubagent,
+	formatModelReference,
 	registerSubagentCommands,
 	renderSubagentCall,
 	renderSubagentResult,
@@ -35,7 +36,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			return executeSubagent(params as SubagentToolParams, {
 				cwd: ctx.cwd,
 				hasUI: ctx.hasUI,
-				currentModel: ctx.model?.id,
+				currentModel: formatModelReference(ctx.model),
 				registeredTools: pi.getAllTools().map((tool) => tool.name),
 				...(signal !== undefined ? { signal } : {}),
 				...(ctx.hasUI ? { confirm: (title: string, message: string) => ctx.ui.confirm(title, message) } : {}),

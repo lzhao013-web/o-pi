@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { discoverAgents, hasWriteCapability, resolveSubagentTools } from "./agents.js";
 import { loadSubagentConfig } from "./config.js";
 import { executeSubagent } from "./executor.js";
+import { formatModelReference } from "./model.js";
 import type { AgentDefinition, SubagentConfig, SubagentTask } from "./types.js";
 
 interface AutocompleteItem {
@@ -112,7 +113,7 @@ async function runAndNotify(
 		{
 			cwd: ctx.cwd,
 			hasUI: ctx.hasUI,
-			currentModel: ctx.model?.id,
+			currentModel: formatModelReference(ctx.model),
 			registeredTools: registeredToolNames(pi),
 			signal: ctx.signal,
 			confirm: ctx.hasUI ? (title, message) => ctx.ui.confirm(title, message) : undefined,
