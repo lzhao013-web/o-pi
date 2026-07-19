@@ -408,9 +408,10 @@ describe("read", () => {
 	});
 
 	it("截断时返回 continuation", async () => {
-		await writeFile(path.join(workspace, "big.txt"), `${Array.from({ length: 2100 }, (_, i) => `l${i}`).join("\n")}\n`);
+		await useFileToolsConfig({ limits: { read_lines: 2 } });
+		await writeFile(path.join(workspace, "big.txt"), "one\ntwo\nthree\n");
 		const result = await readWorkspaceFile(workspace, { path: "big.txt" });
-		expect(result).toMatchObject({ truncated: true, continuation: { start_line: 2001 }, end_line: 2000 });
+		expect(result).toMatchObject({ truncated: true, continuation: { start_line: 3 }, end_line: 2 });
 	});
 
 	it("拒绝非法范围、缺失文件、二进制和非法 UTF-8", async () => {
