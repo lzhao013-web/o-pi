@@ -3,10 +3,9 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { CandidateRankingCoreStatistics, ToolStatistics } from "./types.js";
 import type { LiveTelemetryReport } from "./live.js";
 
-const WIDE_WIDTH = 92;
-const LABEL_WIDTH = 14;
+const WIDE_WIDTH = 76;
 
-/** 渲染当前会话报告；使用分组、标签和值，避免把指标挤在一行。 */
+/** 渲染当前会话报告；使用紧凑分组和表格，减少浮层滚动距离。 */
 export function renderLiveTelemetry(value: LiveTelemetryReport, width: number): string[] {
 	const maxWidth = Math.max(1, width);
 	const report = value.report;
@@ -14,37 +13,29 @@ export function renderLiveTelemetry(value: LiveTelemetryReport, width: number): 
 		align("遥测 / 当前会话", "q 关闭  ↑↓ 滚动", maxWidth),
 		"",
 		"会话信息",
-		labelValue("会话", value.session_id === undefined ? "不可用" : shortId(value.session_id)),
-		labelValue("运行", value.run_id === undefined ? "不可用" : shortId(value.run_id)),
-		labelValue("状态", value.enabled ? "采集已启用" : "采集已禁用"),
-		labelValue("进行中", value.pending_calls),
-		labelValue("已完成调用", report.inventory.calls),
-		labelValue("工具数", report.inventory.tools),
-		labelValue("生成时间", report.metadata.generated_at),
-		"",
+		inlineValues([
+			["会话", value.session_id === undefined ? "不可用" : shortId(value.session_id)],
+			["运行", value.run_id === undefined ? "不可用" : shortId(value.run_id)],
+		]),
+		inlineValues([
+			["状态", value.enabled ? "采集已启用" : "采集已禁用"],
+			["进行中", value.pending_calls],
+			["完成", report.inventory.calls],
+			["工具", report.inventory.tools],
+		]),
+		`  生成 ${report.metadata.generated_at}`,
 		"工具调用",
 		...toolLines(report.tools, maxWidth),
-		"",
-		"编辑调用",
-		labelValue("调用次数", report.edit.calls),
-		labelValue("失败", report.edit.failed_calls),
-		labelValue("无变化", report.edit.no_change_calls),
-		"",
-		"批次分析",
-		labelValue("并行批次", report.edit.batches.batches),
-		labelValue("多文件批次", report.edit.batches.multi_file_batches),
-		labelValue("部分失败", report.edit.batches.partial_failure_batches),
-		labelValue("可能减少调用", report.edit.batches.potential_call_reduction),
-		"",
+		"编辑与批次",
+		inlineValues([["调用", report.edit.calls], ["失败", report.edit.failed_calls], ["无变化", report.edit.no_change_calls]]),
+		inlineValues([["批次", report.edit.batches.batches], ["多文件", report.edit.batches.multi_file_batches], ["部分失败", report.edit.batches.partial_failure_batches], ["可减少", report.edit.batches.potential_call_reduction]]),
 		"候选项排序（启发式）",
 		...candidateBlock("总体", report.candidate_ranking),
-		"",
 		"候选来源类别",
 		...(["repo-map", "lsp"] as const).flatMap((source) => {
 			const statistics = report.candidate_ranking.by_source_family[source];
-			return statistics === undefined ? [`  ${source}`, "    无候选项"] : candidateBlock(source, statistics);
+			return statistics === undefined ? [`  ${source}  无候选项`] : candidateBlock(source, statistics);
 		}),
-		"",
 		"候选来源明细",
 		...sourceLines(report.candidate_ranking.by_source),
 	];
@@ -70,66 +61,54 @@ export function formatLiveTelemetrySummary(value: LiveTelemetryReport): string {
 function toolLines(tools: readonly ToolStatistics[], width: number): string[] {
 	if (tools.length === 0) return ["  无已完成的工具调用"];
 	if (width < WIDE_WIDTH) {
-		return tools.flatMap((tool, index) => [
-			...(index === 0 ? [] : [""]),
-			`  ${tool.tool}`,
-			labelValue("调用次数", tool.calls, 16),
-			labelValue("成功率", percent(tool.success_rate.value), 16),
-			labelValue("错误", tool.error_rate.numerator, 16),
-			labelValue("P50 延迟", `${number(tool.duration_ms.p50)} ms`, 16),
-			labelValue("自动修复", tool.repair.repaired_rate.numerator, 16),
-			labelValue("输出截断", tool.truncation_rate.numerator, 16),
+		return tools.flatMap((tool) => [
+			`  ${tool.tool}  ${tool.calls} 次  成功 ${percent(tool.success_rate.value)}  错误 ${tool.error_rate.numerator}`,
+			`    P50 ${number(tool.duration_ms.p50)} ms  修复 ${tool.repair.repaired_rate.numerator}  截断 ${tool.truncation_rate.numerator}`,
 		]);
 	}
 
 	const columns = [
-		pad("工具", 22),
-		pad("调用", 7, true),
-		pad("成功率", 10, true),
-		pad("错误", 7, true),
-		pad("P50(ms)", 12, true),
-		pad("自动修复", 9, true),
-		pad("截断", 9, true),
+		pad("工具", 18),
+		pad("调用", 6, true),
+		pad("成功", 9, true),
+		pad("错误", 6, true),
+		pad("P50", 10, true),
+		pad("修复", 8, true),
+		pad("截断", 8, true),
 	];
-	const rule = ["─".repeat(22), "─".repeat(7), "─".repeat(10), "─".repeat(7), "─".repeat(12), "─".repeat(9), "─".repeat(9)].join(" ");
+	const rule = ["─".repeat(18), "─".repeat(6), "─".repeat(9), "─".repeat(6), "─".repeat(10), "─".repeat(8), "─".repeat(8)].join(" ");
 	return [
 		`  ${columns.join(" ")}`,
 		`  ${rule}`,
 		...tools.map((tool) => `  ${[
-			pad(tool.tool, 22),
-			pad(tool.calls, 7, true),
-			pad(percent(tool.success_rate.value), 10, true),
-			pad(tool.error_rate.numerator, 7, true),
-			pad(`${number(tool.duration_ms.p50)} ms`, 12, true),
-			pad(tool.repair.repaired_rate.numerator, 9, true),
-			pad(tool.truncation_rate.numerator, 9, true),
+			pad(tool.tool, 18),
+			pad(tool.calls, 6, true),
+			pad(percent(tool.success_rate.value), 9, true),
+			pad(tool.error_rate.numerator, 6, true),
+			pad(`${number(tool.duration_ms.p50)}ms`, 10, true),
+			pad(tool.repair.repaired_rate.numerator, 8, true),
+			pad(tool.truncation_rate.numerator, 8, true),
 		].join(" ")}`),
 	];
 }
 
 function candidateBlock(label: string, statistics: CandidateRankingCoreStatistics): string[] {
+	const converted = statistics.candidates === 0 ? "无数据" : `${statistics.converted_candidates}/${statistics.candidates}(${percent(statistics.candidate_conversion_rate)})`;
+	const mrr = statistics.mrr.samples === 0 ? "无数据" : decimal(statistics.mrr.value);
 	return [
-		`  ${label}`,
-		labelValue("生成调用", statistics.producer_calls),
-		labelValue("候选项", statistics.candidates),
-		labelValue("已使用", statistics.candidates === 0 ? "无数据" : `${statistics.converted_candidates} / ${statistics.candidates} (${percent(statistics.candidate_conversion_rate)})`),
-		labelValue("MRR", statistics.mrr.samples === 0 ? "无数据" : `${decimal(statistics.mrr.value)}（平均倒数排名）`),
-		"    命中情况",
-		...conversionLines(statistics),
-		"    下游工具",
-		...consumerLines(statistics),
+		`  ${label}  生成 ${statistics.producer_calls}  候选 ${statistics.candidates}  已用 ${converted}`,
+		`    MRR ${mrr}  命中 ${conversionSummary(statistics)}  下游 ${consumerSummary(statistics)}`,
 	];
 }
 
-function conversionLines(statistics: CandidateRankingCoreStatistics): string[] {
+function conversionSummary(statistics: CandidateRankingCoreStatistics): string {
 	const values = statistics.conversion_at_k.filter((item) => item.lists > 0);
-	if (values.length === 0) return ["      无数据"];
-	return values.map((item) => `      ${pad(`前 ${item.k} 项`, 8)} ${item.converted_lists} / ${item.lists} (${percent(item.rate)})`);
+	return values.length === 0 ? "无数据" : values.map((item) => `K${item.k} ${item.converted_lists}/${item.lists}(${percent(item.rate)})`).join(" ");
 }
 
-function consumerLines(statistics: CandidateRankingCoreStatistics): string[] {
+function consumerSummary(statistics: CandidateRankingCoreStatistics): string {
 	const consumers = Object.entries(statistics.downstream_consumers);
-	return consumers.length === 0 ? ["      无"] : consumers.map(([tool, count]) => `      ${tool}  ${count} 次`);
+	return consumers.length === 0 ? "无" : consumers.map(([tool, count]) => `${tool}:${count}`).join(" ");
 }
 
 function sourceLines(sources: Readonly<Record<string, CandidateRankingCoreStatistics>>): string[] {
@@ -137,8 +116,8 @@ function sourceLines(sources: Readonly<Record<string, CandidateRankingCoreStatis
 	return values.length === 0 ? ["  无候选来源"] : values.flatMap(([source, statistics]) => candidateBlock(source, statistics));
 }
 
-function labelValue(label: string, value: string | number, width = LABEL_WIDTH): string {
-	return `  ${pad(label, width)} ${value}`;
+function inlineValues(values: readonly (readonly [string, string | number])[]): string {
+	return `  ${values.map(([label, value]) => `${label} ${value}`).join("  ")}`;
 }
 
 function wrap(value: string, width: number): string[] {

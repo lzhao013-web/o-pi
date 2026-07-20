@@ -209,6 +209,7 @@ describe("telemetry report", () => {
 			expect(rendered).toContain("lsp");
 			expect(rendered).toContain("进行中");
 			expect(rendered).toContain("工具调用");
+			expect(rendered).toContain("编辑与批次");
 			expect(rendered).not.toContain("·");
 		}
 
