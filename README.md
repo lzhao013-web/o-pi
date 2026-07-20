@@ -26,6 +26,7 @@ cd ~/.pi && npm install
 * [Web 工具](docs/web-tools.md)
 * [Tool Input Repair](docs/tool-repair.md)
 * [Approval Gate](docs/approval-gate.md)
+* [本地遥测](docs/telemetry.md)
 * [OpenAI-compatible provider](docs/openai-compatible-provider.md)
 * [TUI V1](docs/tui.md)
 * [Slash commands](docs/slash-cmds.md)

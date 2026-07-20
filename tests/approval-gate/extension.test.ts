@@ -6,7 +6,7 @@ import approvalGateExtension from "../../agent/extensions/approval-gate.js";
 import { defaultApprovalGateConfig } from "../../src/approval/config.js";
 import { createApprovalGate } from "../../src/approval/gate.js";
 import { FileApprovalStore } from "../../src/approval/store.js";
-import type { ApprovalGateConfig } from "../../src/approval/types.js";
+import type { ApprovalGateConfig, ApprovalTelemetry } from "../../src/approval/types.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
 let dir: string;
@@ -28,8 +28,22 @@ describe("approval gate", () => {
 
 	it("git push 命中 ask，用户 Allow once 后 return undefined", async () => {
 		const ui = fakeUi(["Allow once"]);
-		expect(await handle(bash("git push origin main"), ctx(ui))).toBeUndefined();
+		const event = bash("git push origin main");
+		const observations: ApprovalTelemetry[] = [];
+		const gate = createApprovalGate({
+			loadConfig: async () => configWith({}),
+			store: new FileApprovalStore(path.join(dir, "rules.jsonc")),
+			telemetry(_toolCallId, _toolName, approval) {
+				observations.push(approval);
+			},
+		});
+		expect(await gate.handleToolCall(event, ctx(ui))).toBeUndefined();
 		expect(ui.selectCalls).toBe(1);
+		expect(observations).toContainEqual(expect.objectContaining({
+			decision: "ask",
+			outcome: "allow_once",
+			wait_ms: expect.any(Number),
+		}));
 	});
 
 	it("git push 命中 ask，用户 Deny 后返回 block", async () => {

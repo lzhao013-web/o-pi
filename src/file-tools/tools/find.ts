@@ -9,7 +9,7 @@ import { fail, isAccessDenied, isFailed, protectedPathFailure } from "../core/er
 import { createFindEntry, rankFindEntries, type RankedFindEntry } from "../find/ranker.js";
 import { fuseRankedFindSources, selectRankedFindEntries } from "../find/fusion.js";
 import { renderFindResults } from "../find/renderer.js";
-import { createSourceRankingEvidence, EMPTY_RANKING_EVIDENCE } from "../ranking-evidence.js";
+import { createSourceRankingEvidence, EMPTY_RANKING_EVIDENCE, rankingEvidenceSources } from "../ranking-evidence.js";
 import { defaultIgnoreEngine } from "../ignore/ignore-engine.js";
 import type { IgnoreSnapshot } from "../ignore/ignore-types.js";
 import { guardExistingPath, PathGuardBlockedError } from "../../safety/path-guard.js";
@@ -697,7 +697,9 @@ function renderSuccess(input: {
 	missingPrefix?: string;
 	nearbyDirectory?: string;
 }): FindSuccess {
-	const limited = selectRankedFindEntries(input.ranked, input.config.limits.find_result_limit).map((item) => toMatch(item.entry));
+	const limitedCandidates = selectRankedFindEntries(input.ranked, input.config.limits.find_result_limit);
+	const limited = limitedCandidates.map((item) => toMatch(item.entry));
+	const candidateSources = Object.fromEntries(limitedCandidates.map((item) => [item.entry.path, rankingEvidenceSources(item.evidence)]));
 	const resultLimited = limited.length < input.totalMatches;
 	return renderFindResults({
 		query: input.query,
@@ -707,6 +709,7 @@ function renderSuccess(input: {
 		totalMatches: input.totalMatches,
 		scannedEntries: input.scannedEntries,
 		matches: limited,
+		candidateSources,
 		ignoredCount: input.ignoredCount,
 		skippedCount: input.skippedCount,
 		scanTruncated: input.scanTruncated,

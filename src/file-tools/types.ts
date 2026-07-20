@@ -101,6 +101,7 @@ export interface GrepRegion {
 	signature?: string;
 	detail: "body" | "snippet" | "signature";
 	reasons: string[];
+	sources?: string[];
 	match_lines?: number[];
 	content?: string;
 	callees?: string[];
@@ -364,6 +365,8 @@ export interface FindDetails {
 	scannedEntries: number;
 	matches: FindMatch[];
 	collapsedGroups: FindCollapsedGroup[];
+	displayedMatches?: FindMatch[];
+	displayedCollapsedGroups?: FindCollapsedGroup[];
 	ignoredCount: number;
 	skippedCount: number;
 	scanTruncated: boolean;
@@ -373,6 +376,7 @@ export interface FindDetails {
 	nearby?: FindNearbyResult[];
 	missingPrefix?: string;
 	nearbyDirectory?: string;
+	candidateSources?: Record<string, string[]>;
 }
 
 /** find 成功结果：content 是模型可见紧凑文本，details 供 UI/内部逻辑使用。 */

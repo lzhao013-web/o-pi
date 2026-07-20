@@ -168,7 +168,8 @@ describe("file-tools extension", () => {
 		};
 		extension(pi as unknown as ExtensionAPI);
 
-		expect(handlers.has("session_start")).toBe(false);
+		expect(handlers.has("session_start")).toBe(true);
+		expect(handlers.get("session_start")?.({}, {})).toBeUndefined();
 		expect(handlers.has("before_agent_start")).toBe(false);
 		expect(imports.ls).not.toHaveBeenCalled();
 		expect(imports.find).not.toHaveBeenCalled();

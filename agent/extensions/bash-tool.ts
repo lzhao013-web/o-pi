@@ -9,7 +9,9 @@ import {
 	type BashParams,
 	type BashToolDetails,
 } from "../../src/bash-tool/index.js";
-import { repairableTool } from "../../src/tool-repair/index.js";
+import { bashTelemetry } from "../../src/bash-tool/telemetry.js";
+import { loadApprovalGateConfig } from "../../src/approval/config.js";
+import { registerObservedTool } from "../../src/telemetry/tool.js";
 
 const bashParameters = Type.Object({
 	command: Type.String({ description: "Shell command; runs in workspace." }),
@@ -20,35 +22,43 @@ const bashParameters = Type.Object({
 export default function bashTool(pi: ExtensionAPI): void {
 	const operations = createDefaultBashOperations();
 
-	pi.registerTool(repairableTool({
-		name: "bash",
-		label: "bash",
-		description: "Run shell commands or external programs.",
-		promptSnippet: "run shell commands",
-		promptGuidelines: ["Use bash only for operations not covered by active dedicated tools."],
-		parameters: bashParameters,
-		executionMode: "sequential",
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const config = await loadBashToolConfig();
-			const runtime = {
-				cwd: ctx.cwd,
-				sessionId: ctx.sessionManager.getSessionId(),
-				toolCallId,
-				operations,
-				config,
-				...(signal !== undefined ? { signal } : {}),
-				...(onUpdate
-					? {
-							onUpdate: (partial: BashExecutionResult) => {
-								onUpdate({ content: [{ type: "text", text: partial.content }], details: withNativeBashDetails(partial.details) });
-							},
-						}
-					: {}),
-			};
-			const result = await executeBashCommand(params as BashParams, runtime);
-			return { content: [{ type: "text", text: result.content }], details: withNativeBashDetails(result.details) };
+	registerObservedTool(pi, {
+		tool: {
+			name: "bash",
+			label: "bash",
+			description: "Run shell commands or external programs.",
+			promptSnippet: "run shell commands",
+			promptGuidelines: ["Use bash only for operations not covered by active dedicated tools."],
+			parameters: bashParameters,
+			executionMode: "sequential",
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				const config = await loadBashToolConfig();
+				const runtime = {
+					cwd: ctx.cwd,
+					sessionId: ctx.sessionManager.getSessionId(),
+					toolCallId,
+					operations,
+					config,
+					...(signal !== undefined ? { signal } : {}),
+					...(onUpdate
+						? {
+								onUpdate: (partial: BashExecutionResult) => {
+									onUpdate({ content: [{ type: "text", text: partial.content }], details: withNativeBashDetails(partial.details) });
+								},
+							}
+						: {}),
+				};
+				const result = await executeBashCommand(params as BashParams, runtime);
+				return { content: [{ type: "text", text: result.content }], details: withNativeBashDetails(result.details) };
+			},
 		},
-	}, { singleStringField: "command" }));
+		repair: { singleStringField: "command" },
+		telemetry: bashTelemetry,
+		cohort: {
+			implementationEntrypoints: ["src/bash-tool/index.ts", "src/bash-tool/telemetry.ts"],
+			config: async () => ({ bash: await loadBashToolConfig(), approval: await loadApprovalGateConfig() }),
+		},
+	});
 
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "bash" || !isBashDetails(event.details)) return undefined;

@@ -14,6 +14,8 @@ execute or block
 
 审批拒绝通过 `{ block: true, reason }` 返回，不调用 `ctx.abort()`。
 
+Gate 会同时把 allow/ask/deny、具体 UI 选择、规则名和等待时间作为结构化本地 telemetry 记录。遥测不解析 `reason` 文本，也不会写入 session tree；采集失败不影响审批或工具执行。
+
 ## 和 safety guardrail 的区别
 
 Safety guardrail 负责硬性拒绝明显危险操作，例如 bash deny pattern、file-tools blocked path。Approval gate 只处理用户意图确认，例如发布、安装包、改系统路径。

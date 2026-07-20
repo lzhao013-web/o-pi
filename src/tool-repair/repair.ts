@@ -3,7 +3,7 @@ import { Check } from "typebox/value";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { createRepairSpec } from "./specs.js";
-import type { RepairSpec, RepairSpecHints } from "./types.js";
+import type { RepairObserver, RepairOperation, RepairSpec, RepairSpecHints, ToolArgumentStatus } from "./types.js";
 
 interface SchemaNode {
 	type?: string;
@@ -18,16 +18,33 @@ type JsonObject = Record<string, unknown>;
 export function repairableTool<TParams extends TSchema, TDetails = unknown, TState = unknown>(
 	tool: ToolDefinition<TParams, TDetails, TState>,
 	hints: RepairSpecHints = {},
+	observer?: RepairObserver,
 ): ToolDefinition<TParams, TDetails, TState> {
 	const originalPrepareArguments = tool.prepareArguments;
 	const spec = createRepairSpec(tool.parameters, hints);
 	const prepareArguments: ToolDefinition<TParams, TDetails, TState>["prepareArguments"] = (args) => {
-		const prepared = originalPrepareArguments ? originalPrepareArguments(args) : args;
-		if (isValid(tool.parameters, prepared)) return prepared as PreparedArguments<TParams, TDetails, TState>;
+		const operations: RepairOperation[] = [];
+		let prepared: unknown;
+		try {
+			prepared = originalPrepareArguments ? originalPrepareArguments(args) : args;
+		} catch (error) {
+			notify(observer, tool.name, args, args, "invalid", operations);
+			throw error;
+		}
+		if (originalPrepareArguments !== undefined && !structurallyEqual(args, prepared)) operations.push("original_prepare");
+		if (isValid(tool.parameters, prepared)) {
+			const status: ToolArgumentStatus = isValid(tool.parameters, args) ? "accepted" : "repaired";
+			notify(observer, tool.name, args, prepared, status, operations);
+			return prepared as PreparedArguments<TParams, TDetails, TState>;
+		}
 
-		const repaired = repairArguments(prepared, spec);
-		if (isValid(tool.parameters, repaired)) return repaired as PreparedArguments<TParams, TDetails, TState>;
+		const repaired = repairArguments(prepared, spec, operations);
+		if (isValid(tool.parameters, repaired)) {
+			notify(observer, tool.name, args, repaired, "repaired", operations);
+			return repaired as PreparedArguments<TParams, TDetails, TState>;
+		}
 
+		notify(observer, tool.name, args, prepared, "invalid", operations);
 		return prepared as PreparedArguments<TParams, TDetails, TState>;
 	};
 	return {
@@ -36,22 +53,38 @@ export function repairableTool<TParams extends TSchema, TDetails = unknown, TSta
 	};
 }
 
-export function repairArguments(args: unknown, spec: RepairSpec): unknown {
+function notify(
+	observer: RepairObserver | undefined,
+	toolName: string,
+	rawArgs: unknown,
+	preparedArgs: unknown,
+	status: ToolArgumentStatus,
+	operations: readonly RepairOperation[],
+): void {
+	try {
+		observer?.onPreparation({ toolName, rawArgs, preparedArgs, status, operations });
+	} catch {
+		// Observers are diagnostic only and cannot affect argument preparation.
+	}
+}
+
+export function repairArguments(args: unknown, spec: RepairSpec, operations: RepairOperation[] = []): unknown {
 	let candidate = cloneValue(args);
 
 	if (typeof candidate === "string" && spec.singleStringField !== undefined) {
 		candidate = { [spec.singleStringField]: candidate };
+		operations.push("single_string_to_object");
 	}
 	if (!isPlainObject(candidate)) return candidate;
 
-	migrateRootAliases(candidate, spec);
-	materializeObjectArrays(candidate, spec);
-	repairArrayFields(candidate, spec);
-	migrateNestedAliases(candidate, spec);
-	dropOptionalNullFields(candidate, spec);
-	repairNumericFields(candidate, spec);
-	repairPathFields(candidate, spec);
-	cleanUnknownFields(spec.schema, candidate);
+	migrateRootAliases(candidate, spec, operations);
+	materializeObjectArrays(candidate, spec, operations);
+	repairArrayFields(candidate, spec, operations);
+	migrateNestedAliases(candidate, spec, operations);
+	dropOptionalNullFields(candidate, spec, operations);
+	repairNumericFields(candidate, spec, operations);
+	repairPathFields(candidate, spec, operations);
+	cleanUnknownFields(spec.schema, candidate, operations);
 
 	return candidate;
 }
@@ -60,15 +93,16 @@ export function isValid<T extends TSchema>(schema: T, value: unknown): boolean {
 	return Check(schema, value);
 }
 
-function migrateRootAliases(target: JsonObject, spec: RepairSpec): void {
+function migrateRootAliases(target: JsonObject, spec: RepairSpec, operations: RepairOperation[]): void {
 	for (const [sourceKey, targetKey] of Object.entries(spec.aliases ?? {})) {
 		if (!Object.hasOwn(target, sourceKey) || Object.hasOwn(target, targetKey)) continue;
 		target[targetKey] = target[sourceKey];
 		delete target[sourceKey];
+		operations.push("root_alias");
 	}
 }
 
-function migrateNestedAliases(target: JsonObject, spec: RepairSpec): void {
+function migrateNestedAliases(target: JsonObject, spec: RepairSpec, operations: RepairOperation[]): void {
 	for (const [sourcePath, targetKey] of Object.entries(spec.nestedAliases ?? {})) {
 		const segments = splitPath(sourcePath);
 		const sourceKey = segments.at(-1);
@@ -81,11 +115,12 @@ function migrateNestedAliases(target: JsonObject, spec: RepairSpec): void {
 			if (targetSchema !== undefined && !Check(targetSchema, value)) return;
 			parent[targetKey] = value;
 			delete parent[sourceKey];
+			operations.push("nested_alias");
 		});
 	}
 }
 
-function materializeObjectArrays(target: JsonObject, spec: RepairSpec): void {
+function materializeObjectArrays(target: JsonObject, spec: RepairSpec, operations: RepairOperation[]): void {
 	for (const { arrayField, fields } of spec.objectArrayFromFields ?? []) {
 		if (Object.hasOwn(target, arrayField)) continue;
 		const entry: JsonObject = {};
@@ -97,71 +132,84 @@ function materializeObjectArrays(target: JsonObject, spec: RepairSpec): void {
 		}
 		target[arrayField] = [entry];
 		for (const field of fields) delete target[field];
+		operations.push("object_array_from_fields");
 	}
 }
 
-function repairArrayFields(target: JsonObject, spec: RepairSpec): void {
+function repairArrayFields(target: JsonObject, spec: RepairSpec, operations: RepairOperation[]): void {
 	const objectToArrayFields = new Set(spec.objectToArrayFields);
 	for (const path of spec.arrayFields) {
 		forEachParentAtPath(target, splitPath(path), (parent, key) => {
 			const value = parent[key];
 			if (typeof value === "string") {
 				const parsed = parseJsonArray(value);
-				if (parsed !== undefined) parent[key] = parsed;
+				if (parsed !== undefined) {
+					parent[key] = parsed;
+					operations.push("json_string_to_array");
+				}
 				return;
 			}
 			if (objectToArrayFields.has(path) && isPlainObject(value)) {
 				parent[key] = [value];
+				operations.push("object_to_array");
 			}
 		});
 	}
 }
 
-function dropOptionalNullFields(target: JsonObject, spec: RepairSpec): void {
+function dropOptionalNullFields(target: JsonObject, spec: RepairSpec, operations: RepairOperation[]): void {
 	if (spec.dropOptionalNull !== true) return;
 	for (const path of spec.optionalFields) {
 		forEachParentAtPath(target, splitPath(path), (parent, key) => {
-			if (parent[key] === null) delete parent[key];
+			if (parent[key] === null) {
+				delete parent[key];
+				operations.push("drop_optional_null");
+			}
 		});
 	}
 }
 
-function repairNumericFields(target: JsonObject, spec: RepairSpec): void {
+function repairNumericFields(target: JsonObject, spec: RepairSpec, operations: RepairOperation[]): void {
 	for (const path of spec.numericFields) {
 		forEachParentAtPath(target, splitPath(path), (parent, key) => {
 			const value = parent[key];
 			if (typeof value !== "string" || !isPlainNumericString(value)) return;
 			parent[key] = Number(value);
+			operations.push("numeric_string_to_number");
 		});
 	}
 }
 
-function repairPathFields(target: JsonObject, spec: RepairSpec): void {
+function repairPathFields(target: JsonObject, spec: RepairSpec, operations: RepairOperation[]): void {
 	for (const path of spec.pathFields ?? []) {
 		forEachParentAtPath(target, splitPath(path), (parent, key) => {
 			const value = parent[key];
 			if (typeof value === "string" && value.startsWith("@") && value.length > 1) {
 				parent[key] = value.slice(1);
+				operations.push("strip_path_prefix");
 			}
 		});
 	}
 }
 
-function cleanUnknownFields(schema: TSchema, value: unknown): void {
+function cleanUnknownFields(schema: TSchema, value: unknown, operations: RepairOperation[]): void {
 	const node = schema as SchemaNode;
 	if (node.type === "array" && Array.isArray(value) && node.items !== undefined) {
-		for (const item of value) cleanUnknownFields(node.items, item);
+		for (const item of value) cleanUnknownFields(node.items, item, operations);
 		return;
 	}
 	if (node.type !== "object" || node.properties === undefined || !isPlainObject(value)) return;
 	if (!requiredFieldsPresent(node, value)) return;
 
 	for (const [key, childSchema] of Object.entries(node.properties)) {
-		cleanUnknownFields(childSchema, value[key]);
+		cleanUnknownFields(childSchema, value[key], operations);
 	}
 	if (node.additionalProperties !== false) return;
 	for (const key of Object.keys(value)) {
-		if (!Object.hasOwn(node.properties, key)) delete value[key];
+		if (!Object.hasOwn(node.properties, key)) {
+			delete value[key];
+			operations.push("drop_unknown_field");
+		}
 	}
 }
 
@@ -217,6 +265,14 @@ function cloneValue(value: unknown): unknown {
 	const result: JsonObject = {};
 	for (const [key, child] of Object.entries(value)) result[key] = cloneValue(child);
 	return result;
+}
+
+function structurallyEqual(left: unknown, right: unknown): boolean {
+	try {
+		return JSON.stringify(left) === JSON.stringify(right);
+	} catch {
+		return left === right;
+	}
 }
 
 function isPlainObject(value: unknown): value is JsonObject {

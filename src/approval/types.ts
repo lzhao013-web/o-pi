@@ -1,3 +1,25 @@
+export interface ApprovalTelemetry {
+	decision: "allow" | "deny" | "ask";
+	outcome:
+		| "not_required"
+		| "gate_disabled"
+		| "policy_allow"
+		| "policy_deny"
+		| "safety_block"
+		| "non_interactive_allow"
+		| "non_interactive_block"
+		| "allow_once"
+		| "allow_session"
+		| "allow_persistent"
+		| "deny"
+		| "deny_with_instruction"
+		| "dismissed";
+	wait_ms: number;
+	rule_name?: string;
+}
+
+export type ApprovalTelemetryObserver = (toolCallId: string, toolName: string, approval: ApprovalTelemetry) => void;
+
 export type ApprovalEffect =
 	| "read"
 	| "write"

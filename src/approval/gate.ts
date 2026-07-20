@@ -9,7 +9,7 @@ import { formatApprovalPrompt, formatDenyReason } from "./format.js";
 import { evaluateApproval } from "./policy.js";
 import { buildApprovalRequest } from "./request-builder.js";
 import { FileApprovalStore, createExactAllowRule, createSimilarAllowRule, describeAllowRule, type ApprovalStore } from "./store.js";
-import type { ApprovalDecision, ApprovalGateConfig, ApprovalRequest } from "./types.js";
+import type { ApprovalDecision, ApprovalGateConfig, ApprovalRequest, ApprovalTelemetryObserver } from "./types.js";
 
 const ALLOW_ONCE = "Allow once";
 const ALLOW_SESSION = "Allow for session";
@@ -21,9 +21,10 @@ export interface ApprovalGate {
 	handleToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<ToolCallEventResult | void>;
 }
 
-interface ApprovalGateOptions {
+export interface ApprovalGateOptions {
 	loadConfig?: () => Promise<ApprovalGateConfig>;
 	store?: ApprovalStore;
+	telemetry?: ApprovalTelemetryObserver;
 }
 
 export function createApprovalGate(options: ApprovalGateOptions = {}): ApprovalGate {
@@ -32,14 +33,29 @@ export function createApprovalGate(options: ApprovalGateOptions = {}): ApprovalG
 
 	return {
 		async handleToolCall(event, ctx) {
+			const observe = (approval: Parameters<ApprovalTelemetryObserver>[2]) => recordApproval(
+				options.telemetry,
+				event.toolCallId,
+				event.toolName,
+				approval,
+			);
 			const config = await (options.loadConfig ?? loadApprovalGateConfig)();
-			if (!config.enabled) return undefined;
+			if (!config.enabled) {
+				observe({ decision: "allow", outcome: "gate_disabled", wait_ms: 0 });
+				return undefined;
+			}
 
 			const request = buildApprovalRequest(event, ctx.cwd);
-			if (request === undefined) return undefined;
+			if (request === undefined) {
+				observe({ decision: "allow", outcome: "not_required", wait_ms: 0 });
+				return undefined;
+			}
 
 			const safetyBlock = await precheckSafety(event, ctx.cwd);
-			if (safetyBlock !== undefined) return safetyBlock;
+			if (safetyBlock !== undefined) {
+				observe({ decision: "deny", outcome: "safety_block", wait_ms: 0 });
+				return safetyBlock;
+			}
 
 			if (store === undefined || (options.store === undefined && loadedStorePath !== config.remember.persistent_store)) {
 				store = new FileApprovalStore(config.remember.persistent_store);
@@ -48,15 +64,30 @@ export function createApprovalGate(options: ApprovalGateOptions = {}): ApprovalG
 			}
 
 			const decision = evaluateApproval(request, config, store);
-			if (decision.kind === "allow") return undefined;
-			if (decision.kind === "deny") return blockForDenyRule(decision);
+			if (decision.kind === "allow") {
+				observe({ decision: "allow", outcome: "policy_allow", wait_ms: 0 });
+				return undefined;
+			}
+			if (decision.kind === "deny") {
+				observe({
+					decision: "deny",
+					outcome: "policy_deny",
+					wait_ms: 0,
+					...(decision.rule_name !== undefined ? { rule_name: decision.rule_name } : {}),
+				});
+				return blockForDenyRule(decision);
+			}
 
 			if (!ctx.hasUI) {
-				if (config.ui.non_interactive === "allow") return undefined;
+				if (config.ui.non_interactive === "allow") {
+					observe({ decision: "allow", outcome: "non_interactive_allow", wait_ms: 0 });
+					return undefined;
+				}
+				observe({ decision: "deny", outcome: "non_interactive_block", wait_ms: 0 });
 				return { block: true, reason: `Approval required but no interactive UI is available: ${decision.reason}` };
 			}
 
-			return handleAskDecision(request, decision, config, store, ctx);
+			return handleAskDecision(event.toolCallId, event.toolName, request, decision, config, store, ctx, options.telemetry);
 		},
 	};
 }
@@ -66,18 +97,27 @@ export async function handleApprovalToolCall(event: ToolCallEvent, ctx: Extensio
 }
 
 async function handleAskDecision(
+	toolCallId: string,
+	toolName: string,
 	request: ApprovalRequest,
 	decision: Extract<ApprovalDecision, { kind: "ask" }>,
 	config: ApprovalGateConfig,
 	store: ApprovalStore,
 	ctx: ExtensionContext,
+	telemetry: ApprovalTelemetryObserver | undefined,
 ): Promise<ToolCallEventResult | void> {
 	const options = approvalOptions(config);
+	const startedAt = Date.now();
 	const choice = await ctx.ui.select(formatApprovalPrompt(request, decision), options, dialogOptions(config));
-	if (choice === ALLOW_ONCE) return undefined;
+	const selectionWaitMs = Math.max(0, Date.now() - startedAt);
+	if (choice === ALLOW_ONCE) {
+		recordAsk(telemetry, toolCallId, toolName, "allow_once", selectionWaitMs, decision.rule_name);
+		return undefined;
+	}
 	if (choice === ALLOW_SESSION) {
 		const rule = createExactAllowRule(request);
 		if (rule !== undefined) store.addSessionAllowRule(rule);
+		recordAsk(telemetry, toolCallId, toolName, "allow_session", selectionWaitMs, decision.rule_name);
 		return undefined;
 	}
 	if (choice === ALLOW_PERSISTENT) {
@@ -90,6 +130,7 @@ async function handleAskDecision(
 				ctx.ui.notify(`Approval rule was not saved: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			}
 		}
+		recordAsk(telemetry, toolCallId, toolName, "allow_persistent", selectionWaitMs, decision.rule_name);
 		return undefined;
 	}
 	if (choice === DENY_WITH_INSTRUCTION) {
@@ -98,9 +139,40 @@ async function handleAskDecision(
 			"Explain why this tool call was denied or what the agent should do instead.",
 			dialogOptions(config),
 		);
+		recordAsk(telemetry, toolCallId, toolName, "deny_with_instruction", Math.max(0, Date.now() - startedAt), decision.rule_name);
 		return { block: true, reason: formatDenyReason(instruction) };
 	}
+	recordAsk(telemetry, toolCallId, toolName, choice === DENY ? "deny" : "dismissed", selectionWaitMs, decision.rule_name);
 	return { block: true, reason: formatDenyReason(undefined) };
+}
+
+function recordAsk(
+	telemetry: ApprovalTelemetryObserver | undefined,
+	toolCallId: string,
+	toolName: string,
+	outcome: "allow_once" | "allow_session" | "allow_persistent" | "deny" | "deny_with_instruction" | "dismissed",
+	waitMs: number,
+	ruleName: string | undefined,
+): void {
+	recordApproval(telemetry, toolCallId, toolName, {
+		decision: "ask",
+		outcome,
+		wait_ms: waitMs,
+		...(ruleName !== undefined ? { rule_name: ruleName } : {}),
+	});
+}
+
+function recordApproval(
+	telemetry: ApprovalTelemetryObserver | undefined,
+	toolCallId: string,
+	toolName: string,
+	approval: Parameters<ApprovalTelemetryObserver>[2],
+): void {
+	try {
+		telemetry?.(toolCallId, toolName, approval);
+	} catch {
+		// Approval behavior must not depend on diagnostic observers.
+	}
 }
 
 function approvalOptions(config: ApprovalGateConfig): string[] {

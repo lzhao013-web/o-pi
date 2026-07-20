@@ -2,6 +2,7 @@ import { countTextTokensSync } from "../../token-counter.js";
 import { byteRangeForLines, extractByteRange } from "../../code-index/parser.js";
 import type { RankedGrepRegion } from "./ranker.js";
 import { selectRankedGrepCandidates } from "./fusion.js";
+import { rankingEvidenceSources } from "../ranking-evidence.js";
 import type { GrepMatchMode, GrepNearbyResult, GrepRegion, GrepSkippedFiles, GrepSuccess, RepoMapRelatedResult } from "../types.js";
 
 export interface GrepPackInput {
@@ -181,6 +182,7 @@ function baseRegion(candidate: RankedGrepRegion, detail: GrepRegion["detail"], c
 		kind: candidate.kind,
 		detail,
 		reasons: candidate.reasons,
+		sources: rankingEvidenceSources(candidate.evidence),
 	};
 	if (candidate.symbol !== undefined) region.symbol = candidate.symbol;
 	if (candidate.signature !== undefined) region.signature = candidate.signature;

@@ -1,6 +1,6 @@
 # Tool Input Repair
 
-`tool-repair` 是工具注册边界的轻量参数修复层，用于提升本地和开源模型的工具调用稳定性。
+`tool-repair` 是工具注册边界的轻量参数修复层，用于提升本地和开源模型的工具调用稳定性。它只负责纯参数修复；可选 observer 会报告参数状态和 repair operation，但不依赖 telemetry，也不负责执行计时。
 
 它不增加模型可见工具，不放宽公开 schema，也不把兼容逻辑散落到各个工具的 `execute` 中。所有修复都挂在工具定义的 `prepareArguments(args)` 上，在 Pi schema validation 和 execute 前运行。
 
@@ -37,7 +37,7 @@ src/tool-repair/
 
 * `repair.ts`：实现 `repairableTool()` 包装器、修复流程和最终校验。
 * `specs.ts`：从 TypeBox schema 推导可机械修复的字段。
-* `types.ts`：定义 repair spec 和少量工具侧 hints。
+* `types.ts`：定义 repair spec、工具侧 hints 和通用 observer 事实。
 * `index.ts`：导出公共入口。
 
 ## Schema 推导
@@ -127,23 +127,27 @@ repair 层不做语义推断：
 * `agent/extensions/subagent.ts`
   * `subagent`
 
-接入形式：
+仓库内的模型工具通过统一观测注册入口组合 repair 和 telemetry：
 
 ```ts
-pi.registerTool(repairableTool({
-  name: "read",
-  parameters: readParameters,
-  async execute(...) {
-    // ...
+registerObservedTool(pi, {
+  tool: {
+    name: "read",
+    parameters: readParameters,
+    async execute(...) {
+      // ...
+    },
   },
-}, {
-  singleStringField: "path",
-  pathFields: ["path"],
-  aliases: {
-    startLine: "start_line",
-    endLine: "end_line",
+  repair: {
+    singleStringField: "path",
+    pathFields: ["path"],
+    aliases: {
+      startLine: "start_line",
+      endLine: "end_line",
+    },
   },
-}));
+  telemetry: readTelemetry,
+});
 ```
 
 工具自身已有 `prepareArguments` 时，wrapper 会先调用原函数，再执行 repair。

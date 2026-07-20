@@ -2,6 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { ReadVersionCache } from "../../src/file-tools/core/read-cache.js";
+import { loadApprovalGateConfig } from "../../src/approval/config.js";
+import { loadFileToolsConfig } from "../../src/file-tools/config.js";
 import { isFailedDetails, isFileToolName } from "../../src/file-tools/pi/guards.js";
 import { createLazyLspFileHooks } from "../../src/file-tools/pi/lazy-lsp.js";
 import { appendRepoMapEntry, createLazyRepoMap, type LazyRepoMap } from "../../src/file-tools/pi/lazy-repo-map.js";
@@ -21,7 +23,10 @@ import {
 	renderWriteResult,
 } from "../../src/file-tools/pi/renderers.js";
 import type { EditParams, FindParams, GrepParams, LsParams, ReadParams, WriteParams } from "../../src/file-tools/types.js";
-import { repairableTool } from "../../src/tool-repair/index.js";
+import { editTelemetry, findTelemetry, grepTelemetry, lsTelemetry, readTelemetry, writeTelemetry } from "../../src/file-tools/telemetry.js";
+import { registerObservedTool } from "../../src/telemetry/tool.js";
+import { loadLspConfig } from "../../src/lsp/config.js";
+import { loadRepoMapConfig } from "../../src/repo-map/config.js";
 
 const lsParameters = Type.Object({ path: Type.Optional(Type.String({ minLength: 1, description: "Directory; default workspace." })) }, { additionalProperties: false });
 const findParameters = Type.Object(
@@ -128,7 +133,7 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		return created;
 	};
 
-	pi.registerTool(repairableTool({
+	registerObservedTool(pi, { tool: {
 		name: "ls",
 		label: "ls",
 		description: "List direct entries of one directory.",
@@ -139,9 +144,12 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderLsCall,
 		renderResult: renderLsResult,
-	}, { singleStringField: "path", pathFields: ["path"] }));
+	}, repair: { singleStringField: "path", pathFields: ["path"] }, telemetry: lsTelemetry, cohort: {
+		implementationEntrypoints: ["src/file-tools/pi/adapters/ls.ts", "src/file-tools/telemetry.ts"],
+		config: (ctx) => loadFileToolsConfig(ctx.cwd),
+	} });
 
-	pi.registerTool(repairableTool({
+	registerObservedTool(pi, { tool: {
 		name: "find",
 		label: "find",
 		description: "Locate files or directories by name, path, or concept. Does not search contents.",
@@ -156,9 +164,12 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderFindCall,
 		renderResult: renderFindResult,
-	}, { singleStringField: "query", pathFields: ["path"] }));
+	}, repair: { singleStringField: "query", pathFields: ["path"] }, telemetry: findTelemetry, cohort: {
+		implementationEntrypoints: ["src/file-tools/pi/adapters/find.ts", "src/file-tools/telemetry.ts"],
+		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), repoMap: await loadRepoMapConfig() }),
+	} });
 
-	pi.registerTool(repairableTool({
+	registerObservedTool(pi, { tool: {
 		name: "grep",
 		label: "grep",
 		description: "Locate code regions by text, symbol, concept, definition, or relationship.",
@@ -174,9 +185,12 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderGrepCall,
 		renderResult: renderGrepResult,
-	}, { singleStringField: "query", pathFields: ["path"] }));
+	}, repair: { singleStringField: "query", pathFields: ["path"] }, telemetry: grepTelemetry, cohort: {
+		implementationEntrypoints: ["src/file-tools/pi/adapters/grep.ts", "src/file-tools/telemetry.ts"],
+		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig() }),
+	} });
 
-	pi.registerTool(repairableTool({
+	registerObservedTool(pi, { tool: {
 		name: "read",
 		label: "read",
 		description: "Read one text or image file.",
@@ -193,16 +207,19 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderReadCall,
 		renderResult: renderReadResult,
-	}, {
+	}, repair: {
 		singleStringField: "path",
 		pathFields: ["path"],
 		aliases: {
 			startLine: "start_line",
 			endLine: "end_line",
 		},
-	}));
+	}, telemetry: readTelemetry, cohort: {
+		implementationEntrypoints: ["src/file-tools/pi/adapters/read.ts", "src/file-tools/telemetry.ts"],
+		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig() }),
+	} });
 
-	pi.registerTool(repairableTool({
+	registerObservedTool(pi, { tool: {
 		name: "write",
 		label: "write",
 		description: "Create or overwrite one whole file.",
@@ -218,15 +235,18 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderWriteCall,
 		renderResult: renderWriteResult,
-	}, {
+	}, repair: {
 		pathFields: ["path"],
 		aliases: {
 			text: "content",
 			contents: "content",
 		},
-	}));
+	}, telemetry: writeTelemetry, cohort: {
+		implementationEntrypoints: ["src/file-tools/pi/adapters/write.ts", "src/file-tools/telemetry.ts"],
+		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig(), approval: await loadApprovalGateConfig() }),
+	} });
 
-	pi.registerTool(repairableTool({
+	registerObservedTool(pi, { tool: {
 		name: "edit",
 		label: "edit",
 		description: "Edit one previously read file with exact replacements.",
@@ -244,7 +264,7 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderEditCall,
 		renderResult: renderEditResult,
-	}, {
+	}, repair: {
 		pathFields: ["path"],
 		aliases: {
 			oldText: "old",
@@ -255,7 +275,10 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 			"edits.*.newText": "new",
 		},
 		objectArrayFromFields: [{ arrayField: "edits", fields: ["old", "new"] }],
-	}));
+	}, telemetry: editTelemetry, cohort: {
+		implementationEntrypoints: ["src/file-tools/pi/adapters/edit.ts", "src/file-tools/telemetry.ts"],
+		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig(), approval: await loadApprovalGateConfig() }),
+	} });
 
 	pi.on("tool_result", (event) => {
 		if (isFileToolName(event.toolName) && isFailedDetails(event.details)) return { isError: true };

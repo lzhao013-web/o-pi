@@ -2,7 +2,9 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { repairableTool } from "../../src/tool-repair/index.js";
+import { registerObservedTool } from "../../src/telemetry/tool.js";
+import { loadWebToolsConfig } from "../../src/web-tools/config.js";
+import { webFetchTelemetry, webSearchTelemetry } from "../../src/web-tools/telemetry.js";
 import { isWebFetchDetails, renderWebFetchCall, renderWebFetchResult } from "../../src/web-tools/webfetch-renderer.js";
 import { isWebSearchDetails, renderWebSearchCall, renderWebSearchResult } from "../../src/web-tools/websearch-renderer.js";
 import type { WebFetchProgressDetails, WebSearchProgressDetails, WebToolsRuntime } from "../../src/web-tools/types.js";
@@ -72,7 +74,7 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			return pending;
 		};
 
-		pi.registerTool(repairableTool({
+		registerObservedTool(pi, { tool: {
 			name: "websearch",
 			label: "websearch",
 			description: "Search the web; return page titles, URLs, and snippets.",
@@ -96,9 +98,12 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			},
 			renderCall: renderWebSearchCall,
 			renderResult: renderWebSearchResult,
-		}, { singleStringField: "query" }));
+		}, repair: { singleStringField: "query" }, telemetry: webSearchTelemetry, cohort: {
+			implementationEntrypoints: ["src/web-tools/websearch-runtime.ts", "src/web-tools/telemetry.ts"],
+			config: () => loadWebToolsConfig(),
+		} });
 
-		pi.registerTool(repairableTool({
+		registerObservedTool(pi, { tool: {
 			name: "webfetch",
 			label: "webfetch",
 			description: "Fetch one HTTP(S) URL as readable text or source; no JavaScript.",
@@ -125,7 +130,10 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			},
 			renderCall: renderWebFetchCall,
 			renderResult: renderWebFetchResult,
-		}, { singleStringField: "url" }));
+		}, repair: { singleStringField: "url" }, telemetry: webFetchTelemetry, cohort: {
+			implementationEntrypoints: ["src/web-tools/webfetch-runtime.ts", "src/web-tools/telemetry.ts"],
+			config: () => loadWebToolsConfig(),
+		} });
 
 		pi.on("tool_result", (event) => {
 			if (event.toolName === "websearch" && isWebSearchDetails(event.details) && event.details.status === "failed") {

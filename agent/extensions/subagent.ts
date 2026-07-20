@@ -10,7 +10,9 @@ import {
 	SUBAGENT_COMMAND_ENTRY,
 	type SubagentToolParams,
 } from "../../src/subagent/index.js";
-import { repairableTool } from "../../src/tool-repair/index.js";
+import { subagentTelemetry } from "../../src/subagent/telemetry.js";
+import { loadSubagentConfig } from "../../src/subagent/config.js";
+import { registerObservedTool } from "../../src/telemetry/tool.js";
 
 const taskItem = Type.Object({
 	agent: Type.String({ minLength: 1 }),
@@ -31,28 +33,34 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	pi.registerEntryRenderer(SUBAGENT_COMMAND_ENTRY, (entry, { expanded }, theme) => {
 		return renderSubagentCommandEntry(entry.data, expanded, theme);
 	});
-	pi.registerTool(repairableTool({
-		name: "subagent",
-		label: "subagent",
-		description: "Delegate bounded tasks to isolated agents.",
-		promptSnippet: "delegate bounded tasks",
-		parameters: subagentParams,
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			return executeSubagent(params as SubagentToolParams, {
-				cwd: ctx.cwd,
-				hasUI: ctx.hasUI,
-				currentModel: formatModelReference(ctx.model),
-				registeredTools: pi.getAllTools().map((tool) => tool.name),
-				...(signal !== undefined ? { signal } : {}),
-				...(ctx.hasUI ? { confirm: (title: string, message: string) => ctx.ui.confirm(title, message) } : {}),
-				...(onUpdate !== undefined ? { onUpdate } : {}),
-			});
+	registerObservedTool(pi, {
+		tool: {
+			name: "subagent",
+			label: "subagent",
+			description: "Delegate bounded tasks to isolated agents.",
+			promptSnippet: "delegate bounded tasks",
+			parameters: subagentParams,
+			async execute(_toolCallId, params, signal, onUpdate, ctx) {
+				return executeSubagent(params as SubagentToolParams, {
+					cwd: ctx.cwd,
+					hasUI: ctx.hasUI,
+					currentModel: formatModelReference(ctx.model),
+					registeredTools: pi.getAllTools().map((tool) => tool.name),
+					...(signal !== undefined ? { signal } : {}),
+					...(ctx.hasUI ? { confirm: (title: string, message: string) => ctx.ui.confirm(title, message) } : {}),
+					...(onUpdate !== undefined ? { onUpdate } : {}),
+				});
+			},
+			renderCall: renderSubagentCall,
+			renderResult: renderSubagentResult,
 		},
-		renderCall: renderSubagentCall,
-		renderResult: renderSubagentResult,
-	}, {
-		pathFields: ["tasks.*.cwd"],
-	}));
+		repair: { pathFields: ["tasks.*.cwd"] },
+		telemetry: subagentTelemetry,
+		cohort: {
+			implementationEntrypoints: ["src/subagent/index.ts", "src/subagent/telemetry.ts"],
+			config: (ctx) => loadSubagentConfig(ctx.cwd),
+		},
+	});
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "subagent") return undefined;
 		const details = event.details;

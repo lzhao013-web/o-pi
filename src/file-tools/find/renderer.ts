@@ -22,6 +22,7 @@ export interface RenderFindInput {
 	nearby?: FindNearbyResult[];
 	missingPrefix?: string;
 	nearbyDirectory?: string;
+	candidateSources?: Record<string, string[]>;
 }
 
 /** 渲染 find 成功结果；预算按完整输出行控制，避免截断路径字符串。 */
@@ -49,24 +50,34 @@ export function renderFindResults(input: RenderFindInput): { content: string; de
 	}
 
 	if (input.matches.length <= NARROW_RESULT_LIMIT) {
-		const packed = packLines(formatConcreteMatches(input.matches), input, tokenBudget);
+		const formatted = formatConcreteMatches(input.matches);
+		const packed = packLines(formatted, input, tokenBudget);
+		const visibleMatches = input.matches.slice(0, concreteMatchCount(formatted, input.matches.length, packed.payloadLineCount));
 		const rendered = appendRelated(packed.content, input.related, tokenBudget);
 		return {
 			content: rendered.content,
-			details: buildDetails(input, collapsedGroups, rendered.related, packed.outputTruncated),
+			details: buildDetails(input, collapsedGroups, rendered.related, packed.outputTruncated, visibleMatches, []),
 		};
 	}
 
 	const selected = selectConcreteMatches(input.matches);
 	const selectedPaths = new Set(selected.map((match) => match.path));
 	const groups = collapseMatches(input.matches.filter((match) => !selectedPaths.has(match.path)));
-	const lines = ["top:", ...formatConcreteMatches(selected)];
+	const formattedSelected = formatConcreteMatches(selected);
+	const lines = ["top:", ...formattedSelected];
 	if (groups.length > 0) lines.push("other:", ...groups.map(formatGroup));
 	const packed = packLines(lines, input, tokenBudget);
+	let remaining = packed.payloadLineCount;
+	if (remaining > 0) remaining -= 1;
+	const selectedLineCount = Math.min(formattedSelected.length, remaining);
+	const visibleMatches = selected.slice(0, concreteMatchCount(formattedSelected, selected.length, selectedLineCount));
+	remaining -= selectedLineCount;
+	if (groups.length > 0 && remaining > 0) remaining -= 1;
+	const visibleGroups = groups.slice(0, Math.max(0, remaining));
 	return {
 		content: packed.content,
 		details: {
-			...buildDetails(input, collapsedGroups, [], packed.outputTruncated),
+			...buildDetails(input, collapsedGroups, [], packed.outputTruncated, visibleMatches, visibleGroups),
 			collapsedGroups: groups,
 		},
 	};
@@ -118,8 +129,14 @@ function buildDetails(
 	collapsedGroups: FindCollapsedGroup[],
 	related: RepoMapRelatedResult[],
 	outputTruncated: boolean,
+	displayedMatches: FindMatch[] = input.matches,
+	displayedCollapsedGroups: FindCollapsedGroup[] = collapsedGroups,
 ): FindDetails {
 	const matches = input.matches.map(({ path, kind }) => ({ path, kind }));
+	const visiblePaths = new Set(matches.map((match) => match.path));
+	const candidateSources = input.candidateSources === undefined
+		? undefined
+		: Object.fromEntries(Object.entries(input.candidateSources).filter(([candidatePath]) => visiblePaths.has(candidatePath)));
 	return {
 		query: input.query,
 		path: input.path,
@@ -130,6 +147,8 @@ function buildDetails(
 		scannedEntries: input.scannedEntries,
 		matches,
 		collapsedGroups,
+		displayedMatches: displayedMatches.map(({ path, kind }) => ({ path, kind })),
+		displayedCollapsedGroups,
 		ignoredCount: input.ignoredCount,
 		skippedCount: input.skippedCount,
 		scanTruncated: input.scanTruncated,
@@ -139,7 +158,13 @@ function buildDetails(
 		...(input.nearby !== undefined && input.nearby.length > 0 ? { nearby: input.nearby } : {}),
 		...(input.missingPrefix !== undefined ? { missingPrefix: input.missingPrefix } : {}),
 		...(input.nearbyDirectory !== undefined ? { nearbyDirectory: input.nearbyDirectory } : {}),
+		...(candidateSources !== undefined ? { candidateSources } : {}),
 	};
+}
+
+function concreteMatchCount(formatted: readonly string[], matchCount: number, visibleLines: number): number {
+	const grouped = formatted.length === matchCount + 1;
+	return Math.max(0, Math.min(matchCount, visibleLines - (grouped ? 1 : 0)));
 }
 
 function appendRelated(
@@ -255,15 +280,15 @@ function packLines(
 	lines: string[],
 	input: Pick<RenderFindInput, "totalMatches" | "matches" | "scanTruncated" | "resultLimited">,
 	tokenBudget: number,
-): { content: string; outputTruncated: boolean } {
+): { content: string; outputTruncated: boolean; payloadLineCount: number } {
 	const firstStatus = formatIncompleteStatus(input, false);
 	const first = takeBudgetedLines(firstStatus === undefined ? lines : [firstStatus, ...lines], tokenBudget);
 	if (first.length === lines.length + (firstStatus === undefined ? 0 : 1)) {
-		return { content: first.join("\n"), outputTruncated: false };
+		return { content: first.join("\n"), outputTruncated: false, payloadLineCount: lines.length };
 	}
 	const status = formatIncompleteStatus(input, true) ?? "output truncated";
 	const packed = takeBudgetedLines([status, ...lines], tokenBudget);
-	return { content: packed.join("\n"), outputTruncated: true };
+	return { content: packed.join("\n"), outputTruncated: true, payloadLineCount: Math.max(0, packed.length - 1) };
 }
 
 function formatIncompleteStatus(
