@@ -8,7 +8,7 @@ agent/models-store.json
 agent/tools.jsonc
 
 cache/
-telemetry/
+/telemetry/
 
 subagents/
 .pi/
