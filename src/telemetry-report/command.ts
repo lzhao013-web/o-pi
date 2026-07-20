@@ -19,7 +19,7 @@ export function registerTelemetryCommand(
 			}
 			const report = reporter.create(collector);
 			if (ctx.mode !== "tui") {
-				ctx.ui.notify(formatLiveTelemetrySummary(report), report.report.metadata.failed_writes > 0 ? "warning" : "info");
+				ctx.ui.notify(formatLiveTelemetrySummary(report), report.report.collection_health.status === "healthy" ? "info" : "warning");
 				return;
 			}
 			await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new TelemetryViewer(report, theme, () => tui.terminal.rows, done), {

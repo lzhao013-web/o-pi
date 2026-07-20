@@ -1,25 +1,22 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+
 import { readTelemetryDirectory } from "../telemetry/jsonl-reader.js";
 import { calculateTelemetryReport } from "./statistics.js";
-import type { ReportSnapshot } from "./types.js";
+import type { AnalysisQuery, ReportSnapshot } from "./types.js";
 
-const CSV_TABLES = [
-	["tools.csv", "tools", ["tool", "cohort_id", "sessions", "calls", "successes", "errors", "unknown_results", "success_rate", "outcome_counts", "error_code_counts", "exposure_turns", "unused_exposures", "unused_exposure_cost", "definition_tokens", "definition_tokens_per_call", "output_tokens", "output_tokens_per_call", "truncated_results", "execution_ms", "execution_ms_per_call", "accepted_inputs", "repaired_inputs", "invalid_inputs", "repair_counts", "approval_counts", "approval_wait_ms", "projection_failures", "candidates", "candidates_per_call", "candidate_group_counts", "candidate_source_counts", "success_duplicates", "failure_retries", "previous_tools", "next_tools", "metric_statistics"]],
-	["tool_transitions.csv", "tool_transitions", ["from_tool", "from_cohort_id", "to_tool", "to_cohort_id", "count", "sessions", "probability", "lift", "same_turn", "cross_turn", "same_target", "from_outcome_counts", "to_outcome_counts"]],
-	["repeated_calls.csv", "repeated_calls", ["session_id", "previous_call_id", "call_id", "tool", "cohort_id", "kind"]],
-	["candidate_conversions.csv", "candidate_conversions", ["producer_tool", "producer_cohort_id", "source", "group", "candidates", "converted", "conversion_rate", "exposed_sessions", "converted_sessions", "top_1_candidates", "top_1_converted", "top_1_conversion_rate", "top_3_candidates", "top_3_converted", "top_3_conversion_rate", "average_converted_rank", "average_calls_to_use", "consumer_counts"]],
-	["failure_recoveries.csv", "failure_recoveries", ["session_id", "failed_call_id", "failed_tool", "failure_outcome", "kind", "recovery_call_id", "recovery_tool", "calls_to_recovery", "recovery_execution_ms", "recovery_output_tokens"]],
-	["near_retries.csv", "near_retries", ["session_id", "previous_call_id", "call_id", "tool", "previous_outcome", "outcome", "changed_fields"]],
-	["tool_oscillations.csv", "tool_oscillations", ["session_id", "first_call_id", "middle_call_id", "last_call_id", "pattern", "same_turn", "same_target", "outcomes"]],
+const LEGACY_REPORT_FILES = [
+	"candidate_conversions.csv", "failure_recoveries.csv", "metadata.json", "near_retries.csv", "repeated_calls.csv",
+	"summary.json", "tool_oscillations.csv", "tool_transitions.csv", "tools.csv", "tools.json", "workflow.json",
 ] as const;
 
 export interface GenerateTelemetryReportOptions {
 	inputDirectory?: string;
 	outputDirectory?: string;
 	generatedAt?: string;
+	query?: AnalysisQuery;
 }
 
 export interface GenerateTelemetryReportResult {
@@ -33,6 +30,7 @@ export async function generateTelemetryReport(options: GenerateTelemetryReportOp
 	const input = await readTelemetryDirectory(inputDirectory);
 	const report = calculateTelemetryReport(input.records, {
 		...(options.generatedAt === undefined ? {} : { generatedAt: options.generatedAt }),
+		...(options.query === undefined ? {} : { query: options.query }),
 		scope: "all_sessions",
 		consistency: "durable_snapshot",
 		inputDirectory,
@@ -40,23 +38,17 @@ export async function generateTelemetryReport(options: GenerateTelemetryReportOp
 		invalidLines: input.invalidLines,
 	});
 	await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
-	const writes: Promise<void>[] = [];
-	for (const [fileName, key, columns] of CSV_TABLES) {
-		writes.push(writeSnapshotFile(outputDirectory, fileName, toCsv(report[key], columns)));
-	}
-	writes.push(writeSnapshotFile(outputDirectory, "summary.json", `${JSON.stringify(report.summary, null, 2)}\n`));
-	writes.push(writeSnapshotFile(outputDirectory, "metadata.json", `${JSON.stringify(report.metadata, null, 2)}\n`));
-	writes.push(writeSnapshotFile(outputDirectory, "tools.json", `${JSON.stringify(report.tools, null, 2)}\n`));
-	writes.push(writeSnapshotFile(outputDirectory, "workflow.json", `${JSON.stringify({
-		tool_transitions: report.tool_transitions,
-		candidate_conversions: report.candidate_conversions,
-		failure_recoveries: report.failure_recoveries,
-		near_retries: report.near_retries,
-		tool_oscillations: report.tool_oscillations,
-	}, null, 2)}\n`));
-	writes.push(writeSnapshotFile(outputDirectory, "report.html", renderReport(report)));
-	await Promise.all(writes);
-	// The complete single-file artifact is published last and acts as the generation commit point.
+	await Promise.all(LEGACY_REPORT_FILES.map((file) => rm(path.join(outputDirectory, file), { force: true })));
+	await Promise.all([
+		writeSnapshotFile(outputDirectory, "slices.csv", toCsv(report.inventory.slices, [
+			"slice_id", "tool_name", "behavior_hash", "instrumentation_hash", "first_seen", "last_seen", "sessions", "calls", "latest_for_tool", "dimensions",
+		])),
+		writeSnapshotFile(outputDirectory, "calls.csv", toCsv(report.facts.calls, [
+			"session_id", "turn_id", "tool_call_id", "tool_name", "slice_id", "sequence", "outcome", "ok", "duration_ms", "output_tokens", "context", "timing", "metrics",
+		])),
+		writeSnapshotFile(outputDirectory, "report.html", renderReport(report)),
+	]);
+	// report.json is the only complete artifact and is published last as the generation commit point.
 	await writeSnapshotFile(outputDirectory, "report.json", `${JSON.stringify(report, null, 2)}\n`);
 	return { report, output_directory: outputDirectory };
 }
@@ -68,51 +60,38 @@ export function toCsv(rows: readonly object[], columns: readonly string[]): stri
 }
 
 export function renderReport(report: ReportSnapshot): string {
-	const cards = [
-		["Sessions", report.summary.sessions],
-		["Tools", report.summary.tools],
-		["Calls", report.summary.calls],
-		["Success rate", percent(report.summary.success_rate)],
-		["Errors", report.summary.errors],
-		["Unknown results", report.summary.unknown_results],
-		["Failure retries", report.summary.failure_retries],
-		["Near retries", report.summary.near_retries],
-		["Failure recovery", percent(report.summary.failure_recovery_rate)],
-		["Candidate conversion", percent(report.summary.candidate_conversion_rate)],
-		["A-B-A oscillations", report.summary.tool_oscillations],
-		["Output tokens", report.summary.output_tokens],
-		["Execution ms", report.summary.execution_ms],
-	];
-	const comparisonColumns = ["tool", "cohort_id", "calls", "success_rate", "errors", "unknown_results", "execution_ms_per_call", "output_tokens_per_call", "repaired_inputs", "failure_retries", "candidates", "unused_exposures"] as const;
-	const supportingTables = CSV_TABLES.filter(([, key]) => key !== "tools")
-		.map(([fileName, key, columns]) => `<h3>${html(fileName.replace(/\.csv$/u, "").replace(/_/gu, " "))}</h3>\n${htmlTable(report[key], columns)}`).join("\n");
+	const payload = JSON.stringify(report).replace(/</gu, "\\u003c").replace(/\u2028/gu, "\\u2028").replace(/\u2029/gu, "\\u2029");
 	return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Pi tool behavior report</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pi telemetry analysis</title>
 <style>
-:root{color-scheme:light dark;font:14px/1.45 system-ui,sans-serif}body{max-width:1600px;margin:auto;padding:24px;background:#101317;color:#e8edf2}h1,h2,h3{margin:.5em 0}.muted{color:#9ba8b4}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:16px 0}.card,.tool{background:#192028;border:1px solid #303b46;border-radius:8px;padding:12px}.card b{display:block;font-size:1.5em}.tool{margin:20px 0;padding:18px}.tool h2{font-family:ui-monospace,monospace}.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.table{overflow:auto;border:1px solid #303b46;border-radius:8px;margin-bottom:24px}table{border-collapse:collapse;width:100%;background:#151a20}th,td{padding:7px 9px;border-bottom:1px solid #2a333d;text-align:left;white-space:nowrap}th{position:sticky;top:0;background:#222a33}tbody tr:hover{background:#202832}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#151a20;border:1px solid #303b46;padding:12px;border-radius:8px}@media(prefers-color-scheme:light){body{background:#f6f8fa;color:#1f2328}.card,.tool,table,pre{background:#fff}.table,.card,.tool,pre{border-color:#d0d7de}th{background:#f0f3f6}th,td{border-color:#d8dee4}tbody tr:hover{background:#f5f7f9}.muted{color:#59636e}}
-</style>
-</head>
-<body>
-<h1>Pi tool behavior report</h1>
-<p class="muted">Generated ${html(report.metadata.generated_at)} from ${report.metadata.input_files.length} telemetry JSONL file(s); ${report.metadata.complete_sessions} complete and ${report.metadata.open_sessions} open session(s); ${report.metadata.invalid_lines} invalid line(s), ${report.metadata.partial_records} partial record(s), ${report.metadata.unknown_events} unknown event(s).</p>
-<section class="cards">${cards.map(([label, value]) => `<div class="card"><span>${html(label)}</span><b>${html(value)}</b></div>`).join("")}</section>
-<h2>Tool comparison</h2>
-${htmlTable(report.tools, comparisonColumns)}
-<h2>Per-tool statistics</h2>
-	${report.tools.map(renderTool).join("\n")}
-	<h2>Session workflow analysis</h2>
-	${supportingTables}
-<h2>Summary</h2>
-<pre>${html(JSON.stringify(report.summary, null, 2))}</pre>
-<h2>Metadata</h2>
-<pre>${html(JSON.stringify(report.metadata, null, 2))}</pre>
-</body>
-</html>
-`;
+:root{color-scheme:light dark;font:14px/1.45 system-ui,sans-serif}body{max-width:1600px;margin:auto;padding:22px;background:#101419;color:#e9eef3}h1,h2{margin:.4em 0}.warn{padding:12px;border:1px solid #d88a2d;background:#402c12;border-radius:8px}.critical{border-color:#ef5b5b;background:#431d1d}.filters,.tabs,.cards{display:flex;gap:9px;flex-wrap:wrap;margin:14px 0}.filters label{display:grid;gap:3px}.filters select,.filters input,button{padding:7px;background:#18212a;color:inherit;border:1px solid #3a4652;border-radius:6px}.cards>div{min-width:120px;background:#192129;border:1px solid #303c47;padding:10px;border-radius:8px}.cards b{font-size:1.4em;display:block}.view{display:none}.view.active{display:block}.table{overflow:auto;border:1px solid #303c47;border-radius:8px}table{border-collapse:collapse;width:100%}th,td{padding:7px 9px;border-bottom:1px solid #29343e;text-align:left;white-space:nowrap}th{background:#202a34;position:sticky;top:0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#151b21;padding:12px;border:1px solid #303c47;border-radius:8px}.muted{color:#9dacba}@media(prefers-color-scheme:light){body{background:#f7f9fb;color:#1d2630}.filters select,.filters input,button,.cards>div,pre{background:#fff;border-color:#ccd5dd}.warn{background:#fff6df}.critical{background:#ffe8e8}th{background:#eef2f5}th,td{border-color:#dbe2e8}}
+</style></head><body>
+<h1>Pi telemetry analysis</h1>
+<p class="muted">As of <span id="asof"></span> · analysis <span id="hash"></span></p>
+<div id="warning"></div>
+<div class="filters" id="filters"></div>
+<div class="tabs"><button data-view="inventory">Data inventory</button><button data-view="current">Current slices</button><button data-view="comparison">Slice comparison</button><button data-view="workflow">Workflow</button><button data-view="health">Collection health</button></div>
+<section id="inventory" class="view active"><h2>Data inventory</h2><div id="inventory-cards" class="cards"></div><div id="inventory-table"></div></section>
+<section id="current" class="view"><h2>Current slices</h2><div id="current-table"></div><h2>Filtered calls</h2><div id="calls-table"></div></section>
+<section id="comparison" class="view"><h2>Slice comparison</h2><div class="filters"><label>Baseline<select id="baseline"></select></label><label>Candidate<select id="candidate"></select></label></div><pre id="comparison-data"></pre></section>
+<section id="workflow" class="view"><h2>Workflow <small>(heuristic)</small></h2><pre id="workflow-data"></pre></section>
+<section id="health" class="view"><h2>Collection health</h2><pre id="health-data"></pre></section>
+<script id="report-data" type="application/json">${payload}</script>
+<script>
+const report=JSON.parse(document.getElementById('report-data').textContent);const calls=report.facts.calls;
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const model=c=>c.context.model?c.context.model.provider+'/'+c.context.model.id:'unknown';const env=c=>{const e=c.context.environment;return [e.platform,e.arch,e.mode,e.pi_version,e.node_version].map(v=>v||'unknown').join('/')};
+const fields=[['tool','Tool',c=>c.tool_name],['behavior','Behavior',c=>c.identity.behavior_hash],['instrumentation','Instrumentation',c=>c.identity.instrumentation_hash],['model','Model',model],['thinking','Thinking',c=>c.context.thinking||'unknown'],['project','Project',c=>c.context.project],['environment','Environment',env]];
+const state={};const filters=document.getElementById('filters');for(const [id,label,get] of fields){const values=[...new Set(calls.map(get))].sort();filters.insertAdjacentHTML('beforeend','<label>'+esc(label)+'<select id="f-'+id+'"><option value="">all</option>'+values.map(v=>'<option>'+esc(v)+'</option>').join('')+'</select></label>');state[id]='';document.getElementById('f-'+id).onchange=e=>{state[id]=e.target.value;render()}}
+filters.insertAdjacentHTML('beforeend','<label>From<input id="f-from" type="datetime-local"></label><label>To<input id="f-to" type="datetime-local"></label>');for(const id of ['from','to'])document.getElementById('f-'+id).onchange=e=>{state[id]=e.target.value?new Date(e.target.value).toISOString():'';render()};
+document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById(b.dataset.view).classList.add('active')});
+const table=(rows,cols)=>'<div class="table"><table><thead><tr>'+cols.map(c=>'<th>'+esc(c[0])+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(typeof c[1]==='function'?c[1](r):r[c[1]])+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
+const grouped=xs=>{const m=new Map();for(const c of xs){const a=m.get(c.slice_id)||[];a.push(c);m.set(c.slice_id,a)}return m};const freq=xs=>xs.reduce((m,x)=>(m[x]=(m[x]||0)+1,m),{});const basic=(slice,xs)=>{const ok=xs.filter(c=>c.ok!==undefined),dur=xs.flatMap(c=>typeof c.duration_ms==='number'?[c.duration_ms]:[]).sort((a,b)=>a-b),times=xs.flatMap(c=>c.timing.event_at?[c.timing.event_at]:[]).sort();return {...slice,calls:xs.length,sessions:new Set(xs.map(c=>c.session_id)).size,first_seen:times[0],last_seen:times.at(-1),success_samples:ok.length,success_rate:ok.length?ok.filter(c=>c.ok).length/ok.length:null,duration_p50:dur.length?dur[Math.ceil(dur.length*.5)-1]:null,duration_missing:xs.length?(xs.length-dur.length)/xs.length:0,environments:freq(xs.map(env))}};const distance=(a,b)=>{const ak=Object.keys(a),bk=Object.keys(b),at=Object.values(a).reduce((x,y)=>x+y,0),bt=Object.values(b).reduce((x,y)=>x+y,0);return [...new Set([...ak,...bk])].reduce((s,k)=>s+Math.abs((a[k]||0)/(at||1)-(b[k]||0)/(bt||1)),0)/2};
+function render(){const filtered=calls.filter(c=>fields.every(([id,,get])=>!state[id]||get(c)===state[id])&&(!state.from||c.timing.event_at>=state.from)&&(!state.to||c.timing.event_at<=state.to));const groups=grouped(filtered),ids=new Set(groups.keys());const slices=report.inventory.slices.filter(s=>ids.has(s.slice_id)).map(s=>basic(s,groups.get(s.slice_id)));document.getElementById('inventory-cards').innerHTML=[['Calls',filtered.length],['Sessions',new Set(filtered.map(c=>c.session_id)).size],['Tools',new Set(filtered.map(c=>c.tool_name)).size],['Slices',ids.size]].map(x=>'<div>'+x[0]+'<b>'+x[1]+'</b></div>').join('');document.getElementById('inventory-table').innerHTML=table(slices,[['tool','tool_name'],['slice','slice_id'],['behavior','behavior_hash'],['instrumentation','instrumentation_hash'],['from','first_seen'],['to','last_seen'],['sessions','sessions'],['calls','calls'],['latest','latest_for_tool']]);const current=slices.filter(s=>report.query.selected_slice_ids.includes(s.slice_id));document.getElementById('current-table').innerHTML=table(current,[['tool','tool_name'],['slice','slice_id'],['calls','calls'],['sessions','sessions'],['success samples','success_samples'],['success rate','success_rate'],['duration p50','duration_p50'],['duration missing','duration_missing']]);document.getElementById('calls-table').innerHTML=table(filtered.slice(0,1000),[['time',c=>c.timing.event_at],['tool','tool_name'],['slice','slice_id'],['outcome','outcome'],['project',c=>c.context.project],['model',model]])}
+const choices=report.inventory.slices.map(s=>'<option value="'+esc(s.slice_id)+'">'+esc(s.tool_name+' / '+s.behavior_hash.slice(0,8)+' / '+s.instrumentation_hash.slice(0,8))+'</option>').join('');for(const id of ['baseline','candidate'])document.getElementById(id).innerHTML=choices;const initial=report.comparison;if(initial){document.getElementById('baseline').value=initial.baseline.slice_id;document.getElementById('candidate').value=initial.candidate.slice_id}else if(report.inventory.slices.length>1)document.getElementById('candidate').selectedIndex=1;function compareSlices(){const b=report.inventory.slices.find(s=>s.slice_id===document.getElementById('baseline').value),c=report.inventory.slices.find(s=>s.slice_id===document.getElementById('candidate').value);if(!b||!c)return;const bs=basic(b,calls.filter(x=>x.slice_id===b.slice_id)),cs=basic(c,calls.filter(x=>x.slice_id===c.slice_id)),reasons=[],environment_distance=distance(bs.environments,cs.environments);if(b.tool_name!==c.tool_name)reasons.push('different_tools');if(b.instrumentation_hash!==c.instrumentation_hash)reasons.push('different_instrumentation');if(environment_distance>.25)reasons.push('material_environment_shift');document.getElementById('comparison-data').textContent=JSON.stringify({baseline:bs,candidate:cs,comparability:{comparable:reasons.length===0,reasons,environment_distance,metric_flags:Object.fromEntries(['success_rate','duration_ms','output_tokens'].map(name=>[name,{comparable:reasons.length===0,reasons}]))},authoritative_cli_comparison:initial?.comparability},null,2)}for(const id of ['baseline','candidate'])document.getElementById(id).onchange=compareSlices;
+document.getElementById('asof').textContent=report.metadata.as_of||'no timestamp';document.getElementById('hash').textContent=report.metadata.analysis_hash.slice(0,16);const h=report.collection_health;if(h.status!=='healthy')document.getElementById('warning').innerHTML='<div class="warn '+(h.status==='critical'?'critical':'')+'"><b>Data quality '+esc(h.status)+'</b><br>'+esc(h.warnings.join(' · '))+'</div>';document.getElementById('workflow-data').textContent=JSON.stringify(report.workflow,null,2);document.getElementById('health-data').textContent=JSON.stringify(report.collection_health,null,2);compareSlices();render();
+</script></body></html>\n`;
 }
 
 async function writeSnapshotFile(directory: string, fileName: string, content: string): Promise<void> {
@@ -125,43 +104,4 @@ async function writeSnapshotFile(directory: string, fileName: string, content: s
 function csvCell(value: unknown): string {
 	const text = value === undefined || value === null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
 	return /[",\r\n]/u.test(text) ? `"${text.replace(/"/gu, '""')}"` : text;
-}
-
-function htmlTable(rows: readonly object[], columns: readonly string[]): string {
-	const head = columns.map((column) => `<th>${html(column)}</th>`).join("");
-	const body = rows.map((row) => `<tr>${columns.map((column) => `<td>${html(Reflect.get(row, column))}</td>`).join("")}</tr>`).join("");
-	return `<div class="table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
-}
-
-function renderTool(tool: ReportSnapshot["tools"][number]): string {
-	const cards = [
-		["Calls", tool.calls],
-		["Success rate", percent(tool.success_rate)],
-		["Errors", tool.errors],
-		["Unknown results", tool.unknown_results],
-		["Avg execution ms", tool.execution_ms_per_call],
-		["Output tokens/call", tool.output_tokens_per_call],
-		["Repaired inputs", tool.repaired_inputs],
-		["Failure retries", tool.failure_retries],
-		["Candidates", tool.candidates],
-	];
-	const facts = {
-		outcomes: tool.outcome_counts,
-		error_codes: tool.error_code_counts,
-		repairs: tool.repair_counts,
-		approvals: tool.approval_counts,
-		candidate_groups: tool.candidate_group_counts,
-		candidate_sources: tool.candidate_source_counts,
-		previous_tools: tool.previous_tools,
-		next_tools: tool.next_tools,
-	};
-	return `<section class="tool"><h2>${html(tool.tool)} <small>${html(tool.cohort_id)}</small></h2><div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${html(label)}</span><b>${html(value)}</b></div>`).join("")}</div><div class="facts"><div><h3>Breakdowns and flow</h3><pre>${html(JSON.stringify(facts, null, 2))}</pre></div><div><h3>Tool metrics</h3><pre>${html(JSON.stringify(tool.metric_statistics, null, 2))}</pre></div></div></section>`;
-}
-
-function percent(value: number): string {
-	return `${Math.round(value * 10_000) / 100}%`;
-}
-
-function html(value: unknown): string {
-	return String(value).replace(/[&<>"']/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 }

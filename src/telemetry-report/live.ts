@@ -48,7 +48,6 @@ function liveMetadata(report: ReportSnapshot, snapshot: TelemetryCollectorSnapsh
 	return {
 		...report.metadata,
 		generated_at: generatedAt,
-		as_of: generatedAt,
 		...(snapshot.lastCompletedTurn === undefined ? {} : { last_completed_turn: snapshot.lastCompletedTurn }),
 		in_progress_calls: snapshot.inProgressCalls,
 		pending_writes: snapshot.writer.pending,

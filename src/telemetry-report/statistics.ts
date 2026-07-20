@@ -1,28 +1,36 @@
+import { createHash } from "node:crypto";
+
 import { ingestTelemetryRecords } from "./ingest.js";
-import type { CanonicalCall, CanonicalDataset, CanonicalTurn } from "./model.js";
-import type { ReportMetadata, ReportSnapshot, RepeatedCallRow, ToolMetricStatistic, ToolReportRow, ToolTransitionRow } from "./types.js";
+import type { CanonicalCall, CanonicalDataset, CanonicalEvent, CanonicalMetric } from "./model.js";
+import { canonicalJson } from "./normalize.js";
+import { applyAnalysisQuery } from "./query.js";
+import type {
+	AnalysisQuery,
+	CategoricalStatistic,
+	CollectionHealthReport,
+	Comparability,
+	DimensionDistribution,
+	MetricStatistic,
+	NumericStatistic,
+	ReportMetadata,
+	ReportSnapshot,
+	SliceComparison,
+	SliceInventoryRow,
+	SliceStatistics,
+} from "./types.js";
+import { environmentId } from "./types.js";
 import { analyzeWorkflow } from "./workflow.js";
 
-interface Exposure {
-	turns: number;
-	unused: number;
-	tokens: number;
-	unusedTokens: number;
-	latestDefinition: number;
-}
+const ANALYSIS_COMPONENTS = {
+	decoder: "canonical-v3",
+	normalization: "path-url-reference-v2",
+	slicing: "tool-behavior-instrumentation-v1",
+	metrics: "declared-kind-aggregation-v1",
+	workflow: "bounded-interaction-branch-region-v1",
+	health: "event-ledger-v1",
+} as const;
 
-interface NumericMetric {
-	samples: number;
-	total: number;
-	min: number;
-	max: number;
-}
-
-interface MetricState {
-	numeric?: NumericMetric;
-	booleans?: { true: number; false: number };
-	strings?: Map<string, number>;
-}
+export const ANALYSIS_HASH = createHash("sha256").update(canonicalJson(ANALYSIS_COMPONENTS)).digest("hex");
 
 export interface CalculateTelemetryReportOptions {
 	generatedAt?: string;
@@ -36,291 +44,423 @@ export interface CalculateTelemetryReportOptions {
 	pendingWrites?: number;
 	failedWrites?: number;
 	lastWriteFailureAt?: string;
+	query?: AnalysisQuery;
 }
 
 export function calculateTelemetryReport(records: readonly unknown[], options: CalculateTelemetryReportOptions = {}): ReportSnapshot {
 	return buildTelemetryReport(ingestTelemetryRecords(records), records.length, options);
 }
 
-/** Shared pure analysis entrypoint used by durable CLI and live session reports. */
-export function buildTelemetryReport(
-	dataset: CanonicalDataset,
-	parsedLines: number,
-	options: CalculateTelemetryReportOptions = {},
-): ReportSnapshot {
-	const { calls, turns, sessionIds, sessionStates, diagnostics } = dataset;
-	const workflow = analyzeWorkflow(calls);
-	const repeated = findRepeatedCalls(calls);
-	const tools = buildToolReports(calls, collectExposure(turns, calls), workflow.transitions, repeated);
-	const successes = calls.filter((call) => call.ok === true).length;
-	const errors = calls.filter((call) => call.ok === false).length;
-	const recovered = workflow.failureRecoveries.filter((row) => row.kind !== "unrecovered");
-	const candidateExposures = workflow.candidateExposures;
-	const candidateConversions = workflow.convertedCandidates;
+/** Durable CLI, HTML and /telemetry share this pure canonical analysis entrypoint. */
+export function buildTelemetryReport(dataset: CanonicalDataset, parsedLines: number, options: CalculateTelemetryReportOptions = {}): ReportSnapshot {
+	const result = applyAnalysisQuery(dataset, options.query);
+	const filteredTurns = dataset.turns.filter((turn) => matchesExposureContext(turn.context, turn.started_at, result.query)
+		&& (result.query.tools === undefined || result.query.tools.length === 0 || turn.exposures.some((exposure) => result.query.tools?.includes(exposure.name))));
+	const inventory = sliceInventory(result.filtered_calls, dataset, result.query.selected_slice_ids, result.query);
+	const callsBySlice = new Map(groupCalls(result.selected_calls).map((calls) => [calls[0]?.slice_id ?? "", calls]));
+	const currentSlices = inventory.filter((slice) => result.query.selected_slice_ids.includes(slice.slice_id)).map((slice) => {
+		const calls = callsBySlice.get(slice.slice_id);
+		return calls === undefined || calls.length === 0 ? emptySliceStatistics(slice) : sliceStatistics(calls);
+	});
+	const comparison = buildComparison(currentSlices, result.query.baseline_slice_id, result.query.candidate_slice_id);
+	const health = collectionHealth(dataset, options);
+	const inventorySessionIds = new Set([...result.filtered_calls.map((call) => call.session_id), ...filteredTurns.map((turn) => turn.session_id)]);
 	const generatedAt = options.generatedAt ?? new Date().toISOString();
 	const metadata: ReportMetadata = {
+		schema_version: 1,
+		analysis_hash: ANALYSIS_HASH,
 		generated_at: generatedAt,
-		as_of: generatedAt,
+		...(dataset.asOf === undefined ? {} : { as_of: dataset.asOf }),
 		scope: options.scope ?? "all_sessions",
 		consistency: options.consistency ?? "durable_snapshot",
 		...(options.inputDirectory === undefined ? {} : { input_directory: options.inputDirectory }),
-		input_files: [...(options.inputFiles ?? [])].sort(),
-		complete_sessions: [...sessionStates.values()].filter((state) => state === "closed").length,
-		open_sessions: [...sessionIds].filter((sessionId) => sessionStates.get(sessionId) !== "closed").length,
+		input_files: [...(options.inputFiles ?? [])].sort(compare),
+		parsed_lines: parsedLines,
+		invalid_lines: options.invalidLines ?? 0,
 		...(options.lastCompletedTurn === undefined ? {} : { last_completed_turn: options.lastCompletedTurn }),
 		in_progress_calls: options.inProgressCalls ?? 0,
 		pending_writes: options.pendingWrites ?? 0,
 		failed_writes: options.failedWrites ?? 0,
 		...(options.lastWriteFailureAt === undefined ? {} : { last_write_failure_at: options.lastWriteFailureAt }),
-		parsed_lines: parsedLines,
-		...diagnostics,
-		invalid_lines: options.invalidLines ?? 0,
+		decode_issue_counts: dataset.diagnostics.decode_issue_counts,
 	};
 	return {
-		tools,
-		tool_transitions: workflow.transitions,
-		repeated_calls: repeated,
-		candidate_conversions: workflow.candidateConversions,
-		failure_recoveries: workflow.failureRecoveries,
-		near_retries: workflow.nearRetries,
-		tool_oscillations: workflow.toolOscillations,
-		summary: {
-			sessions: sessionIds.size,
-			turns: turns.length,
-			tools: new Set(tools.map((row) => row.tool)).size,
-			calls: calls.length,
-			successes,
-			errors,
-			unknown_results: calls.length - successes - errors,
-			success_rate: ratio(successes, successes + errors),
-			repeated_calls: repeated.length,
-			failure_retries: repeated.filter((row) => row.kind === "failure_retry").length,
-			near_retries: workflow.nearRetries.length,
-			tool_oscillations: workflow.toolOscillations.length,
-			candidate_exposures: candidateExposures,
-			candidate_conversions: candidateConversions,
-			candidate_conversion_rate: ratio(candidateConversions, candidateExposures),
-			failed_calls: workflow.failureRecoveries.length,
-			recovered_failures: recovered.length,
-			failure_recovery_rate: ratio(recovered.length, workflow.failureRecoveries.length),
-			exact_recoveries: recovered.filter((row) => row.kind === "exact_retry").length,
-			modified_recoveries: recovered.filter((row) => row.kind === "modified_retry").length,
-			fallback_recoveries: recovered.filter((row) => row.kind === "fallback").length,
-			unrecovered_failures: workflow.failureRecoveries.filter((row) => row.kind === "unrecovered").length,
-			output_tokens: sum(calls.map((call) => call.output_tokens ?? 0)),
-			execution_ms: sum(calls.map((call) => call.duration_ms ?? 0)),
-		},
 		metadata,
+		query: result.query,
+		inventory: {
+			summary: {
+				sessions: inventorySessionIds.size,
+				turns: filteredTurns.length,
+				calls: result.filtered_calls.length,
+				tools: new Set(inventory.map((slice) => slice.tool_name)).size,
+				slices: inventory.length,
+				complete_sessions: [...inventorySessionIds].filter((sessionId) => dataset.sessionStates.get(sessionId) === "closed").length,
+				open_sessions: [...inventorySessionIds].filter((sessionId) => dataset.sessionStates.get(sessionId) !== "closed").length,
+				decoded_records: dataset.diagnostics.decoded_records,
+				partial_records: dataset.diagnostics.partial_records,
+				invalid_records: dataset.diagnostics.invalid_records,
+				unknown_events: dataset.diagnostics.unknown_events,
+			},
+			slices: inventory,
+			dimensions: dimensions(result.filtered_calls),
+		},
+		current_slices: currentSlices,
+		...(comparison === undefined ? {} : { comparison }),
+		workflow: analyzeWorkflow(result.selected_calls),
+		collection_health: health,
+		facts: { calls: result.filtered_calls, turns: filteredTurns },
 	};
 }
 
-function buildToolReports(
-	calls: readonly CanonicalCall[],
-	exposures: Map<string, Exposure>,
-	transitions: readonly ToolTransitionRow[],
-	repeated: readonly RepeatedCallRow[],
-): ToolReportRow[] {
-	const groups = new Map<string, { tool: string; cohortId: string }>();
-	for (const call of calls) groups.set(`${call.tool_name}\0${call.cohort_id}`, { tool: call.tool_name, cohortId: call.cohort_id });
-	for (const tool of exposures.keys()) {
-		if (![...groups.values()].some((group) => group.tool === tool)) groups.set(`${tool}\0not_observed`, { tool, cohortId: "not_observed" });
+function emptySliceStatistics(slice: SliceInventoryRow): SliceStatistics {
+	return {
+		slice_id: slice.slice_id,
+		tool_name: slice.tool_name,
+		behavior_hash: slice.behavior_hash,
+		instrumentation_hash: slice.instrumentation_hash,
+		sessions: slice.sessions,
+		calls: 0,
+		period: { ...(slice.first_seen === undefined ? {} : { from: slice.first_seen }), ...(slice.last_seen === undefined ? {} : { to: slice.last_seen }) },
+		dimensions: slice.dimensions,
+		outcomes: { samples: 0, missing: 0, missing_rate: 0, frequencies: {} },
+		success_rate: { samples: 0, missing: 0, missing_rate: 0 },
+		duration_ms: numericStatistic([], 0),
+		output_tokens: numericStatistic([], 0),
+		projection_failures: 0,
+		metrics: {},
+	};
+}
+
+function sliceInventory(calls: readonly CanonicalCall[], dataset: CanonicalDataset, selectedSliceIds: readonly string[], query: AnalysisQuery): SliceInventoryRow[] {
+	const selected = new Set(selectedSliceIds);
+	const groups = new Map<string, { slice: string; calls: CanonicalCall[]; tool: string; behavior: string; instrumentation: string; exposureSessions: Set<string>; exposureTimes: string[]; exposureContexts: NonNullable<CanonicalDataset["turns"][number]["context"]>[] }>();
+	for (const sliceCalls of groupCalls(calls)) {
+		const first = sliceCalls[0];
+		if (first === undefined) continue;
+		groups.set(first.slice_id, { slice: first.slice_id, calls: sliceCalls, tool: first.tool_name, behavior: first.identity.behavior_hash, instrumentation: first.identity.instrumentation_hash, exposureSessions: new Set(), exposureTimes: [], exposureContexts: [] });
 	}
-	return [...groups.values()]
-		.sort((left, right) => compare(left.tool, right.tool) || compare(left.cohortId, right.cohortId))
-		.map(({ tool, cohortId }): ToolReportRow => {
-		const toolCalls = calls.filter((call) => call.tool_name === tool && call.cohort_id === cohortId);
-		const successes = toolCalls.filter((call) => call.ok === true).length;
-		const errors = toolCalls.filter((call) => call.ok === false).length;
-		const exposure = toolCalls.length === 0 ? exposures.get(tool) ?? emptyExposure() : calledExposure(toolCalls);
-		const candidates = toolCalls.flatMap((call) => call.candidates);
-		const toolRepeated = repeated.filter((row) => row.tool === tool && row.cohort_id === cohortId);
-		const duration = sum(toolCalls.map((call) => call.duration_ms ?? 0));
-		const outputTokens = sum(toolCalls.map((call) => call.output_tokens ?? 0));
+	for (const turn of dataset.turns) {
+		if (!matchesExposureContext(turn.context, turn.started_at, query)) continue;
+		for (const exposure of turn.exposures) {
+			if (query.tools !== undefined && query.tools.length > 0 && !query.tools.includes(exposure.name)) continue;
+			const state = groups.get(exposure.slice_id) ?? { slice: exposure.slice_id, calls: [], tool: exposure.name, behavior: exposure.identity.behavior_hash, instrumentation: exposure.identity.instrumentation_hash, exposureSessions: new Set<string>(), exposureTimes: [], exposureContexts: [] };
+			state.exposureSessions.add(turn.session_id);
+			if (turn.started_at !== undefined) state.exposureTimes.push(turn.started_at);
+			if (turn.context !== undefined) state.exposureContexts.push(turn.context);
+			groups.set(exposure.slice_id, state);
+		}
+	}
+	return [...groups.values()].map((state) => {
+		const sliceCalls = state.calls;
+		const timestamps = sliceCalls.flatMap((call) => call.timing.event_at ?? []).sort(compare);
+		timestamps.push(...state.exposureTimes);
+		timestamps.sort(compare);
+		const firstSeen = timestamps[0];
+		const lastSeen = timestamps.at(-1);
 		return {
-			tool,
-			cohort_id: cohortId,
-			sessions: new Set(toolCalls.map((call) => call.session_id)).size,
-			calls: toolCalls.length,
-			successes,
-			errors,
-			unknown_results: toolCalls.length - successes - errors,
-			success_rate: ratio(successes, successes + errors),
-			outcome_counts: counts(toolCalls.map((call) => call.outcome)),
-			error_code_counts: counts(toolCalls.flatMap((call) => call.error_code ?? [])),
-			exposure_turns: exposure.turns,
-			unused_exposures: exposure.unused,
-			unused_exposure_cost: exposure.unusedTokens,
-			definition_tokens: exposure.latestDefinition,
-			definition_tokens_per_call: ratio(exposure.tokens, toolCalls.length),
-			output_tokens: outputTokens,
-			output_tokens_per_call: ratio(outputTokens, toolCalls.length),
-			truncated_results: toolCalls.filter((call) => call.output_truncated).length,
-			execution_ms: duration,
-			execution_ms_per_call: ratio(duration, toolCalls.length),
-			accepted_inputs: toolCalls.filter((call) => call.preparation_status === "accepted").length,
-			repaired_inputs: toolCalls.filter((call) => call.preparation_status === "repaired").length,
-			invalid_inputs: toolCalls.filter((call) => call.preparation_status === "invalid").length,
-			repair_counts: counts(toolCalls.flatMap((call) => call.repair_operations)),
-			approval_counts: counts(toolCalls.flatMap((call) => call.approval_outcome ?? [])),
-			approval_wait_ms: sum(toolCalls.map((call) => call.approval_wait_ms ?? 0)),
-			projection_failures: toolCalls.filter((call) => call.projection_failed).length,
-			candidates: candidates.length,
-			candidates_per_call: ratio(candidates.length, toolCalls.length),
-			candidate_group_counts: counts(candidates.map((candidate) => candidate.group)),
-			candidate_source_counts: counts(candidates.flatMap((candidate) => candidate.sources)),
-			success_duplicates: toolRepeated.filter((row) => row.kind === "success_duplicate").length,
-			failure_retries: toolRepeated.filter((row) => row.kind === "failure_retry").length,
-			previous_tools: transitionCounts(transitions, "to_tool", "to_cohort_id", tool, cohortId, "from_tool"),
-			next_tools: transitionCounts(transitions, "from_tool", "from_cohort_id", tool, cohortId, "to_tool"),
-			metric_statistics: metricStatistics(toolCalls),
+			slice_id: state.slice,
+			tool_name: state.tool,
+			behavior_hash: state.behavior,
+			instrumentation_hash: state.instrumentation,
+			...(firstSeen === undefined ? {} : { first_seen: firstSeen }),
+			...(lastSeen === undefined ? {} : { last_seen: lastSeen }),
+			sessions: new Set([...sliceCalls.map((call) => call.session_id), ...state.exposureSessions]).size,
+			calls: sliceCalls.length,
+			dimensions: sliceCalls.length > 0 ? dimensions(sliceCalls) : contextDimensions(state.exposureContexts),
+			latest_for_tool: selected.has(state.slice),
 		};
-	});
+	}).sort((left, right) => compare(left.tool_name, right.tool_name) || compare(right.last_seen ?? "", left.last_seen ?? "") || compare(left.slice_id, right.slice_id));
 }
 
-function findRepeatedCalls(calls: readonly CanonicalCall[]): RepeatedCallRow[] {
-	const rows: RepeatedCallRow[] = [];
-	for (const [sessionId, sessionCalls] of groupBySession(calls)) {
-		const latest = new Map<string, CanonicalCall>();
-		for (const call of sessionCalls) {
-			const previous = latest.get(call.input_key);
-			if (previous?.ok !== undefined) {
-				rows.push({
-					session_id: sessionId,
-					previous_call_id: previous.tool_call_id,
-					call_id: call.tool_call_id,
-					tool: call.tool_name,
-					cohort_id: call.cohort_id,
-					kind: previous.ok ? "success_duplicate" : "failure_retry",
-				});
-			}
-			latest.set(call.input_key, call);
-		}
-	}
-	return rows.sort((left, right) => compare(left.session_id, right.session_id)
-		|| compare(left.previous_call_id, right.previous_call_id)
-		|| compare(left.call_id, right.call_id));
+function matchesExposureContext(context: CanonicalDataset["turns"][number]["context"], timestamp: string | undefined, query: AnalysisQuery): boolean {
+	if (context === undefined) return query.collector_contracts === undefined && query.models === undefined && query.thinking_levels === undefined
+		&& query.toolset_hashes === undefined && query.projects === undefined && query.environments === undefined;
+	const model = context.model === undefined ? "unknown" : `${context.model.provider}/${context.model.id}`;
+	return includes(query.collector_contracts, context.collector_contract)
+		&& includes(query.models, model)
+		&& includes(query.thinking_levels, context.thinking ?? "unknown")
+		&& includes(query.toolset_hashes, context.toolset?.hash ?? "unknown")
+		&& includes(query.projects, context.project)
+		&& includes(query.environments, environmentId(context.environment))
+		&& (query.from === undefined || (timestamp !== undefined && timestamp >= query.from))
+		&& (query.to === undefined || (timestamp !== undefined && timestamp <= query.to));
 }
 
-function metricStatistics(calls: readonly CanonicalCall[]): Record<string, ToolMetricStatistic> {
-	const states = new Map<string, MetricState>();
-	for (const call of calls) {
-		for (const [name, metric] of Object.entries(call.metrics)) {
-			const key = metric.unit === undefined ? name : `${name}[${metric.unit}]`;
-			const value = metric.value;
-			const state = states.get(key) ?? {};
-			if (typeof value === "number") {
-				const numeric = state.numeric ?? { samples: 0, total: 0, min: value, max: value };
-				numeric.samples += 1;
-				numeric.total += value;
-				numeric.min = Math.min(numeric.min, value);
-				numeric.max = Math.max(numeric.max, value);
-				state.numeric = numeric;
-			} else if (typeof value === "boolean") {
-				const booleans = state.booleans ?? { true: 0, false: 0 };
-				booleans[value ? "true" : "false"] += 1;
-				state.booleans = booleans;
-			} else {
-				const strings = state.strings ?? new Map<string, number>();
-				increment(strings, value);
-				state.strings = strings;
-			}
-			states.set(key, state);
-		}
-	}
-	return Object.fromEntries([...states.entries()].sort(([left], [right]) => compare(left, right)).map(([name, state]) => [name, {
-		...(state.numeric === undefined ? {} : { numeric: { ...state.numeric, average: ratio(state.numeric.total, state.numeric.samples) } }),
-		...(state.booleans === undefined ? {} : { boolean: state.booleans }),
-		...(state.strings === undefined ? {} : { values: sortedObject(state.strings) }),
-	}]));
+function contextDimensions(contexts: readonly NonNullable<CanonicalDataset["turns"][number]["context"]>[]): DimensionDistribution {
+	return {
+		collector_contracts: frequencies(contexts.map((context) => context.collector_contract)),
+		models: frequencies(contexts.map((context) => context.model === undefined ? "unknown" : `${context.model.provider}/${context.model.id}`)),
+		thinking_levels: frequencies(contexts.map((context) => context.thinking ?? "unknown")),
+		toolsets: frequencies(contexts.map((context) => context.toolset?.hash ?? "unknown")),
+		projects: frequencies(contexts.map((context) => context.project)),
+		environments: frequencies(contexts.map((context) => environmentId(context.environment))),
+	};
 }
 
-function collectExposure(turns: readonly CanonicalTurn[], calls: readonly CanonicalCall[]): Map<string, Exposure> {
-	const result = new Map<string, Exposure>();
-	const usedByTurn = new Map<string, Set<string>>();
-	for (const call of calls) {
-		const key = turnKey(call.session_id, call.turn_id);
-		const used = usedByTurn.get(key);
-		if (used === undefined) usedByTurn.set(key, new Set([call.tool_name]));
-		else used.add(call.tool_name);
-	}
-	for (const turn of turns) {
-		const used = usedByTurn.get(turnKey(turn.sessionId, turn.id)) ?? new Set();
-		for (const tool of turn.activeTools) {
-			const tokens = turn.definitions.get(tool) ?? 0;
-			const current = result.get(tool) ?? emptyExposure();
-			current.turns += 1;
-			current.tokens += tokens;
-			current.latestDefinition = tokens;
-			if (!used.has(tool)) {
-				current.unused += 1;
-				current.unusedTokens += tokens;
-			}
-			result.set(tool, current);
+function sliceStatistics(calls: readonly CanonicalCall[]): SliceStatistics {
+	const first = calls[0];
+	if (first === undefined) throw new Error("empty slice");
+	const timestamps = calls.flatMap((call) => call.timing.event_at ?? []).sort(compare);
+	const periodFrom = timestamps[0];
+	const periodTo = timestamps.at(-1);
+	const knownOutcomes = calls.filter((call) => call.outcome !== "unknown");
+	const outcomeCounts = frequencies(knownOutcomes.map((call) => call.outcome));
+	const outcomeMissing = calls.length - knownOutcomes.length;
+	const outcomes: CategoricalStatistic = {
+		samples: knownOutcomes.length,
+		missing: outcomeMissing,
+		missing_rate: ratio(outcomeMissing, calls.length),
+		frequencies: outcomeCounts,
+	};
+	const successSamples = calls.filter((call) => call.ok !== undefined);
+	const successes = successSamples.filter((call) => call.ok === true).length;
+	return {
+		slice_id: first.slice_id,
+		tool_name: first.tool_name,
+		behavior_hash: first.identity.behavior_hash,
+		instrumentation_hash: first.identity.instrumentation_hash,
+		sessions: new Set(calls.map((call) => call.session_id)).size,
+		calls: calls.length,
+		period: {
+			...(periodFrom === undefined ? {} : { from: periodFrom }),
+			...(periodTo === undefined ? {} : { to: periodTo }),
+		},
+		dimensions: dimensions(calls),
+		outcomes,
+		success_rate: {
+			...(successSamples.length === 0 ? {} : { value: ratio(successes, successSamples.length) }),
+			samples: successSamples.length,
+			missing: calls.length - successSamples.length,
+			missing_rate: ratio(calls.length - successSamples.length, calls.length),
+		},
+		duration_ms: numericStatistic(calls.flatMap((call) => call.duration_ms ?? []), calls.length),
+		output_tokens: numericStatistic(calls.flatMap((call) => call.output_tokens ?? []), calls.length),
+		projection_failures: calls.filter((call) => call.projection_failed === true).length,
+		metrics: metricStatistics(calls),
+	};
+}
+
+function metricStatistics(calls: readonly CanonicalCall[]): Record<string, MetricStatistic> {
+	const names = new Set(calls.flatMap((call) => Object.keys(call.metrics)));
+	const result: Record<string, MetricStatistic> = {};
+	for (const name of [...names].sort(compare)) {
+		const metrics = calls.flatMap((call) => call.metrics[name] ?? []);
+		const schemas = new Set(metrics.map(metricSchema));
+		const first = metrics[0];
+		if (first === undefined) continue;
+		const missing = calls.length - metrics.length;
+		const base = {
+			kind: first.kind,
+			aggregation: first.aggregation,
+			...(first.unit === undefined ? {} : { unit: first.unit }),
+			samples: metrics.length,
+			missing,
+			missing_rate: ratio(missing, calls.length),
+		};
+		if (schemas.size > 1) {
+			result[name] = { ...base, status: "schema_conflict", frequencies: frequencies(metrics.map(metricSchema)) };
+			continue;
 		}
+		if (first.kind === "categorical" || first.aggregation === "count_by_value") {
+			result[name] = { ...base, status: "ok", frequencies: frequencies(metrics.map((metric) => String(metric.value))) };
+			continue;
+		}
+		const values = metrics.flatMap((metric) => typeof metric.value === "number" && Number.isFinite(metric.value) ? [metric.value] : []);
+		result[name] = values.length === metrics.length
+			? { ...base, status: "ok", numeric: numericStatistic(values, calls.length) }
+			: { ...base, status: "invalid_value", frequencies: frequencies(metrics.map((metric) => typeof metric.value)) };
 	}
 	return result;
 }
 
-function transitionCounts(
-	rows: readonly ToolTransitionRow[],
-	matchKey: "from_tool" | "to_tool",
-	cohortKey: "from_cohort_id" | "to_cohort_id",
-	tool: string,
-	cohortId: string,
-	valueKey: "from_tool" | "to_tool",
-): Record<string, number> {
-	const counts = new Map<string, number>();
-	for (const row of rows) {
-		if (row[matchKey] === tool && row[cohortKey] === cohortId) counts.set(row[valueKey], row.count);
+function buildComparison(slices: readonly SliceStatistics[], baselineId: string | undefined, candidateId: string | undefined): SliceComparison | undefined {
+	if (baselineId === undefined || candidateId === undefined) return undefined;
+	const baseline = slices.find((slice) => slice.slice_id === baselineId);
+	const candidate = slices.find((slice) => slice.slice_id === candidateId);
+	if (baseline === undefined || candidate === undefined) return undefined;
+	return { baseline, candidate, comparability: comparability(baseline, candidate) };
+}
+
+function comparability(baseline: SliceStatistics, candidate: SliceStatistics): Comparability {
+	const reasons: string[] = [];
+	if (baseline.tool_name !== candidate.tool_name) reasons.push("different_tools");
+	if (baseline.instrumentation_hash !== candidate.instrumentation_hash) reasons.push("different_instrumentation");
+	const environmentDistance = distributionDistance(baseline.dimensions.environments, candidate.dimensions.environments);
+	if (environmentDistance > 0.25) reasons.push("material_environment_shift");
+	const metricNames = new Set([...Object.keys(baseline.metrics), ...Object.keys(candidate.metrics), "success_rate", "duration_ms", "output_tokens"]);
+	const metricFlags: Comparability["metric_flags"] = {};
+	for (const name of [...metricNames].sort(compare)) {
+		const metricReasons = [...reasons];
+		const left = baseline.metrics[name];
+		const right = candidate.metrics[name];
+		if ((left === undefined) !== (right === undefined)) metricReasons.push("metric_missing_in_one_slice");
+		if (left !== undefined && right !== undefined && metricSchema(left) !== metricSchema(right)) metricReasons.push("metric_schema_changed");
+		const leftSamples = comparisonSamples(baseline, name);
+		const rightSamples = comparisonSamples(candidate, name);
+		if (leftSamples < 5 || rightSamples < 5) metricReasons.push("insufficient_samples");
+		metricFlags[name] = { comparable: metricReasons.length === 0, reasons: metricReasons };
 	}
-	return sortedObject(counts);
+	return { comparable: reasons.length === 0, reasons, environment_distance: environmentDistance, metric_flags: metricFlags };
 }
 
-function counts(values: readonly string[]): Record<string, number> {
-	const counts = new Map<string, number>();
-	for (const value of values) increment(counts, value);
-	return sortedObject(counts);
+function comparisonSamples(slice: SliceStatistics, name: string): number {
+	if (name === "success_rate") return slice.success_rate.samples;
+	if (name === "duration_ms") return slice.duration_ms.samples;
+	if (name === "output_tokens") return slice.output_tokens.samples;
+	return slice.metrics[name]?.samples ?? 0;
 }
 
-function sortedObject(values: Map<string, number>): Record<string, number> {
-	return Object.fromEntries([...values.entries()].sort(([left], [right]) => compare(left, right)));
+function collectionHealth(dataset: CanonicalDataset, options: CalculateTelemetryReportOptions): CollectionHealthReport {
+	const sequences = sequenceHealth(dataset.events);
+	const starts = new Set(dataset.events.filter((event) => event.event === "tool_call_start" && event.tool_call_id !== undefined).map((event) => `${event.session_id}\0${event.tool_call_id}`));
+	const ends = new Set(dataset.events.filter((event) => event.event === "tool_call_end" && event.tool_call_id !== undefined).map((event) => `${event.session_id}\0${event.tool_call_id}`));
+	const pairedMissingStarts = [...ends].filter((id) => !starts.has(id)).length;
+	const pairedMissingEnds = [...starts].filter((id) => !ends.has(id)).length;
+	const mismatches = dataset.turns.filter((turn) => turn.expected_call_count !== undefined && (
+		turn.expected_call_count !== turn.observed_start_count || turn.expected_call_count !== turn.observed_end_count)).length;
+	const observedIssues = new Map<string, number>();
+	for (const issue of dataset.collectionIssues) observedIssues.set(issue.issue, (observedIssues.get(issue.issue) ?? 0) + issue.count);
+	const missingStarts = Math.max(pairedMissingStarts, dataset.turns.reduce((sum, turn) => sum + turn.missing_start_ids.length, 0), observedIssues.get("missing_start") ?? 0);
+	const missingEnds = Math.max(pairedMissingEnds, dataset.turns.reduce((sum, turn) => sum + turn.missing_end_ids.length, 0), observedIssues.get("missing_end") ?? 0);
+	const unfinishedTurns = Math.max(dataset.turns.filter((turn) => turn.started_at !== undefined && turn.ended_at === undefined).length, observedIssues.get("unfinished_turn") ?? 0);
+	const writerFailures = (observedIssues.get("writer_failure") ?? 0) + (options.failedWrites ?? 0);
+	const projectionFailures = Math.max(observedIssues.get("projection_failed") ?? 0, dataset.calls.filter((call) => call.projection_failed === true).length);
+	const counts = {
+		sequence_gaps: Math.max(sequences.gaps, observedIssues.get("sequence_gap") ?? 0),
+		duplicate_events: dataset.diagnostics.duplicate_records,
+		duplicate_sequences: sequences.duplicates,
+		out_of_order_events: sequences.outOfOrder,
+		missing_starts: missingStarts,
+		missing_ends: missingEnds,
+		unfinished_turns: unfinishedTurns,
+		call_count_mismatches: mismatches,
+		projection_failures: projectionFailures,
+		writer_failures: writerFailures,
+		invalid_lines: options.invalidLines ?? 0,
+		invalid_records: dataset.diagnostics.invalid_records,
+		partial_records: dataset.diagnostics.partial_records,
+		unknown_events: dataset.diagnostics.unknown_events,
+	};
+	const warnings = Object.entries(counts).filter(([, count]) => count > 0).map(([name, count]) => `${name}:${count}`);
+	for (const [issue, count] of observedIssues) if (count > 0) warnings.push(`observed_${issue}:${count}`);
+	const critical = counts.writer_failures + counts.missing_ends + counts.sequence_gaps + counts.call_count_mismatches + (observedIssues.get("invalid_jsonl") ?? 0) > 0;
+	return { status: critical ? "critical" : warnings.length > 0 ? "warning" : "healthy", warnings: [...new Set(warnings)].sort(compare), counts, observed_issues: sortedObject(observedIssues) };
 }
 
-function groupBySession(calls: readonly CanonicalCall[]): Map<string, CanonicalCall[]> {
-	const result = new Map<string, CanonicalCall[]>();
+function sequenceHealth(events: readonly CanonicalEvent[]): { gaps: number; duplicates: number; outOfOrder: number } {
+	const bySession = new Map<string, number[]>();
+	const orderedBySession = new Map<string, number[]>();
+	for (const event of events) {
+		if (event.sequence === undefined) continue;
+		const values = bySession.get(event.session_id);
+		if (values === undefined) bySession.set(event.session_id, [event.sequence]);
+		else values.push(event.sequence);
+		// Health sidecars are read separately from the main ledger, so their file order is not event order.
+		if (event.event !== "collection_health") {
+			const ordered = orderedBySession.get(event.session_id);
+			if (ordered === undefined) orderedBySession.set(event.session_id, [event.sequence]);
+			else ordered.push(event.sequence);
+		}
+	}
+	let gaps = 0;
+	let duplicates = 0;
+	let outOfOrder = 0;
+	for (const values of orderedBySession.values()) {
+		for (let index = 1; index < values.length; index += 1) {
+			const previous = values[index - 1];
+			const current = values[index];
+			if (previous !== undefined && current !== undefined && current < previous) outOfOrder += 1;
+		}
+	}
+	for (const values of bySession.values()) {
+		const unique = [...new Set(values)].sort((left, right) => left - right);
+		duplicates += values.length - unique.length;
+		for (let index = 1; index < unique.length; index += 1) {
+			const previous = unique[index - 1];
+			const current = unique[index];
+			if (previous !== undefined && current !== undefined && current > previous + 1) gaps += current - previous - 1;
+		}
+	}
+	return { gaps, duplicates, outOfOrder };
+}
+
+function dimensions(calls: readonly CanonicalCall[]): DimensionDistribution {
+	return {
+		collector_contracts: frequencies(calls.map((call) => call.context.collector_contract)),
+		models: frequencies(calls.map((call) => call.context.model === undefined ? "unknown" : `${call.context.model.provider}/${call.context.model.id}`)),
+		thinking_levels: frequencies(calls.map((call) => call.context.thinking ?? "unknown")),
+		toolsets: frequencies(calls.map((call) => call.context.toolset?.hash ?? "unknown")),
+		projects: frequencies(calls.map((call) => call.context.project)),
+		environments: frequencies(calls.map((call) => environmentId(call.context.environment))),
+	};
+}
+
+function groupCalls(calls: readonly CanonicalCall[]): CanonicalCall[][] {
+	const groups = new Map<string, CanonicalCall[]>();
 	for (const call of calls) {
-		const values = result.get(call.session_id);
-		if (values === undefined) result.set(call.session_id, [call]);
+		const values = groups.get(call.slice_id);
+		if (values === undefined) groups.set(call.slice_id, [call]);
 		else values.push(call);
 	}
-	return result;
+	return [...groups.values()].sort((left, right) => compare(left[0]?.slice_id ?? "", right[0]?.slice_id ?? ""));
 }
 
-function emptyExposure(): Exposure {
-	return { turns: 0, unused: 0, tokens: 0, unusedTokens: 0, latestDefinition: 0 };
+function numericStatistic(values: readonly number[], totalSamples: number): NumericStatistic {
+	const sorted = [...values].sort((left, right) => left - right);
+	const total = sorted.reduce((sum, value) => sum + value, 0);
+	const missing = Math.max(0, totalSamples - sorted.length);
+	return {
+		samples: sorted.length,
+		missing,
+		missing_rate: ratio(missing, totalSamples),
+		total: rounded(total),
+		min: sorted[0] ?? 0,
+		max: sorted.at(-1) ?? 0,
+		mean: ratio(total, sorted.length),
+		p50: percentile(sorted, 0.5),
+		p95: percentile(sorted, 0.95),
+	};
 }
 
-function calledExposure(calls: readonly CanonicalCall[]): Exposure {
-	const turns = new Map<string, number>();
-	for (const call of calls) turns.set(`${call.session_id}\0${call.turn_id}`, call.definition_tokens);
-	const values = [...turns.values()];
-	return { turns: turns.size, unused: 0, tokens: sum(values), unusedTokens: 0, latestDefinition: values.at(-1) ?? 0 };
+function percentile(values: readonly number[], percentileValue: number): number {
+	if (values.length === 0) return 0;
+	const index = Math.min(values.length - 1, Math.max(0, Math.ceil(values.length * percentileValue) - 1));
+	return values[index] ?? 0;
 }
 
-function increment(values: Map<string, number>, key: string): void {
-	values.set(key, (values.get(key) ?? 0) + 1);
+function distributionDistance(left: Record<string, number>, right: Record<string, number>): number {
+	const leftTotal = Object.values(left).reduce((sum, value) => sum + value, 0);
+	const rightTotal = Object.values(right).reduce((sum, value) => sum + value, 0);
+	const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+	let distance = 0;
+	for (const key of keys) distance += Math.abs(ratio(left[key] ?? 0, leftTotal) - ratio(right[key] ?? 0, rightTotal));
+	return rounded(distance / 2);
 }
 
-function sum(values: readonly number[]): number {
-	return values.reduce((total, value) => total + value, 0);
+function metricSchema(metric: CanonicalMetric | MetricStatistic): string {
+	return `${metric.kind}\0${metric.aggregation}\0${metric.unit ?? ""}`;
+}
+
+function frequencies(values: readonly string[]): Record<string, number> {
+	const result = new Map<string, number>();
+	for (const value of values) result.set(value, (result.get(value) ?? 0) + 1);
+	return sortedObject(result);
+}
+
+function includes(values: readonly string[] | undefined, value: string): boolean {
+	return values === undefined || values.length === 0 || values.includes(value);
+}
+
+function sortedObject(values: ReadonlyMap<string, number>): Record<string, number> {
+	return Object.fromEntries([...values].sort(([left], [right]) => compare(left, right)));
 }
 
 function ratio(numerator: number, denominator: number): number {
-	return denominator === 0 ? 0 : Math.round((numerator / denominator) * 1_000_000) / 1_000_000;
+	return denominator === 0 ? 0 : rounded(numerator / denominator);
 }
 
-function turnKey(sessionId: string, turnId: string): string {
-	return `${sessionId}\0${turnId}`;
+function rounded(value: number): number {
+	return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 function compare(left: string, right: string): number {

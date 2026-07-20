@@ -1,92 +1,150 @@
-export interface ToolReportRow {
-	tool: string;
-	cohort_id: string;
-	sessions: number;
-	calls: number;
-	successes: number;
-	errors: number;
-	unknown_results: number;
-	success_rate: number;
-	outcome_counts: Record<string, number>;
-	error_code_counts: Record<string, number>;
-	exposure_turns: number;
-	unused_exposures: number;
-	unused_exposure_cost: number;
-	definition_tokens: number;
-	definition_tokens_per_call: number;
-	output_tokens: number;
-	output_tokens_per_call: number;
-	truncated_results: number;
-	execution_ms: number;
-	execution_ms_per_call: number;
-	accepted_inputs: number;
-	repaired_inputs: number;
-	invalid_inputs: number;
-	repair_counts: Record<string, number>;
-	approval_counts: Record<string, number>;
-	approval_wait_ms: number;
-	projection_failures: number;
-	candidates: number;
-	candidates_per_call: number;
-	candidate_group_counts: Record<string, number>;
-	candidate_source_counts: Record<string, number>;
-	success_duplicates: number;
-	failure_retries: number;
-	previous_tools: Record<string, number>;
-	next_tools: Record<string, number>;
-	metric_statistics: Record<string, ToolMetricStatistic>;
+import type { CanonicalCall, CanonicalEnvironment, CanonicalTurn } from "./model.js";
+
+export interface AnalysisQuery {
+	tools?: string[];
+	slice_ids?: string[];
+	latest?: boolean;
+	collector_contracts?: string[];
+	models?: string[];
+	thinking_levels?: string[];
+	toolset_hashes?: string[];
+	projects?: string[];
+	environments?: string[];
+	from?: string;
+	to?: string;
+	baseline_slice_id?: string;
+	candidate_slice_id?: string;
 }
 
-export interface ToolMetricStatistic {
-	numeric?: { samples: number; total: number; min: number; max: number; average: number };
-	boolean?: { true: number; false: number };
-	values?: Record<string, number>;
+export interface ResolvedAnalysisQuery extends AnalysisQuery {
+	latest: boolean;
+	selected_slice_ids: string[];
+}
+
+export interface DimensionDistribution {
+	collector_contracts: Record<string, number>;
+	models: Record<string, number>;
+	thinking_levels: Record<string, number>;
+	toolsets: Record<string, number>;
+	projects: Record<string, number>;
+	environments: Record<string, number>;
+}
+
+export interface SliceInventoryRow {
+	slice_id: string;
+	tool_name: string;
+	behavior_hash: string;
+	instrumentation_hash: string;
+	first_seen?: string;
+	last_seen?: string;
+	sessions: number;
+	calls: number;
+	dimensions: DimensionDistribution;
+	latest_for_tool: boolean;
+}
+
+export interface NumericStatistic {
+	samples: number;
+	missing: number;
+	missing_rate: number;
+	total: number;
+	min: number;
+	max: number;
+	mean: number;
+	p50: number;
+	p95: number;
+}
+
+export interface CategoricalStatistic {
+	samples: number;
+	missing: number;
+	missing_rate: number;
+	frequencies: Record<string, number>;
+}
+
+export interface MetricStatistic {
+	kind: string;
+	aggregation: string;
+	unit?: string;
+	samples: number;
+	missing: number;
+	missing_rate: number;
+	status: "ok" | "schema_conflict" | "invalid_value";
+	frequencies?: Record<string, number>;
+	numeric?: NumericStatistic;
+}
+
+export interface SliceStatistics {
+	slice_id: string;
+	tool_name: string;
+	behavior_hash: string;
+	instrumentation_hash: string;
+	sessions: number;
+	calls: number;
+	period: { from?: string; to?: string };
+	dimensions: DimensionDistribution;
+	outcomes: CategoricalStatistic;
+	success_rate: { value?: number; samples: number; missing: number; missing_rate: number };
+	duration_ms: NumericStatistic;
+	output_tokens: NumericStatistic;
+	projection_failures: number;
+	metrics: Record<string, MetricStatistic>;
+}
+
+export interface Comparability {
+	comparable: boolean;
+	reasons: string[];
+	environment_distance: number;
+	metric_flags: Record<string, { comparable: boolean; reasons: string[] }>;
+}
+
+export interface SliceComparison {
+	baseline: SliceStatistics;
+	candidate: SliceStatistics;
+	comparability: Comparability;
+}
+
+export interface WorkflowEvidence {
+	heuristic: true;
+	confidence: "strong" | "moderate" | "weak";
+	reasons: string[];
 }
 
 export interface ToolTransitionRow {
+	from_slice_id: string;
 	from_tool: string;
-	from_cohort_id: string;
+	to_slice_id: string;
 	to_tool: string;
-	to_cohort_id: string;
 	count: number;
 	sessions: number;
-	probability: number;
-	lift: number;
-	same_turn: number;
-	cross_turn: number;
 	same_target: number;
-	from_outcome_counts: Record<string, number>;
-	to_outcome_counts: Record<string, number>;
+	evidence: WorkflowEvidence;
 }
 
 export interface RepeatedCallRow {
 	session_id: string;
 	previous_call_id: string;
 	call_id: string;
+	slice_id: string;
 	tool: string;
-	cohort_id: string;
 	kind: "success_duplicate" | "failure_retry";
+	evidence: WorkflowEvidence;
 }
 
 export interface CandidateConversionRow {
+	producer_slice_id: string;
 	producer_tool: string;
-	producer_cohort_id: string;
 	source: string;
 	group: string;
 	candidates: number;
-	converted: number;
-	conversion_rate: number;
+	strong_conversions: number;
+	weak_conversions: number;
+	strong_conversion_rate: number;
+	weak_conversion_rate: number;
 	exposed_sessions: number;
 	converted_sessions: number;
-	top_1_candidates: number;
-	top_1_converted: number;
-	top_1_conversion_rate: number;
-	top_3_candidates: number;
-	top_3_converted: number;
-	top_3_conversion_rate: number;
-	average_converted_rank: number;
-	average_calls_to_use: number;
 	consumer_counts: Record<string, number>;
+	evidence: WorkflowEvidence;
 }
 
 export type FailureRecoveryKind = "exact_retry" | "modified_retry" | "fallback" | "unrecovered";
@@ -100,8 +158,7 @@ export interface FailureRecoveryRow {
 	recovery_call_id?: string;
 	recovery_tool?: string;
 	calls_to_recovery?: number;
-	recovery_execution_ms: number;
-	recovery_output_tokens: number;
+	evidence: WorkflowEvidence;
 }
 
 export interface NearRetryRow {
@@ -109,9 +166,8 @@ export interface NearRetryRow {
 	previous_call_id: string;
 	call_id: string;
 	tool: string;
-	previous_outcome: string;
-	outcome: string;
 	changed_fields: string[];
+	evidence: WorkflowEvidence;
 }
 
 export interface ToolOscillationRow {
@@ -120,69 +176,89 @@ export interface ToolOscillationRow {
 	middle_call_id: string;
 	last_call_id: string;
 	pattern: string;
-	same_turn: boolean;
-	same_target: boolean;
-	outcomes: string[];
+	evidence: WorkflowEvidence;
 }
 
-export interface ReportSummary {
-	sessions: number;
-	turns: number;
-	tools: number;
-	calls: number;
-	successes: number;
-	errors: number;
-	unknown_results: number;
-	success_rate: number;
-	repeated_calls: number;
-	failure_retries: number;
-	near_retries: number;
-	tool_oscillations: number;
-	candidate_exposures: number;
-	candidate_conversions: number;
-	candidate_conversion_rate: number;
-	failed_calls: number;
-	recovered_failures: number;
-	failure_recovery_rate: number;
-	exact_recoveries: number;
-	modified_recoveries: number;
-	fallback_recoveries: number;
-	unrecovered_failures: number;
-	output_tokens: number;
-	execution_ms: number;
-}
-
-export interface ReportMetadata {
-	generated_at: string;
-	as_of: string;
-	scope: "all_sessions" | "current_session";
-	consistency: "durable_snapshot" | "live_committed";
-	input_directory?: string;
-	input_files: string[];
-	complete_sessions: number;
-	open_sessions: number;
-	last_completed_turn?: number;
-	in_progress_calls: number;
-	pending_writes: number;
-	failed_writes: number;
-	last_write_failure_at?: string;
-	parsed_lines: number;
-	decoded_records: number;
-	partial_records: number;
-	unknown_events: number;
-	invalid_records: number;
-	duplicate_records: number;
-	invalid_lines: number;
-}
-
-export interface ReportSnapshot {
-	tools: ToolReportRow[];
-	tool_transitions: ToolTransitionRow[];
+export interface WorkflowReport {
+	heuristic: true;
+	method: string;
+	transitions: ToolTransitionRow[];
 	repeated_calls: RepeatedCallRow[];
 	candidate_conversions: CandidateConversionRow[];
 	failure_recoveries: FailureRecoveryRow[];
 	near_retries: NearRetryRow[];
 	tool_oscillations: ToolOscillationRow[];
-	summary: ReportSummary;
+	excluded: Record<string, number>;
+}
+
+export interface CollectionHealthReport {
+	status: "healthy" | "warning" | "critical";
+	warnings: string[];
+	counts: {
+		sequence_gaps: number;
+		duplicate_events: number;
+		duplicate_sequences: number;
+		out_of_order_events: number;
+		missing_starts: number;
+		missing_ends: number;
+		unfinished_turns: number;
+		call_count_mismatches: number;
+		projection_failures: number;
+		writer_failures: number;
+		invalid_lines: number;
+		invalid_records: number;
+		partial_records: number;
+		unknown_events: number;
+	};
+	observed_issues: Record<string, number>;
+}
+
+export interface InventorySummary {
+	sessions: number;
+	turns: number;
+	calls: number;
+	tools: number;
+	slices: number;
+	complete_sessions: number;
+	open_sessions: number;
+	decoded_records: number;
+	partial_records: number;
+	invalid_records: number;
+	unknown_events: number;
+}
+
+export interface ReportMetadata {
+	schema_version: 1;
+	analysis_hash: string;
+	generated_at: string;
+	as_of?: string;
+	scope: "all_sessions" | "current_session";
+	consistency: "durable_snapshot" | "live_committed";
+	input_directory?: string;
+	input_files: string[];
+	parsed_lines: number;
+	invalid_lines: number;
+	last_completed_turn?: number;
+	in_progress_calls: number;
+	pending_writes: number;
+	failed_writes: number;
+	last_write_failure_at?: string;
+	decode_issue_counts: Record<string, number>;
+}
+
+export interface ReportSnapshot {
 	metadata: ReportMetadata;
+	query: ResolvedAnalysisQuery;
+	inventory: { summary: InventorySummary; slices: SliceInventoryRow[]; dimensions: DimensionDistribution };
+	current_slices: SliceStatistics[];
+	comparison?: SliceComparison;
+	workflow: WorkflowReport;
+	collection_health: CollectionHealthReport;
+	facts: { calls: CanonicalCall[]; turns: CanonicalTurn[] };
+}
+
+export function environmentId(environment: CanonicalEnvironment): string {
+	const values = [environment.platform, environment.arch, environment.mode, environment.pi_version, environment.node_version]
+		.map((value) => value ?? "unknown");
+	return values.join("/");
 }

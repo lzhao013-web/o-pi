@@ -1,178 +1,122 @@
-import type { CanonicalCall } from "./model.js";
+import type { CanonicalCall, CanonicalCandidate, CanonicalReference } from "./model.js";
 import { canonicalJson } from "./normalize.js";
 import type {
 	CandidateConversionRow,
 	FailureRecoveryKind,
 	FailureRecoveryRow,
 	NearRetryRow,
+	RepeatedCallRow,
 	ToolOscillationRow,
 	ToolTransitionRow,
+	WorkflowEvidence,
+	WorkflowReport,
 } from "./types.js";
 
-const RECOVERY_WINDOW = 3;
+const CALL_WINDOW = 5;
+const CONVERSION_CALL_WINDOW = 10;
+const TIME_WINDOW_MS = 5 * 60_000;
 
-interface TransitionState {
-	fromTool: string;
-	fromCohortId: string;
-	toTool: string;
-	toCohortId: string;
-	count: number;
-	sessions: Set<string>;
-	sameTurn: number;
-	crossTurn: number;
-	sameTarget: number;
-	fromOutcomes: Map<string, number>;
-	toOutcomes: Map<string, number>;
-}
-
-interface ConversionState {
-	producerTool: string;
-	producerCohortId: string;
-	source: string;
-	group: string;
-	candidates: number;
-	converted: number;
-	exposedSessions: Set<string>;
-	convertedSessions: Set<string>;
-	top1Candidates: number;
-	top1Converted: number;
-	top3Candidates: number;
-	top3Converted: number;
-	convertedRankTotal: number;
-	callsToUseTotal: number;
-	consumers: Map<string, number>;
-}
-
-export interface WorkflowAnalysis {
-	transitions: ToolTransitionRow[];
-	candidateConversions: CandidateConversionRow[];
-	candidateExposures: number;
-	convertedCandidates: number;
-	failureRecoveries: FailureRecoveryRow[];
-	nearRetries: NearRetryRow[];
-	toolOscillations: ToolOscillationRow[];
-}
-
-export function analyzeWorkflow(calls: readonly CanonicalCall[]): WorkflowAnalysis {
-	const sessions = groupBySession(calls);
-	const conversions = buildCandidateConversions(sessions);
+export function analyzeWorkflow(calls: readonly CanonicalCall[]): WorkflowReport {
+	const groups = workflowGroups(calls);
+	const excluded = new Map<string, number>();
+	const conversions = candidateConversions(groups, excluded);
 	return {
-		transitions: buildTransitions(sessions),
-		candidateConversions: conversions.rows,
-		candidateExposures: conversions.exposures,
-		convertedCandidates: conversions.converted,
-		failureRecoveries: buildFailureRecoveries(sessions),
-		nearRetries: findNearRetries(sessions),
-		toolOscillations: findToolOscillations(sessions),
+		heuristic: true,
+		method: "bounded interaction+branch chains; parallel batches and overlapping execution intervals are non-causal",
+		transitions: transitions(groups, excluded),
+		repeated_calls: repeatedCalls(groups, excluded),
+		candidate_conversions: conversions,
+		failure_recoveries: failureRecoveries(groups, excluded),
+		near_retries: nearRetries(groups, excluded),
+		tool_oscillations: oscillations(groups, excluded),
+		excluded: sortedObject(excluded),
 	};
 }
 
-function buildTransitions(sessions: ReadonlyMap<string, readonly CanonicalCall[]>): ToolTransitionRow[] {
-	const states = new Map<string, TransitionState>();
-	const outgoing = new Map<string, number>();
-	const destinations = new Map<string, number>();
-	let total = 0;
-	for (const [sessionId, calls] of sessions) {
+function transitions(groups: ReadonlyMap<string, readonly CanonicalCall[]>, excluded: Map<string, number>): ToolTransitionRow[] {
+	const states = new Map<string, { from: CanonicalCall; to: CanonicalCall; count: number; sessions: Set<string>; sameTarget: number }>();
+	for (const calls of groups.values()) {
 		for (let index = 1; index < calls.length; index += 1) {
-			const previous = calls[index - 1];
-			const current = calls[index];
-			if (previous === undefined || current === undefined) continue;
-			const key = `${previous.tool_name}\0${previous.cohort_id}\0${current.tool_name}\0${current.cohort_id}`;
-			const state = states.get(key) ?? {
-				fromTool: previous.tool_name,
-				fromCohortId: previous.cohort_id,
-				toTool: current.tool_name,
-				toCohortId: current.cohort_id,
-				count: 0,
-				sessions: new Set<string>(),
-				sameTurn: 0,
-				crossTurn: 0,
-				sameTarget: 0,
-				fromOutcomes: new Map<string, number>(),
-				toOutcomes: new Map<string, number>(),
-			};
+			const from = calls[index - 1];
+			const to = calls[index];
+			if (from === undefined || to === undefined || !eligiblePair(from, to, excluded)) continue;
+			const key = `${from.slice_id}\0${to.slice_id}`;
+			const state = states.get(key) ?? { from, to, count: 0, sessions: new Set<string>(), sameTarget: 0 };
 			state.count += 1;
-			state.sessions.add(sessionId);
-			if (previous.turn_id === current.turn_id) state.sameTurn += 1;
-			else state.crossTurn += 1;
-			if (sharesInputTarget(previous, current)) state.sameTarget += 1;
-			increment(state.fromOutcomes, previous.outcome);
-			increment(state.toOutcomes, current.outcome);
+			state.sessions.add(from.session_id);
+			if (sharesTarget(from, to)) state.sameTarget += 1;
 			states.set(key, state);
-			increment(outgoing, `${previous.tool_name}\0${previous.cohort_id}`);
-			increment(destinations, `${current.tool_name}\0${current.cohort_id}`);
-			total += 1;
 		}
 	}
-	return [...states.values()].map((state) => {
-		const outgoingCount = outgoing.get(`${state.fromTool}\0${state.fromCohortId}`) ?? 0;
-		const probability = outgoingCount === 0 ? 0 : state.count / outgoingCount;
-		const baseline = total === 0 ? 0 : (destinations.get(`${state.toTool}\0${state.toCohortId}`) ?? 0) / total;
-		return {
-			from_tool: state.fromTool,
-			from_cohort_id: state.fromCohortId,
-			to_tool: state.toTool,
-			to_cohort_id: state.toCohortId,
-			count: state.count,
-			sessions: state.sessions.size,
-			probability: rounded(probability),
-			lift: baseline === 0 ? 0 : rounded(probability / baseline),
-			same_turn: state.sameTurn,
-			cross_turn: state.crossTurn,
-			same_target: state.sameTarget,
-			from_outcome_counts: sortedObject(state.fromOutcomes),
-			to_outcome_counts: sortedObject(state.toOutcomes),
-		};
-	}).sort((left, right) => compare(left.from_tool, right.from_tool) || compare(left.from_cohort_id, right.from_cohort_id)
-		|| compare(left.to_tool, right.to_tool) || compare(left.to_cohort_id, right.to_cohort_id));
+	return [...states.values()].map((state) => ({
+		from_slice_id: state.from.slice_id,
+		from_tool: state.from.tool_name,
+		to_slice_id: state.to.slice_id,
+		to_tool: state.to.tool_name,
+		count: state.count,
+		sessions: state.sessions.size,
+		same_target: state.sameTarget,
+		evidence: evidence(state.sameTarget === state.count ? "moderate" : "weak", ["bounded_order", ...(state.sameTarget > 0 ? ["shared_target"] : [])]),
+	})).sort((left, right) => compare(left.from_slice_id, right.from_slice_id) || compare(left.to_slice_id, right.to_slice_id));
 }
 
-function buildCandidateConversions(sessions: ReadonlyMap<string, readonly CanonicalCall[]>): {
-	rows: CandidateConversionRow[];
-	exposures: number;
-	converted: number;
-} {
-	const states = new Map<string, ConversionState>();
-	let exposures = 0;
-	let converted = 0;
-	for (const [sessionId, calls] of sessions) {
+function repeatedCalls(groups: ReadonlyMap<string, readonly CanonicalCall[]>, excluded: Map<string, number>): RepeatedCallRow[] {
+	const rows: RepeatedCallRow[] = [];
+	for (const calls of groups.values()) {
+		const latest = new Map<string, { call: CanonicalCall; index: number }>();
+		for (let index = 0; index < calls.length; index += 1) {
+			const call = calls[index];
+			if (call === undefined) continue;
+			const previous = latest.get(call.input_key);
+			if (previous !== undefined && index - previous.index <= CALL_WINDOW && eligiblePair(previous.call, call, excluded)) {
+				if (resourceChanged(calls, previous.index, index, previous.call, call)) increment(excluded, "repeat_after_resource_change");
+				else rows.push({
+					session_id: call.session_id,
+					previous_call_id: previous.call.tool_call_id,
+					call_id: call.tool_call_id,
+					slice_id: call.slice_id,
+					tool: call.tool_name,
+					kind: previous.call.ok === false ? "failure_retry" : "success_duplicate",
+					evidence: evidence("moderate", ["same_normalized_input", "no_observed_resource_change"]),
+				});
+			}
+			latest.set(call.input_key, { call, index });
+		}
+	}
+	return rows;
+}
+
+function candidateConversions(groups: ReadonlyMap<string, readonly CanonicalCall[]>, excluded: Map<string, number>): CandidateConversionRow[] {
+	interface State {
+		producer: CanonicalCall;
+		source: string;
+		group: string;
+		candidates: number;
+		strong: number;
+		weak: number;
+		exposedSessions: Set<string>;
+		convertedSessions: Set<string>;
+		consumers: Map<string, number>;
+	}
+	const states = new Map<string, State>();
+	for (const calls of groups.values()) {
 		for (let producerIndex = 0; producerIndex < calls.length; producerIndex += 1) {
 			const producer = calls[producerIndex];
 			if (producer === undefined) continue;
 			for (const candidate of producer.candidates) {
-				const match = findCandidateConsumer(calls, producerIndex, targetKey(candidate.kind, candidate.value));
-				exposures += 1;
-				if (match !== undefined) converted += 1;
-				for (const source of candidate.sources.length === 0 ? ["unknown"] : candidate.sources) {
-					const key = `${producer.tool_name}\0${producer.cohort_id}\0${source}\0${candidate.group}`;
+				const match = findConsumer(calls, producerIndex, candidate, excluded);
+				for (const source of candidate.sources.length === 0 ? ["unknown"] : candidate.sources.map((item) => item.id)) {
+					const key = `${producer.slice_id}\0${source}\0${candidate.group}`;
 					const state = states.get(key) ?? {
-						producerTool: producer.tool_name,
-						producerCohortId: producer.cohort_id,
-						source,
-						group: candidate.group,
-						candidates: 0,
-						converted: 0,
-						exposedSessions: new Set<string>(),
-						convertedSessions: new Set<string>(),
-						top1Candidates: 0,
-						top1Converted: 0,
-						top3Candidates: 0,
-						top3Converted: 0,
-						convertedRankTotal: 0,
-						callsToUseTotal: 0,
-						consumers: new Map<string, number>(),
+						producer, source, group: candidate.group, candidates: 0, strong: 0, weak: 0,
+						exposedSessions: new Set<string>(), convertedSessions: new Set<string>(), consumers: new Map<string, number>(),
 					};
 					state.candidates += 1;
-					state.exposedSessions.add(sessionId);
-					if (candidate.rank <= 1) state.top1Candidates += 1;
-					if (candidate.rank <= 3) state.top3Candidates += 1;
+					state.exposedSessions.add(producer.session_id);
 					if (match !== undefined) {
-						state.converted += 1;
-						state.convertedSessions.add(sessionId);
-						state.convertedRankTotal += candidate.rank;
-						state.callsToUseTotal += match.distance;
-						if (candidate.rank <= 1) state.top1Converted += 1;
-						if (candidate.rank <= 3) state.top3Converted += 1;
+						if (match.strength === "strong") state.strong += 1;
+						else state.weak += 1;
+						state.convertedSessions.add(producer.session_id);
 						increment(state.consumers, match.call.tool_name);
 					}
 					states.set(key, state);
@@ -180,173 +124,275 @@ function buildCandidateConversions(sessions: ReadonlyMap<string, readonly Canoni
 			}
 		}
 	}
-	const rows = [...states.values()].map((state) => ({
-		producer_tool: state.producerTool,
-		producer_cohort_id: state.producerCohortId,
+	return [...states.values()].map((state) => ({
+		producer_slice_id: state.producer.slice_id,
+		producer_tool: state.producer.tool_name,
 		source: state.source,
 		group: state.group,
 		candidates: state.candidates,
-		converted: state.converted,
-		conversion_rate: ratio(state.converted, state.candidates),
+		strong_conversions: state.strong,
+		weak_conversions: state.weak,
+		strong_conversion_rate: ratio(state.strong, state.candidates),
+		weak_conversion_rate: ratio(state.weak, state.candidates),
 		exposed_sessions: state.exposedSessions.size,
 		converted_sessions: state.convertedSessions.size,
-		top_1_candidates: state.top1Candidates,
-		top_1_converted: state.top1Converted,
-		top_1_conversion_rate: ratio(state.top1Converted, state.top1Candidates),
-		top_3_candidates: state.top3Candidates,
-		top_3_converted: state.top3Converted,
-		top_3_conversion_rate: ratio(state.top3Converted, state.top3Candidates),
-		average_converted_rank: ratio(state.convertedRankTotal, state.converted),
-		average_calls_to_use: ratio(state.callsToUseTotal, state.converted),
 		consumer_counts: sortedObject(state.consumers),
-	})).sort((left, right) => compare(left.producer_tool, right.producer_tool)
-		|| compare(left.producer_cohort_id, right.producer_cohort_id)
-		|| compare(left.source, right.source)
-		|| compare(left.group, right.group));
-	return { rows, exposures, converted };
+		evidence: evidence("moderate", ["bounded_region_overlap", "whole_file_is_weak"]),
+	})).sort((left, right) => compare(left.producer_slice_id, right.producer_slice_id) || compare(left.source, right.source) || compare(left.group, right.group));
 }
 
-function buildFailureRecoveries(sessions: ReadonlyMap<string, readonly CanonicalCall[]>): FailureRecoveryRow[] {
+function failureRecoveries(groups: ReadonlyMap<string, readonly CanonicalCall[]>, excluded: Map<string, number>): FailureRecoveryRow[] {
 	const rows: FailureRecoveryRow[] = [];
-	for (const [sessionId, calls] of sessions) {
-		for (let failedIndex = 0; failedIndex < calls.length; failedIndex += 1) {
-			const failed = calls[failedIndex];
+	for (const calls of groups.values()) {
+		for (let index = 0; index < calls.length; index += 1) {
+			const failed = calls[index];
 			if (failed === undefined || failed.ok !== false) continue;
-			const candidates = calls.slice(failedIndex + 1, failedIndex + 1 + RECOVERY_WINDOW);
-			const recoveryIndex = candidates.findIndex((call) => call.ok === true);
-			if (recoveryIndex < 0) {
-				rows.push(unrecovered(sessionId, failed));
-				continue;
+			let match: { call: CanonicalCall; distance: number } | undefined;
+			for (let offset = 1; offset <= CALL_WINDOW; offset += 1) {
+				const call = calls[index + offset];
+				if (call === undefined || !withinTime(failed, call)) break;
+				if (!eligiblePair(failed, call, excluded)) continue;
+				if (call.ok === true && (call.tool_name === failed.tool_name || sharesTarget(failed, call))) {
+					match = { call, distance: offset };
+					break;
+				}
 			}
-			const recovery = candidates[recoveryIndex];
-			if (recovery === undefined) {
-				rows.push(unrecovered(sessionId, failed));
-				continue;
-			}
-			const path = candidates.slice(0, recoveryIndex + 1);
-			rows.push({
-				session_id: sessionId,
+			rows.push(match === undefined ? {
+				session_id: failed.session_id,
 				failed_call_id: failed.tool_call_id,
 				failed_tool: failed.tool_name,
 				failure_outcome: failed.outcome,
-				kind: recoveryKind(failed, recovery),
-				recovery_call_id: recovery.tool_call_id,
-				recovery_tool: recovery.tool_name,
-				calls_to_recovery: recoveryIndex + 1,
-				recovery_execution_ms: sum(path.map((call) => call.duration_ms ?? 0)),
-				recovery_output_tokens: sum(path.map((call) => call.output_tokens ?? 0)),
+				kind: "unrecovered",
+				evidence: evidence("weak", ["no_bounded_matching_success"]),
+			} : {
+				session_id: failed.session_id,
+				failed_call_id: failed.tool_call_id,
+				failed_tool: failed.tool_name,
+				failure_outcome: failed.outcome,
+				kind: recoveryKind(failed, match.call),
+				recovery_call_id: match.call.tool_call_id,
+				recovery_tool: match.call.tool_name,
+				calls_to_recovery: match.distance,
+				evidence: evidence(sharesTarget(failed, match.call) ? "moderate" : "weak", ["bounded_success", ...(sharesTarget(failed, match.call) ? ["shared_target"] : [])]),
 			});
 		}
 	}
 	return rows;
 }
 
-function findNearRetries(sessions: ReadonlyMap<string, readonly CanonicalCall[]>): NearRetryRow[] {
+function nearRetries(groups: ReadonlyMap<string, readonly CanonicalCall[]>, excluded: Map<string, number>): NearRetryRow[] {
 	const rows: NearRetryRow[] = [];
-	for (const [sessionId, calls] of sessions) {
+	for (const calls of groups.values()) {
 		for (let index = 1; index < calls.length; index += 1) {
 			const previous = calls[index - 1];
 			const current = calls[index];
-			if (previous === undefined || current === undefined) continue;
-			if (previous.ok !== false || previous.tool_name !== current.tool_name || previous.cohort_id !== current.cohort_id || previous.input_key === current.input_key) continue;
+			if (previous === undefined || current === undefined || previous.ok !== false || previous.slice_id !== current.slice_id
+				|| previous.input_key === current.input_key || !eligiblePair(previous, current, excluded)) continue;
+			if (!sharesTarget(previous, current)) continue;
 			rows.push({
-				session_id: sessionId,
+				session_id: current.session_id,
 				previous_call_id: previous.tool_call_id,
 				call_id: current.tool_call_id,
 				tool: current.tool_name,
-				previous_outcome: previous.outcome,
-				outcome: current.outcome,
 				changed_fields: changedFields(previous.input, current.input),
+				evidence: evidence("moderate", ["same_slice", "shared_target", "adjacent_in_chain"]),
 			});
 		}
 	}
 	return rows;
 }
 
-function findToolOscillations(sessions: ReadonlyMap<string, readonly CanonicalCall[]>): ToolOscillationRow[] {
+function oscillations(groups: ReadonlyMap<string, readonly CanonicalCall[]>, excluded: Map<string, number>): ToolOscillationRow[] {
 	const rows: ToolOscillationRow[] = [];
-	for (const [sessionId, calls] of sessions) {
+	for (const calls of groups.values()) {
 		for (let index = 2; index < calls.length; index += 1) {
 			const first = calls[index - 2];
 			const middle = calls[index - 1];
 			const last = calls[index];
-			if (first === undefined || middle === undefined || last === undefined) continue;
-			if (first.tool_name !== last.tool_name || first.cohort_id !== last.cohort_id || first.tool_name === middle.tool_name) continue;
+			if (first === undefined || middle === undefined || last === undefined || first.slice_id !== last.slice_id || first.tool_name === middle.tool_name) continue;
+			if (!eligiblePair(first, middle, excluded) || !eligiblePair(middle, last, excluded) || !sharesTarget(first, last)) continue;
 			rows.push({
-				session_id: sessionId,
+				session_id: first.session_id,
 				first_call_id: first.tool_call_id,
 				middle_call_id: middle.tool_call_id,
 				last_call_id: last.tool_call_id,
 				pattern: `${first.tool_name} -> ${middle.tool_name} -> ${last.tool_name}`,
-				same_turn: first.turn_id === middle.turn_id && middle.turn_id === last.turn_id,
-				same_target: sharesInputTarget(first, last),
-				outcomes: [first.outcome, middle.outcome, last.outcome],
+				evidence: evidence("moderate", ["same_slice_return", "shared_target", "bounded_chain"]),
 			});
 		}
 	}
 	return rows;
 }
 
-function findCandidateConsumer(
-	calls: readonly CanonicalCall[],
-	producerIndex: number,
-	candidateKey: string,
-): { call: CanonicalCall; distance: number } | undefined {
-	for (let index = producerIndex + 1; index < calls.length; index += 1) {
-		const call = calls[index];
-		if (call !== undefined && inputTargetKeys(call).has(candidateKey)) return { call, distance: index - producerIndex };
+function findConsumer(calls: readonly CanonicalCall[], producerIndex: number, candidate: CanonicalCandidate, excluded: Map<string, number>): { call: CanonicalCall; strength: "strong" | "weak" } | undefined {
+	const producer = calls[producerIndex];
+	if (producer === undefined) return undefined;
+	for (let offset = 1; offset <= CONVERSION_CALL_WINDOW; offset += 1) {
+		const call = calls[producerIndex + offset];
+		if (call === undefined || !withinTime(producer, call)) break;
+		if (!eligiblePair(producer, call, excluded)) continue;
+		if (candidateInvalidated(calls, producerIndex, producerIndex + offset, candidate)) {
+			increment(excluded, "candidate_after_resource_change");
+			return undefined;
+		}
+		for (const reference of call.input_references) {
+			const strength = referenceMatch(candidate, reference);
+			if (strength !== undefined) return { call, strength };
+		}
 	}
 	return undefined;
 }
 
-function recoveryKind(failed: CanonicalCall, recovery: CanonicalCall): Exclude<FailureRecoveryKind, "unrecovered"> {
-	if (failed.tool_name !== recovery.tool_name || failed.cohort_id !== recovery.cohort_id) return "fallback";
-	return failed.input_key === recovery.input_key ? "exact_retry" : "modified_retry";
+function referenceMatch(candidate: CanonicalReference, consumer: CanonicalReference): "strong" | "weak" | undefined {
+	if (targetCategory(candidate.kind) !== targetCategory(consumer.kind) || candidate.value !== consumer.value) return undefined;
+	const candidateRevision = revision(candidate);
+	const consumerRevision = revision(consumer);
+	if (candidateRevision !== undefined && consumerRevision !== undefined && candidateRevision !== consumerRevision) return undefined;
+	const candidateRange = lineRange(candidate);
+	const consumerRange = lineRange(consumer);
+	if (candidateRange !== undefined && consumerRange !== undefined) {
+		return candidateRange.start <= consumerRange.end && consumerRange.start <= candidateRange.end ? "strong" : undefined;
+	}
+	if (candidateRange === undefined && consumerRange === undefined) return targetCategory(candidate.kind) === "path" ? "weak" : "strong";
+	return "weak";
 }
 
-function unrecovered(sessionId: string, failed: CanonicalCall): FailureRecoveryRow {
-	return {
-		session_id: sessionId,
-		failed_call_id: failed.tool_call_id,
-		failed_tool: failed.tool_name,
-		failure_outcome: failed.outcome,
-		kind: "unrecovered",
-		recovery_execution_ms: 0,
-		recovery_output_tokens: 0,
-	};
-}
-
-function sharesInputTarget(left: CanonicalCall, right: CanonicalCall): boolean {
-	const leftTargets = inputTargetKeys(left);
-	for (const target of inputTargetKeys(right)) {
-		if (leftTargets.has(target)) return true;
+function candidateInvalidated(calls: readonly CanonicalCall[], producerIndex: number, consumerIndex: number, candidate: CanonicalReference): boolean {
+	const target = new Set([targetKey(candidate)]);
+	for (let index = producerIndex + 1; index < consumerIndex; index += 1) {
+		const call = calls[index];
+		if (call !== undefined && modifiesAny(call, target)) return true;
 	}
 	return false;
 }
 
-function inputTargetKeys(call: CanonicalCall): Set<string> {
-	return new Set(call.input_references.map((reference) => targetKey(reference.kind, reference.value)));
+function eligiblePair(left: CanonicalCall, right: CanonicalCall, excluded: Map<string, number>): boolean {
+	if (!withinTime(left, right)) {
+		increment(excluded, "outside_time_window");
+		return false;
+	}
+	if (left.context.tool_batch?.id !== undefined && left.context.tool_batch.id === right.context.tool_batch?.id) {
+		increment(excluded, "same_parallel_batch");
+		return false;
+	}
+	if (overlapsExecution(left, right)) {
+		increment(excluded, "overlapping_execution");
+		return false;
+	}
+	return true;
 }
 
-function targetKey(kind: string, value: string): string {
-	const category = kind === "url" ? "url" : kind === "file" || kind === "directory" || kind === "path" || kind === "region" ? "path" : kind;
-	return `${category}\0${value}`;
+function overlapsExecution(left: CanonicalCall, right: CanonicalCall): boolean {
+	const leftStart = millis(left.timing.execution_started_at);
+	const leftEnd = millis(left.timing.execution_ended_at);
+	const rightStart = millis(right.timing.execution_started_at);
+	const rightEnd = millis(right.timing.execution_ended_at);
+	return leftStart !== undefined && leftEnd !== undefined && rightStart !== undefined && rightEnd !== undefined
+		&& leftStart < rightEnd && rightStart < leftEnd;
+}
+
+function withinTime(left: CanonicalCall, right: CanonicalCall): boolean {
+	const leftTime = millis(left.timing.event_at);
+	const rightTime = millis(right.timing.event_at);
+	return leftTime === undefined || rightTime === undefined || (rightTime >= leftTime && rightTime - leftTime <= TIME_WINDOW_MS);
+}
+
+function resourceChanged(calls: readonly CanonicalCall[], previousIndex: number, currentIndex: number, previous: CanonicalCall, current: CanonicalCall): boolean {
+	const previousRevisions = targetRevisions(previous.input_references);
+	const currentRevisions = targetRevisions(current.input_references);
+	for (const [target, revisionValue] of previousRevisions) {
+		const next = currentRevisions.get(target);
+		if (next !== undefined && next !== revisionValue) return true;
+	}
+	const targets = targetValues(previous.input_references);
+	for (let index = previousIndex + 1; index < currentIndex; index += 1) {
+		const intermediate = calls[index];
+		if (intermediate !== undefined && modifiesAny(intermediate, targets)) return true;
+	}
+	return false;
+}
+
+function modifiesAny(call: CanonicalCall, targets: ReadonlySet<string>): boolean {
+	const modifyingTool = /^(edit|write|patch|apply_patch|delete|move|rename)$/iu.test(call.tool_name);
+	for (const reference of [...call.input_references, ...call.result_references]) {
+		if (!targets.has(targetKey(reference)) || (!modifyingTool && !/^(modified|written|updated|deleted|created)$/iu.test(reference.relation))) continue;
+		return true;
+	}
+	return false;
+}
+
+function recoveryKind(failed: CanonicalCall, recovered: CanonicalCall): Exclude<FailureRecoveryKind, "unrecovered"> {
+	if (failed.slice_id !== recovered.slice_id) return "fallback";
+	return failed.input_key === recovered.input_key ? "exact_retry" : "modified_retry";
+}
+
+function workflowGroups(calls: readonly CanonicalCall[]): Map<string, CanonicalCall[]> {
+	const groups = new Map<string, CanonicalCall[]>();
+	for (const call of calls) {
+		const interaction = call.context.interaction ?? `turn:${call.turn_id}`;
+		const branch = call.context.branch?.lineage_hash ?? `branch:unknown:${call.turn_id}`;
+		const key = `${call.session_id}\0${interaction}\0${branch}`;
+		const values = groups.get(key);
+		if (values === undefined) groups.set(key, [call]);
+		else values.push(call);
+	}
+	for (const values of groups.values()) values.sort((left, right) => eventTime(left) - eventTime(right) || left.sequence - right.sequence || left.order - right.order);
+	return groups;
+}
+
+function sharesTarget(left: CanonicalCall, right: CanonicalCall): boolean {
+	const targets = targetValues(left.input_references);
+	return [...targetValues(right.input_references)].some((target) => targets.has(target));
+}
+
+function targetValues(references: readonly CanonicalReference[]): Set<string> {
+	return new Set(references.map(targetKey));
+}
+
+function targetRevisions(references: readonly CanonicalReference[]): Map<string, string> {
+	const result = new Map<string, string>();
+	for (const reference of references) {
+		const value = revision(reference);
+		if (value !== undefined) result.set(targetKey(reference), value);
+	}
+	return result;
+}
+
+function targetKey(reference: CanonicalReference): string {
+	return `${targetCategory(reference.kind)}\0${reference.value}`;
+}
+
+function targetCategory(kind: string): string {
+	return kind === "url" ? "url" : ["file", "directory", "path", "region"].includes(kind) ? "path" : kind;
+}
+
+function revision(reference: CanonicalReference): string | undefined {
+	return reference.resource?.revision ?? reference.resource?.content_hash?.value ?? reference.resource?.snapshot;
+}
+
+function lineRange(reference: CanonicalReference): { start: number; end: number } | undefined {
+	const start = reference.resource?.start_line;
+	const end = reference.resource?.end_line;
+	return start === undefined || end === undefined ? undefined : { start, end };
 }
 
 function changedFields(left: Record<string, unknown>, right: Record<string, unknown>): string[] {
 	const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
-	return [...keys].filter((key) => Object.hasOwn(left, key) !== Object.hasOwn(right, key)
-		|| canonicalJson(left[key]) !== canonicalJson(right[key])).sort(compare);
+	return [...keys].filter((key) => Object.hasOwn(left, key) !== Object.hasOwn(right, key) || canonicalJson(left[key]) !== canonicalJson(right[key])).sort(compare);
 }
 
-function groupBySession(calls: readonly CanonicalCall[]): Map<string, CanonicalCall[]> {
-	const result = new Map<string, CanonicalCall[]>();
-	for (const call of calls) {
-		const values = result.get(call.session_id);
-		if (values === undefined) result.set(call.session_id, [call]);
-		else values.push(call);
-	}
-	return result;
+function evidence(confidence: WorkflowEvidence["confidence"], reasons: string[]): WorkflowEvidence {
+	return { heuristic: true, confidence, reasons };
+}
+
+function eventTime(call: CanonicalCall): number {
+	return millis(call.timing.call_started_at ?? call.timing.event_at) ?? call.sequence;
+}
+
+function millis(value: string | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	const parsed = Date.parse(value);
+	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function increment(values: Map<string, number>, key: string): void {
@@ -354,19 +400,11 @@ function increment(values: Map<string, number>, key: string): void {
 }
 
 function sortedObject(values: ReadonlyMap<string, number>): Record<string, number> {
-	return Object.fromEntries([...values.entries()].sort(([left], [right]) => compare(left, right)));
-}
-
-function sum(values: readonly number[]): number {
-	return values.reduce((total, value) => total + value, 0);
+	return Object.fromEntries([...values].sort(([left], [right]) => compare(left, right)));
 }
 
 function ratio(numerator: number, denominator: number): number {
-	return denominator === 0 ? 0 : rounded(numerator / denominator);
-}
-
-function rounded(value: number): number {
-	return Math.round(value * 1_000_000) / 1_000_000;
+	return denominator === 0 ? 0 : Math.round((numerator / denominator) * 1_000_000) / 1_000_000;
 }
 
 function compare(left: string, right: string): number {

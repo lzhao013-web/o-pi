@@ -228,7 +228,7 @@ adapter 只保存分析所需的白名单事实。路径、查询词、URL、Bas
 
 不保存工具输出正文、diff、网页正文、搜索标题/摘要、诊断正文、subagent 输出或错误消息。未知可选字段允许扩展；缺失表示未采集，不伪装为 `0`、`false` 或空值。
 
-没有历史格式兼容层：reader 只把本模型的 `tool_call_end` 当作完整调用。当前报告模块内部仍以 `cohort_id` 字段名承载由 `behavior_hash` 派生的分析分组键；这不是原始事件字段，也不会重新把 config、adapter 或运行 context 混入 hash。
+没有历史格式兼容层：reader 只把本模型的 `tool_call_end` 当作完整调用。decoder 是 tolerant 的：未知事件、部分记录、缺失 contract 和无法比较的值不会使整批读取失败，但会进入 report metadata 与 collection health，不能静默变成零值。
 
 ## 报告
 
@@ -236,4 +236,71 @@ adapter 只保存分析所需的白名单事实。路径、查询词、URL、Bas
 npm run telemetry:report
 ```
 
-默认读取 sessions 目录并生成 CSV、JSON 和 HTML；`/telemetry` 对当前内存账本运行同一分析。报告只读原始记录，不回写推断。并行 batch 的相邻展示或 transition 仅是 source order，不表示执行依赖或因果关系。
+### 严格切片与查询
+
+分析切片固定为：
+
+```text
+tool_name + behavior_hash + instrumentation_hash
+```
+
+原始 `telemetry_hash` 在 canonical 分析层命名为 `instrumentation_hash`。collector contract、model、thinking、toolset、project、environment 与时间范围都是独立查询维度，不进入 slice id。默认选择每个工具最近活跃的严格切片；版本清单仍展示所有匹配切片，包括仅 exposure、没有调用的切片。不同 behavior 或 instrumentation 不会静默合并。
+
+CLI 参数只构造统一 `AnalysisQuery`：
+
+```bash
+# 列出切片
+npm run telemetry:report -- --list-slices
+
+# 选择工具、环境与时间
+npm run telemetry:report -- \
+  --tool find \
+  --environment linux/x64/tui/1.0.0/v24 \
+  --from 2026-01-01T00:00:00Z
+
+# 分析全部匹配切片
+npm run telemetry:report -- --tool find --all-slices
+
+# 比较两个行为切片
+npm run telemetry:report -- \
+  --baseline 'find:<slice-id>' \
+  --candidate 'find:<slice-id>'
+```
+
+另有可重复的 `--slice`、`--model`、`--thinking`、`--project`、`--collector-contract`、`--toolset`，以及 `--to`。baseline/candidate 的 instrumentation 不同、metric schema 改变、environment 分布距离超过阈值或任一侧样本少于 5 时，对应指标显式标记 `comparable: false`。
+
+### 报告数据模型
+
+输出目录只有四个文件：
+
+```text
+report.json   完整、稳定、唯一的展示数据源
+report.html   内嵌 report.json 的自包含交互视图
+slices.csv    版本/切片清单
+calls.csv     外部分析用调用明细
+```
+
+`report.json` 包含：
+
+* `inventory`：只做 sessions、turns、calls、tools、slices 与数据完整性计数；不提供跨切片成功率、耗时或转化率。
+* `current_slices`：严格切片的 outcome、成功率、耗时、输出与 typed metric；所有统计带 samples、missing 和 missing rate。
+* `comparison`：baseline/candidate 及逐指标可比性。
+* `workflow`：明确标记为 heuristic 的 transition、retry、recovery、oscillation 与 candidate conversion。
+* `collection_health`：首页状态、告警和 sequence/lifecycle/writer 等计数。
+* `facts`：HTML 筛选使用的 canonical calls 与 turns。
+
+生成到已有目录时会删除上一版已知的 `summary.json`、`tools*.json/csv`、`workflow.json` 和逐 workflow CSV，避免过期文件被误当作本次结果；不会删除目录中的其他自定义文件。
+
+`metadata.analysis_hash` 由当前 decoder、规范化、切片、metric、workflow 和 health 算法版本计算。`metadata.as_of` 是实际读取事件的最大有效时间戳；`generated_at` 仅表示报告生成时间。
+
+### Metric 与 workflow 边界
+
+metric 按声明的 `kind + aggregation + unit` 聚合。categorical 即使值是数字也生成频数；count/bytes 的 sum 以及 distribution/duration/ratio 的数值样本生成 total、min、max、mean、p50、p95。相同 metric name 出现 schema 冲突时不生成混合数值，状态为 `schema_conflict`。
+
+workflow 不把 session 当作单条因果链。分析先按 session、interaction 和 branch lineage 隔离，再限制调用数与时间窗口；同 tool batch 和执行区间重叠的调用不建 transition。candidate region 通过行区间重叠匹配，整文件访问只记 weak conversion。重复调用若目标 revision/content hash 改变，或中间观察到 edit/write 类修改，则不计 duplicate/retry。所有结果携带 `heuristic: true`、confidence 与 evidence reasons。
+
+### 完整性
+
+health 检查 sequence gap、重复 sequence、乱序、start/end 配对、未完成 turn、turn expected/observed 数量、projection failure、writer failure、无效 JSONL、partial 与 unknown event。严重问题使状态变成 `critical`，并在 HTML 首页显示；报告不会用生成时间或默认零值掩盖缺失数据。
+
+`/telemetry` 对当前内存账本调用同一个 canonical、query 与 statistics 内核，只使用精简 TUI 展示。报告和实时视图都只读一阶事实，不回写推断。

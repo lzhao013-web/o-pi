@@ -176,7 +176,7 @@
 
 来源：`agent/extensions/telemetry.ts`
 
-用途：查看当前 session 的工具行为和工作流遥测分析。
+用途：查看当前 session 最近活跃严格切片、启发式 workflow 与采集完整性。
 
 用法：
 
@@ -187,9 +187,10 @@
 行为：
 
 - 使用与 `npm run telemetry:report` 相同的 decoder 和分析内核。
-- 统计到最近一个完成的 turn；正在执行的调用只显示为 `in progress`，不进入成功率。
+- 默认按 `tool_name + behavior_hash + instrumentation_hash` 选择每个工具最近活跃切片；不混合行为或测量版本。
+- 统计到最近一个完成的 turn；正在执行的调用只显示为 `in progress`，不进入切片统计。
 - resume 时包含同一 session 已持久化的历史遥测，并合并本进程已经提交但尚未落盘的记录。
-- 展示调用成功率、工具耗时和输出、失败恢复、重复/修改重试、候选转化、A-B-A 振荡及 collection health。
+- 展示 inventory、当前切片的样本数/缺失率、启发式 workflow 及 collection health；不展示跨切片全局成功率或耗时均值。
 - TUI 中通过只读浮层展示；非 TUI 模式输出紧凑 notification。
 - 不扫描 session tree，不写入会话历史，不进入模型上下文。
 - 关闭：`Esc`、`q` 或 `Enter`。
