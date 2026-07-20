@@ -79,7 +79,6 @@ export class TelemetryCallStore {
 		if (call === undefined || event.tool_name !== call.toolName) return undefined;
 		switch (event.kind) {
 			case "preparation":
-				call.requested = event.requested;
 				call.preparation = { status: event.status, operations: event.operations };
 				call.projectionFailed ||= event.projection_failed === true;
 				call.projectionLimited ||= event.projection_limited === true;

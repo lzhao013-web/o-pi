@@ -22,7 +22,6 @@ export type TelemetryRuntimeEvent =
 			kind: "preparation";
 			tool_call_id: string;
 			tool_name: string;
-			requested: InputProjection;
 			status: ToolArgumentStatus;
 			operations: RepairOperation[];
 			projection_failed?: true;
@@ -82,7 +81,6 @@ export function decodeTelemetryRuntimeEvent(value: unknown): TelemetryRuntimeEve
 					kind: "preparation",
 					tool_call_id: toolCallId,
 					tool_name: toolName,
-					requested: inputProjection(payload["requested"]),
 					status,
 					operations,
 					...(payload["projection_failed"] === true ? { projection_failed: true } : {}),

@@ -25,18 +25,20 @@ export interface SourceBundle {
 	dependencies: DependencyDigest[];
 }
 
+export type SourceReference = string | URL;
+
 /** Content-address the complete local relative-import closure of the entrypoints. */
-export function sourceGraph(entrypoints: readonly string[]): SourceDigest[] {
+export function sourceGraph(entrypoints: readonly SourceReference[]): SourceDigest[] {
 	return collectSourceGraph(entrypoints).sources;
 }
 
 /** Local source closure plus the installed dependency-lock subgraph it imports. */
-export function sourceBundle(entrypoints: readonly string[]): SourceBundle {
+export function sourceBundle(entrypoints: readonly SourceReference[]): SourceBundle {
 	const graph = collectSourceGraph(entrypoints);
 	return { sources: graph.sources, dependencies: lockedDependencies(graph.packages) };
 }
 
-export function sourceBundleDescriptor(entrypoints: readonly string[]): JsonObject {
+export function sourceBundleDescriptor(entrypoints: readonly SourceReference[]): JsonObject {
 	const bundle = sourceBundle(entrypoints);
 	return {
 		files: bundle.sources.map((source) => ({ path: source.path, sha256: source.sha256 })),
@@ -46,8 +48,8 @@ export function sourceBundleDescriptor(entrypoints: readonly string[]): JsonObje
 	};
 }
 
-function collectSourceGraph(entrypoints: readonly string[]): SourceBundle & { packages: Set<string> } {
-	const pending = entrypoints.map((entry) => path.resolve(ROOT, entry));
+function collectSourceGraph(entrypoints: readonly SourceReference[]): SourceBundle & { packages: Set<string> } {
+	const pending = entrypoints.map(resolveEntrypoint);
 	const visited = new Set<string>();
 	const files: SourceDigest[] = [];
 	const packages = new Set<string>();
@@ -65,6 +67,12 @@ function collectSourceGraph(entrypoints: readonly string[]): SourceBundle & { pa
 		}
 	}
 	return { sources: files.sort((left, right) => left.path.localeCompare(right.path)), dependencies: [], packages };
+}
+
+function resolveEntrypoint(entrypoint: SourceReference): string {
+	if (entrypoint instanceof URL) return fileURLToPath(entrypoint);
+	if (entrypoint.startsWith("file:")) return fileURLToPath(entrypoint);
+	return path.isAbsolute(entrypoint) ? entrypoint : path.resolve(ROOT, entrypoint);
 }
 
 function importedPackages(content: string): string[] {

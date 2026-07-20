@@ -31,6 +31,34 @@ collector contract 描述事件字段、生命周期、outcome、计时与投影
 
 所有 adapter payload 在进入 runtime channel 前统一限制：最大深度 8、节点 4096、字符串 4096 字符、数组 256 项、对象 128 个键。超限数据保留有限前缀/摘要并标记 `projection_limited`；投影异常标记 `projection_failed`。JSONL 单行超过 1,000,000 字符会按无效行计数。
 
+## 工具接入
+
+仓库内模型工具统一使用 `registerObservedTool`。基础接入只提供工具和行为源码；默认 adapter 不记录输入或工具 details，但仍采集 exposure、repair、approval、执行状态、时延、错误和输出大小：
+
+```ts
+registerObservedTool(pi, {
+  tool,
+  source: import.meta.url,
+  config: loadConfig, // 可选；只返回影响行为的有效配置
+  repair,             // 可选
+});
+```
+
+需要工具专属维度时再定义 adapter。`input` 同时投影原始 requested input 和实际 executed input；只有两者语义确实不同时才分别实现 `requested` 或 `executed`。`result` 只返回 payload-free facts：
+
+```ts
+export const searchTelemetry = defineToolTelemetry<SearchParams, SearchDetails>(import.meta.url, {
+  input: projectSearchInput,
+  result(_params, result) {
+    return { metrics: searchMetrics(result.details) };
+  },
+});
+```
+
+输入投影是显式 allowlist。不得根据参数 schema 自动持久化全部参数。每个 adapter 使用自己的入口文件；可复用逻辑放入共享 helper，使单工具修改只改变该工具的 `instrumentation_hash`，helper 修改则改变所有真实消费者。行为由多个独立 runtime 组成时，`source` 可传 URL 数组。
+
+所有工具共享每个 Pi 实例唯一的 telemetry coordinator；新增工具不会新增全局 lifecycle handler。普通 `pi.registerTool` 注册的外部或 host 工具仍有通用生命周期事实，但行为实现、instrumentation 和配置身份保持 `unavailable`。
+
 ## 原始事件与生命周期
 
 事件集合：

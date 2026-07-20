@@ -4,7 +4,8 @@ import { Type } from "typebox";
 
 import { registerObservedTool } from "../../src/telemetry/tool.js";
 import { loadWebToolsConfig } from "../../src/web-tools/config.js";
-import { webFetchTelemetry, webSearchTelemetry } from "../../src/web-tools/telemetry.js";
+import { webFetchTelemetry } from "../../src/web-tools/telemetry/webfetch.js";
+import { webSearchTelemetry } from "../../src/web-tools/telemetry/websearch.js";
 import { isWebFetchDetails, renderWebFetchCall, renderWebFetchResult } from "../../src/web-tools/webfetch-renderer.js";
 import { isWebSearchDetails, renderWebSearchCall, renderWebSearchResult } from "../../src/web-tools/websearch-renderer.js";
 import type { WebFetchProgressDetails, WebSearchProgressDetails, WebToolsRuntime } from "../../src/web-tools/types.js";
@@ -74,7 +75,8 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			return pending;
 		};
 
-		registerObservedTool(pi, { tool: {
+		registerObservedTool(pi, {
+			tool: {
 			name: "websearch",
 			label: "websearch",
 			description: "Search the web; return page titles, URLs, and snippets.",
@@ -98,13 +100,15 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			},
 			renderCall: renderWebSearchCall,
 			renderResult: renderWebSearchResult,
-		}, repair: { singleStringField: "query" }, telemetry: webSearchTelemetry, identity: {
-			behaviorEntrypoints: ["src/web-tools/websearch-runtime.ts"],
-			telemetryEntrypoints: ["src/web-tools/telemetry.ts"],
+			},
+			repair: { singleStringField: "query" },
+			telemetry: webSearchTelemetry,
+			source: new URL("../../src/web-tools/websearch-runtime.ts", import.meta.url),
 			config: () => loadWebToolsConfig(),
-		} });
+		});
 
-		registerObservedTool(pi, { tool: {
+		registerObservedTool(pi, {
+			tool: {
 			name: "webfetch",
 			label: "webfetch",
 			description: "Fetch one HTTP(S) URL as readable text or source; no JavaScript.",
@@ -131,11 +135,12 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			},
 			renderCall: renderWebFetchCall,
 			renderResult: renderWebFetchResult,
-		}, repair: { singleStringField: "url" }, telemetry: webFetchTelemetry, identity: {
-			behaviorEntrypoints: ["src/web-tools/webfetch-runtime.ts"],
-			telemetryEntrypoints: ["src/web-tools/telemetry.ts"],
+			},
+			repair: { singleStringField: "url" },
+			telemetry: webFetchTelemetry,
+			source: new URL("../../src/web-tools/webfetch-runtime.ts", import.meta.url),
 			config: () => loadWebToolsConfig(),
-		} });
+		});
 
 		pi.on("tool_result", (event) => {
 			if (event.toolName === "websearch" && isWebSearchDetails(event.details) && event.details.status === "failed") {

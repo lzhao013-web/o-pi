@@ -138,6 +138,7 @@ registerObservedTool(pi, {
       // ...
     },
   },
+  source: import.meta.url,
   repair: {
     singleStringField: "path",
     pathFields: ["path"],
@@ -147,6 +148,7 @@ registerObservedTool(pi, {
     },
   },
   telemetry: readTelemetry,
+  config: loadFileToolsConfig,
 });
 ```
 

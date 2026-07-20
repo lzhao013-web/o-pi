@@ -5,18 +5,16 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionContext, ToolDefinition, ToolInfo } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 
-import { safeProjectRequested, type ToolTelemetryAdapter } from "./adapter.js";
+import { safeProjectRequested, type DefinedToolTelemetry } from "./adapter.js";
 import { createManifest, manifestValueFingerprint, safeManifestValue, type TelemetryManifest } from "./manifest.js";
-import { sourceBundleDescriptor } from "./source-identity.js";
+import { sourceBundleDescriptor, type SourceReference } from "./source-identity.js";
 import type { InputProjection, JsonObject, ToolIdentity } from "./types.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-export interface ToolIdentitySpec {
-	/** Behavior sources only. Telemetry adapter sources must not be listed here. */
-	behaviorEntrypoints: readonly string[];
-	/** Adapter and projection sources only. */
-	telemetryEntrypoints: readonly string[];
+export interface ToolIdentityOptions {
+	/** Behavior source root. Use import.meta.url; pass multiple roots only for split runtimes. */
+	source: SourceReference | readonly SourceReference[];
 	/** Effective behavior-affecting configuration. Raw secrets are redacted in its manifest. */
 	config?: (ctx: ExtensionContext) => unknown | Promise<unknown>;
 }
@@ -34,26 +32,26 @@ interface RegisteredIdentity {
 	coreDefinitionHash: string;
 	modelDefinition: unknown;
 	projectRequested: (value: unknown) => { value: InputProjection; failed: boolean; limited: boolean };
-	loadConfig?: ToolIdentitySpec["config"];
+	loadConfig?: ToolIdentityOptions["config"];
 }
 
 const registered = new Map<string, RegisteredIdentity>();
 
 export function registerToolIdentity<TParams extends TSchema, TDetails, TState, TExecuted>(
 	tool: ToolDefinition<TParams, TDetails, TState>,
-	telemetry: ToolTelemetryAdapter<TExecuted, TDetails>,
-	spec: ToolIdentitySpec,
+	telemetry: DefinedToolTelemetry<TExecuted, TDetails>,
+	options: ToolIdentityOptions,
 	repair: unknown,
 ): void {
 	const definition = definitionManifest(tool);
 	registered.set(tool.name, {
-		behavior: behaviorManifest(tool, spec.behaviorEntrypoints, repair, definition.hash),
+		behavior: behaviorManifest(tool, sourceReferences(options.source), repair, definition.hash),
 		definition,
-		instrumentation: instrumentationManifest(tool.name, telemetry, spec.telemetryEntrypoints),
+		instrumentation: instrumentationManifest(tool.name, telemetry),
 		coreDefinitionHash: coreDefinitionManifest(tool).hash,
 		modelDefinition: modelDefinitionValue(tool),
 		projectRequested: (value) => safeProjectRequested(telemetry, value),
-		...(spec.config === undefined ? {} : { loadConfig: spec.config }),
+		...(options.config === undefined ? {} : { loadConfig: options.config }),
 	});
 }
 
@@ -125,17 +123,16 @@ export function toolDefinitionValue(tool: ToolInfo | undefined, name: string): u
 
 export function computeToolBehaviorHash<TParams extends TSchema, TDetails, TState>(
 	tool: ToolDefinition<TParams, TDetails, TState>,
-	entrypoints: readonly string[],
+	entrypoints: readonly SourceReference[],
 	repair: unknown,
 ): string {
 	return behaviorManifest(tool, entrypoints, repair, definitionManifest(tool).hash).hash;
 }
 
 export function computeTelemetryHash<TParams, TDetails>(
-	telemetry: ToolTelemetryAdapter<TParams, TDetails>,
-	entrypoints: readonly string[],
+	telemetry: DefinedToolTelemetry<TParams, TDetails>,
 ): string {
-	return instrumentationManifest("unknown", telemetry, entrypoints).hash;
+	return instrumentationManifest("unknown", telemetry).hash;
 }
 
 export function computeToolDefinitionHash(tool: Pick<ToolInfo, "name"> & Partial<ToolInfo>): string {
@@ -144,7 +141,7 @@ export function computeToolDefinitionHash(tool: Pick<ToolInfo, "name"> & Partial
 
 function behaviorManifest<TParams extends TSchema, TDetails, TState>(
 	tool: ToolDefinition<TParams, TDetails, TState>,
-	entrypoints: readonly string[],
+	entrypoints: readonly SourceReference[],
 	repair: unknown,
 	definitionHash: string,
 ): TelemetryManifest {
@@ -202,22 +199,25 @@ function modelDefinitionValue(tool: {
 
 function instrumentationManifest<TParams, TDetails>(
 	toolName: string,
-	telemetry: ToolTelemetryAdapter<TParams, TDetails>,
-	entrypoints: readonly string[],
+	telemetry: DefinedToolTelemetry<TParams, TDetails>,
 ): TelemetryManifest {
 	return createManifest("tool_instrumentation", {
 		tool_name: toolName,
-		sources: sourceDescriptors(entrypoints),
+		sources: sourceDescriptors(telemetry.sources),
 		capabilities: {
-			requested_projection: telemetry.projectRequested !== undefined,
-			executed_projection: true,
-			result_observation: true,
+			requested_projection: telemetry.requested !== undefined || telemetry.input !== undefined,
+			executed_projection: telemetry.executed !== undefined || telemetry.input !== undefined,
+			result_observation: telemetry.result !== undefined,
 		},
 	});
 }
 
-function sourceDescriptors(entrypoints: readonly string[]): JsonObject {
+function sourceDescriptors(entrypoints: readonly SourceReference[]): JsonObject {
 	return sourceBundleDescriptor(entrypoints);
+}
+
+function sourceReferences(value: SourceReference | readonly SourceReference[]): readonly SourceReference[] {
+	return typeof value === "string" || value instanceof URL ? [value] : value;
 }
 
 let cachedPiVersion: string | undefined;

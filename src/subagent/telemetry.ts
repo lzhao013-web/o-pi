@@ -3,23 +3,9 @@ import { categoricalMetric, compactJson, countMetric, distributionMetric, isReco
 import type { InputProjection, MetricMap, TelemetryReference } from "../telemetry/types.js";
 import type { SubagentDetails, SubagentToolParams } from "./types.js";
 
-export const subagentTelemetry = defineToolTelemetry<SubagentToolParams, SubagentDetails>({
-	projectRequested: projectInput,
-	projectExecuted(params) {
-		return {
-			value: {
-				tasks: params.tasks.map((task) => compactJson({
-					agent: task.agent,
-					cwd: task.cwd,
-					task: textSummary(task.task),
-				})),
-			},
-			references: params.tasks.flatMap((task): TelemetryReference[] => task.cwd === undefined
-				? []
-				: [{ relation: "target", kind: "directory", value: task.cwd }]),
-		};
-	},
-	observeResult(_params, result) {
+export const subagentTelemetry = defineToolTelemetry<SubagentToolParams, SubagentDetails>(import.meta.url, {
+	input: projectInput,
+	result(_params, result) {
 		const details = result.details;
 		const metrics: MetricMap = {
 			mode: categoricalMetric(details.mode),

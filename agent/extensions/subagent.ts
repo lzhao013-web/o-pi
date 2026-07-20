@@ -56,11 +56,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		},
 		repair: { pathFields: ["tasks.*.cwd"] },
 		telemetry: subagentTelemetry,
-		identity: {
-			behaviorEntrypoints: ["src/subagent/index.ts"],
-			telemetryEntrypoints: ["src/subagent/telemetry.ts"],
-			config: (ctx) => loadSubagentConfig(ctx.cwd),
-		},
+		source: new URL("../../src/subagent/index.ts", import.meta.url),
+		config: (ctx) => loadSubagentConfig(ctx.cwd),
 	});
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "subagent") return undefined;

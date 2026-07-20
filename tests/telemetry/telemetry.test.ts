@@ -14,8 +14,9 @@ import { describe, expect, it } from "vitest";
 
 import telemetryExtension from "../../agent/extensions/telemetry.js";
 import { bashTelemetry } from "../../src/bash-tool/telemetry.js";
-import { findTelemetry, readTelemetry } from "../../src/file-tools/telemetry.js";
-import { boundedTelemetryPayload, decodeToolObservation, defineToolTelemetry, minimalTelemetry, type ToolTelemetryAdapter } from "../../src/telemetry/adapter.js";
+import { findTelemetry } from "../../src/file-tools/telemetry/find.js";
+import { readTelemetry } from "../../src/file-tools/telemetry/read.js";
+import { boundedTelemetryPayload, decodeToolObservation, defineToolTelemetry, safeObserve, type DefinedToolTelemetry } from "../../src/telemetry/adapter.js";
 import { registerTelemetry } from "../../src/telemetry/collector.js";
 import { COLLECTOR_CONTRACT_HASH } from "../../src/telemetry/contract.js";
 import { computeTelemetryHash, computeToolBehaviorHash } from "../../src/telemetry/identity.js";
@@ -29,7 +30,7 @@ import type {
 	TurnStartRecord,
 } from "../../src/telemetry/types.js";
 import { JsonlTelemetryWriter, telemetrySessionFile, type TelemetryWriter } from "../../src/telemetry/writer.js";
-import { webSearchTelemetry } from "../../src/web-tools/telemetry.js";
+import { webSearchTelemetry } from "../../src/web-tools/telemetry/websearch.js";
 import { calculateLiveReport } from "../../src/telemetry-report/live.js";
 import { useTempDir } from "../helpers/lifecycle.js";
 
@@ -74,12 +75,42 @@ describe("telemetry raw collection", () => {
 		]);
 	});
 
+	it("reuses one coordinator and allows tools to omit specialized telemetry", () => {
+		const lifecycle = new Map<string, number>();
+		const tools: string[] = [];
+		const pi = {
+			events: createEventBus(),
+			on(event: string) {
+				lifecycle.set(event, (lifecycle.get(event) ?? 0) + 1);
+			},
+			registerTool(tool: { name: string }) {
+				tools.push(tool.name);
+			},
+			getActiveTools: () => tools,
+			getAllTools: () => [],
+			getThinkingLevel: () => "off",
+		} as unknown as ExtensionAPI;
+		for (const name of ["first", "second"]) {
+			registerObservedTool(pi, {
+				tool: { ...testTool(async () => successResult()), name, label: name },
+				source: new URL("../../src/bash-tool/index.ts", import.meta.url),
+			});
+		}
+
+		expect(tools).toEqual(["first", "second"]);
+		expect(Object.fromEntries(lifecycle)).toEqual({
+			tool_execution_start: 1,
+			tool_execution_end: 1,
+			session_start: 1,
+		});
+	});
+
 	it("keeps behavior, telemetry, config, and runtime context identities separate", async () => {
 		const tool = testTool(async () => successResult());
 		const behaviorBefore = computeToolBehaviorHash(tool, ["src/bash-tool/index.ts"], { pathFields: ["path"] });
 		const behaviorAfter = computeToolBehaviorHash(tool, ["src/bash-tool/index.ts"], { pathFields: ["path"] });
-		const firstTelemetry = computeTelemetryHash(testTelemetry, ["src/bash-tool/telemetry.ts"]);
-		const secondTelemetry = computeTelemetryHash(minimalTelemetry<TestParams, TestDetails>(), ["src/bash-tool/telemetry.ts"]);
+		const firstTelemetry = computeTelemetryHash(testTelemetry);
+		const secondTelemetry = computeTelemetryHash(defineToolTelemetry<TestParams, TestDetails>(import.meta.url, {}));
 
 		expect(behaviorAfter).toBe(behaviorBefore);
 		expect(secondTelemetry).not.toBe(firstTelemetry);
@@ -201,9 +232,9 @@ describe("telemetry raw collection", () => {
 			},
 		}).metrics).toEqual({});
 
-		const dynamic = defineToolTelemetry<TestParams, TestDetails>({
-			projectExecuted: (params) => ({ value: { path: params.path } }),
-			observeResult(params) {
+		const dynamic = defineToolTelemetry<TestParams, TestDetails>(import.meta.url, {
+			executed: (params) => ({ value: { path: params.path } }),
+			result(params) {
 				return { metrics: { unstable: params.path === "category" ? categoricalMetric(1) : countMetric(1, "item") } };
 			},
 		});
@@ -250,13 +281,11 @@ describe("telemetry raw collection", () => {
 	});
 
 	it("persists projection failures as collection-health facts", async () => {
-		const adapter: ToolTelemetryAdapter<TestParams, TestDetails> = {
-			projectRequested() {
+		const adapter = defineToolTelemetry<TestParams, TestDetails>(import.meta.url, {
+			requested() {
 				throw new Error("projection failed");
 			},
-			projectExecuted: () => ({ value: {} }),
-			observeResult: () => ({}),
-		};
+		});
 		const harness = await createHarness(undefined, adapter);
 		const call = { id: "projection", arguments: { path: "secret.ts" } };
 		await harness.announceBatch([call]);
@@ -272,7 +301,7 @@ describe("telemetry raw collection", () => {
 	});
 
 	it("preserves independent reference ranks, raw sources, families, and resource state", () => {
-		const find = findTelemetry.observeResult(
+		const find = observe(findTelemetry,
 			{ query: "service", path: "src" },
 			{
 				content: [],
@@ -304,7 +333,7 @@ describe("telemetry raw collection", () => {
 			]),
 		});
 
-		const web = webSearchTelemetry.observeResult({ query: "docs", limit: 1 }, {
+		const web = observe(webSearchTelemetry, { query: "docs", limit: 1 }, {
 			content: [],
 			details: {
 				status: "success",
@@ -319,7 +348,7 @@ describe("telemetry raw collection", () => {
 		});
 		expect(web.references?.[0]).toMatchObject({ sources: [{ id: "exa_mcp", family: "websearch", source_rank: 7 }] });
 
-		const read = readTelemetry.observeResult({ path: "src/a.ts" }, {
+		const read = observe(readTelemetry, { path: "src/a.ts" }, {
 			content: [],
 			details: {
 				path: "src/a.ts",
@@ -344,7 +373,7 @@ describe("telemetry raw collection", () => {
 	});
 
 	it("classifies categorical numeric metrics instead of treating them as continuous", () => {
-		const observation = bashTelemetry.observeResult({ command: "false" }, {
+		const observation = observe(bashTelemetry, { command: "false" }, {
 			content: [],
 			details: {
 				status: "exited",
@@ -447,15 +476,12 @@ describe("telemetry raw collection", () => {
 	});
 });
 
-const testTelemetry = defineToolTelemetry<TestParams, TestDetails>({
-	projectRequested(value) {
+const testTelemetry = defineToolTelemetry<TestParams, TestDetails>(import.meta.url, {
+	input(value) {
 		if (!isRecord(value)) return { value: {} };
 		return { value: compactJson({ path: scalar(value["path"]), count: scalar(value["count"]) }) };
 	},
-	projectExecuted(params) {
-		return { value: compactJson({ path: params.path, count: params.count }) };
-	},
-	observeResult(_params, result) {
+	result(_params, result) {
 		return {
 			metrics: { observed: categoricalMetric(true) },
 			...(result.details.status === undefined ? {} : { status: result.details.status }),
@@ -470,7 +496,7 @@ type LifecycleHandler = (event: unknown, context: ExtensionContext) => unknown;
 
 async function createHarness(
 	execute: ExecuteTestTool = async () => successResult(),
-	telemetry: ToolTelemetryAdapter<TestParams, TestDetails> = testTelemetry,
+	telemetry: DefinedToolTelemetry<TestParams, TestDetails> = testTelemetry,
 ) {
 	const records: TelemetryRecord[] = [];
 	const events = createEventBus();
@@ -504,11 +530,8 @@ async function createHarness(
 		tool: testTool(execute),
 		repair: { pathFields: ["path"] },
 		telemetry,
-		identity: {
-			behaviorEntrypoints: ["src/bash-tool/index.ts"],
-			telemetryEntrypoints: ["src/bash-tool/telemetry.ts"],
-			config: () => ({ mode: "test" }),
-		},
+		source: new URL("../../src/bash-tool/index.ts", import.meta.url),
+		config: () => ({ mode: "test" }),
 	});
 	await invoke(lifecycle, "session_start", { type: "session_start", reason: "startup" }, contextValue);
 	await invoke(lifecycle, "before_agent_start", { type: "before_agent_start", prompt: "inspect repo", images: [{}] }, contextValue);
@@ -598,6 +621,14 @@ function turnEnd(calls: readonly CallSpec[]): TurnEndEvent {
 
 function successResult(text = "ok", details: TestDetails = {}): AgentToolResult<TestDetails> {
 	return { content: [{ type: "text", text }], details };
+}
+
+function observe<TParams, TDetails>(
+	telemetry: DefinedToolTelemetry<TParams, TDetails>,
+	params: TParams,
+	result: AgentToolResult<TDetails>,
+) {
+	return safeObserve(telemetry, params, result).value;
 }
 
 function context(): ExtensionContext {

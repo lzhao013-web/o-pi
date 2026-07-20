@@ -9,36 +9,44 @@ import type {
 	TelemetryReference,
 	ToolObservation,
 } from "./types.js";
+import type { SourceReference } from "./source-identity.js";
 
 export interface ToolTelemetryAdapter<TParams, TDetails> {
-	/** Optional explicit allowlist for raw model input. Omission persists an empty projection. */
-	projectRequested?(value: unknown): InputProjection;
-	/** Typed projection of the arguments that actually enter execute. */
-	projectExecuted(params: TParams): InputProjection;
+	/** Default explicit allowlist for both requested and executed input. */
+	input?(value: unknown): InputProjection;
+	/** Override the requested-input projection when it differs from input. */
+	requested?(value: unknown): InputProjection;
+	/** Override the executed-input projection when it differs from input. */
+	executed?(params: TParams): InputProjection;
 	/** Convert typed execution details into payload-free result facts. */
-	observeResult(params: TParams, result: AgentToolResult<TDetails>): ToolObservation;
+	result?(params: TParams, result: AgentToolResult<TDetails>): ToolObservation;
+}
+
+export interface DefinedToolTelemetry<TParams, TDetails> extends ToolTelemetryAdapter<TParams, TDetails> {
+	readonly sources: readonly SourceReference[];
 }
 
 export function defineToolTelemetry<TParams, TDetails>(
+	source: SourceReference | readonly SourceReference[],
 	adapter: ToolTelemetryAdapter<TParams, TDetails>,
-): ToolTelemetryAdapter<TParams, TDetails> {
-	return adapter;
+): DefinedToolTelemetry<TParams, TDetails> {
+	return { ...adapter, sources: Array.isArray(source) ? source : [source] };
 }
 
-export function minimalTelemetry<TParams, TDetails>(): ToolTelemetryAdapter<TParams, TDetails> {
-	return {
-		projectExecuted: () => ({ value: {} }),
-		observeResult: () => ({}),
-	};
+const DEFAULT_TELEMETRY = defineToolTelemetry<unknown, unknown>(import.meta.url, {});
+
+export function defaultToolTelemetry<TParams, TDetails>(): DefinedToolTelemetry<TParams, TDetails> {
+	return DEFAULT_TELEMETRY;
 }
 
 export function safeProjectRequested<TParams, TDetails>(
 	adapter: ToolTelemetryAdapter<TParams, TDetails>,
 	value: unknown,
 ): { value: InputProjection; failed: boolean; limited: boolean } {
-	if (adapter.projectRequested === undefined) return { value: { value: {} }, failed: false, limited: false };
+	const project = adapter.requested ?? adapter.input;
+	if (project === undefined) return { value: { value: {} }, failed: false, limited: false };
 	try {
-		const bounded = boundedTelemetryPayload(adapter.projectRequested(value));
+		const bounded = boundedTelemetryPayload(project(value));
 		return { value: decodeProjection(bounded.value), failed: false, limited: bounded.limited };
 	} catch {
 		return { value: { value: {} }, failed: true, limited: false };
@@ -49,8 +57,10 @@ export function safeProjectExecuted<TParams, TDetails>(
 	adapter: ToolTelemetryAdapter<TParams, TDetails>,
 	params: TParams,
 ): { value: InputProjection; failed: boolean; limited: boolean } {
+	const project = adapter.executed ?? adapter.input;
+	if (project === undefined) return { value: { value: {} }, failed: false, limited: false };
 	try {
-		const bounded = boundedTelemetryPayload(adapter.projectExecuted(params));
+		const bounded = boundedTelemetryPayload(project(params));
 		return { value: decodeProjection(bounded.value), failed: false, limited: bounded.limited };
 	} catch {
 		return { value: { value: {} }, failed: true, limited: false };
@@ -62,8 +72,9 @@ export function safeObserve<TParams, TDetails>(
 	params: TParams,
 	result: AgentToolResult<TDetails>,
 ): { value: ToolObservation; failed: boolean; limited: boolean } {
+	if (adapter.result === undefined) return { value: {}, failed: false, limited: false };
 	try {
-		const bounded = boundedTelemetryPayload(adapter.observeResult(params, result));
+		const bounded = boundedTelemetryPayload(adapter.result(params, result));
 		return { value: decodeToolObservation(bounded.value), failed: false, limited: bounded.limited };
 	} catch {
 		return { value: {}, failed: true, limited: false };

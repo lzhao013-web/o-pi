@@ -3,8 +3,8 @@ import { bytesMetric, categoricalMetric, compactJson, countMetric, durationMetri
 import type { MetricMap, ToolObservation } from "../telemetry/types.js";
 import type { BashParams, BashToolDetails } from "./types.js";
 
-export const bashTelemetry = defineToolTelemetry<BashParams, BashToolDetails>({
-	projectRequested(value) {
+export const bashTelemetry = defineToolTelemetry<BashParams, BashToolDetails>(import.meta.url, {
+	input(value) {
 		if (!isRecord(value)) return { value: {} };
 		const command = typeof value["command"] === "string" ? value["command"] : undefined;
 		return {
@@ -12,13 +12,7 @@ export const bashTelemetry = defineToolTelemetry<BashParams, BashToolDetails>({
 			...(command === undefined ? {} : { references: [{ relation: "target", kind: "command", value: command }] }),
 		};
 	},
-	projectExecuted(params) {
-		return {
-			value: compactJson({ command: params.command, timeout: params.timeout }),
-			references: [{ relation: "target", kind: "command", value: params.command }],
-		};
-	},
-	observeResult(_params, result): ToolObservation {
+	result(_params, result): ToolObservation {
 		const details = result.details;
 		const metrics: MetricMap = {
 			status: categoricalMetric(details.status),

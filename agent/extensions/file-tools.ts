@@ -23,7 +23,12 @@ import {
 	renderWriteResult,
 } from "../../src/file-tools/pi/renderers.js";
 import type { EditParams, FindParams, GrepParams, LsParams, ReadParams, WriteParams } from "../../src/file-tools/types.js";
-import { editTelemetry, findTelemetry, grepTelemetry, lsTelemetry, readTelemetry, writeTelemetry } from "../../src/file-tools/telemetry.js";
+import { editTelemetry } from "../../src/file-tools/telemetry/edit.js";
+import { findTelemetry } from "../../src/file-tools/telemetry/find.js";
+import { grepTelemetry } from "../../src/file-tools/telemetry/grep.js";
+import { lsTelemetry } from "../../src/file-tools/telemetry/ls.js";
+import { readTelemetry } from "../../src/file-tools/telemetry/read.js";
+import { writeTelemetry } from "../../src/file-tools/telemetry/write.js";
 import { registerObservedTool } from "../../src/telemetry/tool.js";
 import { loadLspConfig } from "../../src/lsp/config.js";
 import { loadRepoMapConfig } from "../../src/repo-map/config.js";
@@ -133,7 +138,8 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		return created;
 	};
 
-	registerObservedTool(pi, { tool: {
+	registerObservedTool(pi, {
+		tool: {
 		name: "ls",
 		label: "ls",
 		description: "List direct entries of one directory.",
@@ -144,13 +150,15 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderLsCall,
 		renderResult: renderLsResult,
-	}, repair: { singleStringField: "path", pathFields: ["path"] }, telemetry: lsTelemetry, identity: {
-		behaviorEntrypoints: ["src/file-tools/pi/adapters/ls.ts"],
-		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
+		},
+		repair: { singleStringField: "path", pathFields: ["path"] },
+		telemetry: lsTelemetry,
+		source: new URL("../../src/file-tools/pi/adapters/ls.ts", import.meta.url),
 		config: (ctx) => loadFileToolsConfig(ctx.cwd),
-	} });
+	});
 
-	registerObservedTool(pi, { tool: {
+	registerObservedTool(pi, {
+		tool: {
 		name: "find",
 		label: "find",
 		description: "Locate files or directories by name, path, or concept. Does not search contents.",
@@ -165,13 +173,15 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderFindCall,
 		renderResult: renderFindResult,
-	}, repair: { singleStringField: "query", pathFields: ["path"] }, telemetry: findTelemetry, identity: {
-		behaviorEntrypoints: ["src/file-tools/pi/adapters/find.ts"],
-		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
+		},
+		repair: { singleStringField: "query", pathFields: ["path"] },
+		telemetry: findTelemetry,
+		source: new URL("../../src/file-tools/pi/adapters/find.ts", import.meta.url),
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), repoMap: await loadRepoMapConfig() }),
-	} });
+	});
 
-	registerObservedTool(pi, { tool: {
+	registerObservedTool(pi, {
+		tool: {
 		name: "grep",
 		label: "grep",
 		description: "Locate code regions by text, symbol, concept, definition, or relationship.",
@@ -187,13 +197,15 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderGrepCall,
 		renderResult: renderGrepResult,
-	}, repair: { singleStringField: "query", pathFields: ["path"] }, telemetry: grepTelemetry, identity: {
-		behaviorEntrypoints: ["src/file-tools/pi/adapters/grep.ts"],
-		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
+		},
+		repair: { singleStringField: "query", pathFields: ["path"] },
+		telemetry: grepTelemetry,
+		source: new URL("../../src/file-tools/pi/adapters/grep.ts", import.meta.url),
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig() }),
-	} });
+	});
 
-	registerObservedTool(pi, { tool: {
+	registerObservedTool(pi, {
+		tool: {
 		name: "read",
 		label: "read",
 		description: "Read one text or image file.",
@@ -217,13 +229,14 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 			startLine: "start_line",
 			endLine: "end_line",
 		},
-	}, telemetry: readTelemetry, identity: {
-		behaviorEntrypoints: ["src/file-tools/pi/adapters/read.ts"],
-		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
+		},
+		telemetry: readTelemetry,
+		source: new URL("../../src/file-tools/pi/adapters/read.ts", import.meta.url),
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig() }),
-	} });
+	});
 
-	registerObservedTool(pi, { tool: {
+	registerObservedTool(pi, {
+		tool: {
 		name: "write",
 		label: "write",
 		description: "Create or overwrite one whole file.",
@@ -245,13 +258,14 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 			text: "content",
 			contents: "content",
 		},
-	}, telemetry: writeTelemetry, identity: {
-		behaviorEntrypoints: ["src/file-tools/pi/adapters/write.ts"],
-		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
+		},
+		telemetry: writeTelemetry,
+		source: new URL("../../src/file-tools/pi/adapters/write.ts", import.meta.url),
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig(), approval: await loadApprovalGateConfig() }),
-	} });
+	});
 
-	registerObservedTool(pi, { tool: {
+	registerObservedTool(pi, {
+		tool: {
 		name: "edit",
 		label: "edit",
 		description: "Edit one previously read file with exact replacements.",
@@ -280,11 +294,11 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 			"edits.*.newText": "new",
 		},
 		objectArrayFromFields: [{ arrayField: "edits", fields: ["old", "new"] }],
-	}, telemetry: editTelemetry, identity: {
-		behaviorEntrypoints: ["src/file-tools/pi/adapters/edit.ts"],
-		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
+		},
+		telemetry: editTelemetry,
+		source: new URL("../../src/file-tools/pi/adapters/edit.ts", import.meta.url),
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig(), approval: await loadApprovalGateConfig() }),
-	} });
+	});
 
 	pi.on("tool_result", (event) => {
 		if (isFileToolName(event.toolName) && isFailedDetails(event.details)) return { isError: true };
