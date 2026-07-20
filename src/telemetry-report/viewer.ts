@@ -6,12 +6,12 @@ import { renderLiveTelemetry } from "./render-live.js";
 
 const VIEWER_BODY_ROWS_RATIO = 0.8;
 const SECTION_HEADINGS = new Set([
-	"会话信息",
-	"工具调用",
-	"编辑与批次",
-	"候选项排序（启发式）",
-	"候选来源类别",
-	"候选来源明细",
+	"Session Info",
+	"Tool Calls",
+	"Edits & Batches",
+	"Candidate Ranking (Heuristic)",
+	"Candidate Source Families",
+	"Candidate Sources",
 ]);
 
 /** /telemetry read-only current-session report. */

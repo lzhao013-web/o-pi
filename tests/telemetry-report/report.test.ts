@@ -207,9 +207,10 @@ describe("telemetry report", () => {
 			const rendered = lines.join("\n");
 			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 			expect(rendered).toContain("lsp");
-			expect(rendered).toContain("进行中");
-			expect(rendered).toContain("工具调用");
-			expect(rendered).toContain("编辑与批次");
+			expect(rendered).toContain("Pending");
+			expect(rendered).toContain("Tool Calls");
+			expect(rendered).toContain("Edits & Batches");
+			expect(rendered).not.toMatch(/[\u3400-\u9fff]/u);
 			expect(rendered).not.toContain("·");
 		}
 
@@ -219,7 +220,7 @@ describe("telemetry report", () => {
 			pending_calls: 0,
 		}, 100).join("\n");
 		expect(empty).toContain("MRR");
-		expect(empty).toContain("无数据");
+		expect(empty).toContain("n/a");
 		expect(empty).not.toContain("0 / 0");
 	});
 });

@@ -172,9 +172,9 @@ describe("telemetry service", () => {
 			ui: { notify(message: string) { notifications.push(message); } },
 		}));
 		expect(notifications).toHaveLength(1);
-		expect(notifications[0]).toContain("当前会话遥测");
-		expect(notifications[0]).not.toContain("q 关闭");
-		expect(notifications[0]).toContain("采集已禁用");
+		expect(notifications[0]).toContain("Current Session Telemetry");
+		expect(notifications[0]).not.toContain("q close");
+		expect(notifications[0]).toContain("Status Disabled");
 
 		let customCalled = false;
 		const colors: string[] = [];
@@ -189,7 +189,7 @@ describe("telemetry service", () => {
 						{},
 						() => undefined,
 					);
-					expect(viewer.render(80).join("\n")).toContain("遥测 / 当前会话");
+					expect(viewer.render(80).join("\n")).toContain("Telemetry / Current Session");
 				},
 			},
 		}));

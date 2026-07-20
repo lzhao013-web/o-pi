@@ -10,33 +10,33 @@ export function renderLiveTelemetry(value: LiveTelemetryReport, width: number): 
 	const maxWidth = Math.max(1, width);
 	const report = value.report;
 	const lines = [
-		align("遥测 / 当前会话", "q 关闭  ↑↓ 滚动", maxWidth),
+		align("Telemetry / Current Session", "q close  ↑↓ scroll", maxWidth),
 		"",
-		"会话信息",
+		"Session Info",
 		inlineValues([
-			["会话", value.session_id === undefined ? "不可用" : shortId(value.session_id)],
-			["运行", value.run_id === undefined ? "不可用" : shortId(value.run_id)],
+			["Session", value.session_id === undefined ? "n/a" : shortId(value.session_id)],
+			["Run", value.run_id === undefined ? "n/a" : shortId(value.run_id)],
 		]),
 		inlineValues([
-			["状态", value.enabled ? "采集已启用" : "采集已禁用"],
-			["进行中", value.pending_calls],
-			["完成", report.inventory.calls],
-			["工具", report.inventory.tools],
+			["Status", value.enabled ? "Enabled" : "Disabled"],
+			["Pending", value.pending_calls],
+			["Completed", report.inventory.calls],
+			["Tools", report.inventory.tools],
 		]),
-		`  生成 ${report.metadata.generated_at}`,
-		"工具调用",
+		`  Generated ${report.metadata.generated_at}`,
+		"Tool Calls",
 		...toolLines(report.tools, maxWidth),
-		"编辑与批次",
-		inlineValues([["调用", report.edit.calls], ["失败", report.edit.failed_calls], ["无变化", report.edit.no_change_calls]]),
-		inlineValues([["批次", report.edit.batches.batches], ["多文件", report.edit.batches.multi_file_batches], ["部分失败", report.edit.batches.partial_failure_batches], ["可减少", report.edit.batches.potential_call_reduction]]),
-		"候选项排序（启发式）",
-		...candidateBlock("总体", report.candidate_ranking),
-		"候选来源类别",
+		"Edits & Batches",
+		inlineValues([["Calls", report.edit.calls], ["Failed", report.edit.failed_calls], ["No Change", report.edit.no_change_calls]]),
+		inlineValues([["Batches", report.edit.batches.batches], ["Multi-file", report.edit.batches.multi_file_batches], ["Partial Failure", report.edit.batches.partial_failure_batches], ["Reduction", report.edit.batches.potential_call_reduction]]),
+		"Candidate Ranking (Heuristic)",
+		...candidateBlock("Overall", report.candidate_ranking),
+		"Candidate Source Families",
 		...(["repo-map", "lsp"] as const).flatMap((source) => {
 			const statistics = report.candidate_ranking.by_source_family[source];
-			return statistics === undefined ? [`  ${source}  无候选项`] : candidateBlock(source, statistics);
+			return statistics === undefined ? [`  ${source}  no candidates`] : candidateBlock(source, statistics);
 		}),
-		"候选来源明细",
+		"Candidate Sources",
 		...sourceLines(report.candidate_ranking.by_source),
 	];
 	return lines
@@ -46,35 +46,35 @@ export function renderLiveTelemetry(value: LiveTelemetryReport, width: number): 
 
 export function formatLiveTelemetrySummary(value: LiveTelemetryReport): string {
 	const report = value.report;
-	const status = value.enabled ? "采集已启用" : "采集已禁用";
+	const status = value.enabled ? "Enabled" : "Disabled";
 	return [
-		"当前会话遥测",
-		`已完成调用 ${report.inventory.calls}`,
-		`工具 ${report.inventory.tools}`,
-		`多文件批次 ${report.edit.batches.multi_file_batches}/${report.edit.batches.batches}`,
-		`候选项已使用 ${report.candidate_ranking.converted_candidates}/${report.candidate_ranking.candidates}`,
-		`状态 ${status}`,
-		...(value.pending_calls === 0 ? [] : [`进行中 ${value.pending_calls}`]),
+		"Current Session Telemetry",
+		`Completed calls ${report.inventory.calls}`,
+		`Tools ${report.inventory.tools}`,
+		`Multi-file batches ${report.edit.batches.multi_file_batches}/${report.edit.batches.batches}`,
+		`Candidates used ${report.candidate_ranking.converted_candidates}/${report.candidate_ranking.candidates}`,
+		`Status ${status}`,
+		...(value.pending_calls === 0 ? [] : [`Pending ${value.pending_calls}`]),
 	].join("  ");
 }
 
 function toolLines(tools: readonly ToolStatistics[], width: number): string[] {
-	if (tools.length === 0) return ["  无已完成的工具调用"];
+	if (tools.length === 0) return ["  no completed tool calls"];
 	if (width < WIDE_WIDTH) {
 		return tools.flatMap((tool) => [
-			`  ${tool.tool}  ${tool.calls} 次  成功 ${percent(tool.success_rate.value)}  错误 ${tool.error_rate.numerator}`,
-			`    P50 ${number(tool.duration_ms.p50)} ms  修复 ${tool.repair.repaired_rate.numerator}  截断 ${tool.truncation_rate.numerator}`,
+			`  ${tool.tool}  ${tool.calls} calls  success ${percent(tool.success_rate.value)}  errors ${tool.error_rate.numerator}`,
+			`    P50 ${number(tool.duration_ms.p50)} ms  repair ${tool.repair.repaired_rate.numerator}  truncated ${tool.truncation_rate.numerator}`,
 		]);
 	}
 
 	const columns = [
-		pad("工具", 18),
-		pad("调用", 6, true),
-		pad("成功", 9, true),
-		pad("错误", 6, true),
+		pad("Tool", 18),
+		pad("Calls", 6, true),
+		pad("Success", 9, true),
+		pad("Errors", 6, true),
 		pad("P50", 10, true),
-		pad("修复", 8, true),
-		pad("截断", 8, true),
+		pad("Repair", 8, true),
+		pad("Truncated", 8, true),
 	];
 	const rule = ["─".repeat(18), "─".repeat(6), "─".repeat(9), "─".repeat(6), "─".repeat(10), "─".repeat(8), "─".repeat(8)].join(" ");
 	return [
@@ -93,27 +93,27 @@ function toolLines(tools: readonly ToolStatistics[], width: number): string[] {
 }
 
 function candidateBlock(label: string, statistics: CandidateRankingCoreStatistics): string[] {
-	const converted = statistics.candidates === 0 ? "无数据" : `${statistics.converted_candidates}/${statistics.candidates}(${percent(statistics.candidate_conversion_rate)})`;
-	const mrr = statistics.mrr.samples === 0 ? "无数据" : decimal(statistics.mrr.value);
+	const converted = statistics.candidates === 0 ? "n/a" : `${statistics.converted_candidates}/${statistics.candidates}(${percent(statistics.candidate_conversion_rate)})`;
+	const mrr = statistics.mrr.samples === 0 ? "n/a" : decimal(statistics.mrr.value);
 	return [
-		`  ${label}  生成 ${statistics.producer_calls}  候选 ${statistics.candidates}  已用 ${converted}`,
-		`    MRR ${mrr}  命中 ${conversionSummary(statistics)}  下游 ${consumerSummary(statistics)}`,
+		`  ${label}  generated ${statistics.producer_calls}  candidates ${statistics.candidates}  used ${converted}`,
+		`    MRR ${mrr}  hits ${conversionSummary(statistics)}  downstream ${consumerSummary(statistics)}`,
 	];
 }
 
 function conversionSummary(statistics: CandidateRankingCoreStatistics): string {
 	const values = statistics.conversion_at_k.filter((item) => item.lists > 0);
-	return values.length === 0 ? "无数据" : values.map((item) => `K${item.k} ${item.converted_lists}/${item.lists}(${percent(item.rate)})`).join(" ");
+	return values.length === 0 ? "n/a" : values.map((item) => `K${item.k} ${item.converted_lists}/${item.lists}(${percent(item.rate)})`).join(" ");
 }
 
 function consumerSummary(statistics: CandidateRankingCoreStatistics): string {
 	const consumers = Object.entries(statistics.downstream_consumers);
-	return consumers.length === 0 ? "无" : consumers.map(([tool, count]) => `${tool}:${count}`).join(" ");
+	return consumers.length === 0 ? "none" : consumers.map(([tool, count]) => `${tool}:${count}`).join(" ");
 }
 
 function sourceLines(sources: Readonly<Record<string, CandidateRankingCoreStatistics>>): string[] {
 	const values = Object.entries(sources);
-	return values.length === 0 ? ["  无候选来源"] : values.flatMap(([source, statistics]) => candidateBlock(source, statistics));
+	return values.length === 0 ? ["  no candidate sources"] : values.flatMap(([source, statistics]) => candidateBlock(source, statistics));
 }
 
 function inlineValues(values: readonly (readonly [string, string | number])[]): string {
