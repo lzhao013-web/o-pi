@@ -1,159 +1,109 @@
-import { bytesMetric, categoricalMetric, compactJson, countMetric, isRecord, scalar, textSummary } from "../../telemetry/projectors.js";
-import type { InputProjection, MetricMap, TelemetryReference, ToolObservation } from "../../telemetry/types.js";
+import { fields, isRecord, scalar, textFields } from "../../telemetry/projection.js";
+import type { Candidate, Fields, Resource, TelemetryFacts } from "../../telemetry/types.js";
 
-export function projectScalarInput(keys: readonly string[]): (value: unknown) => InputProjection {
+/** Project explicit scalar inputs; query-like strings are retained only as size and hash. */
+export function projectFileInput(keys: readonly string[], targetKind: string): (value: unknown) => TelemetryFacts {
 	return (value) => {
-		if (!isRecord(value)) return { value: {} };
-		return projection(
-			compactJson(Object.fromEntries(keys.map((key) => [key, scalar(value[key])]))),
-			pathReference(string(value["path"]), number(value["start_line"]), number(value["end_line"])),
-		);
+		if (!isRecord(value)) return {};
+		const projected: Fields = {};
+		for (const key of keys) {
+			if (key === "path") continue;
+			const raw = value[key];
+			if (typeof raw === "string" && ["query", "glob", "match"].includes(key)) {
+				Object.assign(projected, textFields(`input_${key}`, raw));
+			} else {
+				const item = scalar(raw);
+				if (item !== undefined) projected[`input_${key}`] = item;
+			}
+		}
+		const path = string(value["path"]);
+		return {
+			...(Object.keys(projected).length === 0 ? {} : { fields: projected }),
+			...(path === undefined ? {} : { targets: [pathTarget(path, targetKind, number(value["start_line"]), number(value["end_line"]))] }),
+		};
 	};
 }
 
-export function observation(
-	details: Record<string, unknown>,
-	metrics: MetricMap,
-	references: TelemetryReference[],
-): ToolObservation {
-	const status = string(details["status"]);
-	const code = errorCode(details);
-	return {
-		metrics,
-		references,
-		truncated: isTruncated(details),
-		...(status === undefined ? {} : { status }),
-		...(code === undefined ? {} : { error_code: code }),
-	};
-}
-
-export function fileMetrics(details: Record<string, unknown>): MetricMap {
-	const metrics: MetricMap = { truncated: categoricalMetric(isTruncated(details)) };
-	pickCount(metrics, "scanned", details, ["scanned_files", "scannedEntries"], "item");
-	pickCount(metrics, "candidates", details, ["total_candidates", "totalMatches", "total_entries"], "candidate");
-	pickCount(metrics, "returned", details, ["returned_regions", "returnedMatches", "returned_entries"], "item");
-	pickCount(metrics, "returned_files", details, ["returned_files"], "file");
-	pickCount(metrics, "total_lines", details, ["total_lines"], "line");
-	pickCategorical(metrics, "start_line", details, ["start_line"]);
-	pickCategorical(metrics, "end_line", details, ["end_line"]);
-	pickBytes(metrics, "size_bytes", details, ["size_bytes", "bytes"]);
-	pickCount(metrics, "replacements", details, ["replacements"], "replacement");
-	const startLine = number(details["start_line"]);
-	const endLine = number(details["end_line"]);
-	if (startLine !== undefined && endLine !== undefined) metrics["returned_lines"] = countMetric(Math.max(0, endLine - startLine + 1), "line");
-	const code = errorCode(details);
-	if (code !== undefined) metrics["error_code"] = categoricalMetric(code);
-	const lsp = record(details["lsp"]);
-	const diagnostics = record(lsp["diagnostics"]);
-	for (const key of ["file_errors", "file_warnings", "new_errors", "new_warnings", "resolved_errors", "resolved_warnings"] as const) {
-		const value = number(diagnostics[key]);
-		if (value !== undefined) metrics[`lsp_${key}`] = countMetric(value, "diagnostic");
-	}
-	if (isRecord(details["repo_map"])) metrics["repo_map_used"] = categoricalMetric(true);
-	else if (Array.isArray(details["related"])) metrics["repo_map_used"] = categoricalMetric(details["related"].length > 0);
-	return metrics;
+export function fileResultFields(details: Record<string, unknown>): Fields {
+	const repoMap = record(details["repo_map"]);
+	return fields({
+		status: string(details["status"]),
+		error_code: errorCode(details),
+		truncated: truncated(details),
+		strategy: stringList(details["strategy"]) ?? string(details["strategy"]),
+		total_candidate_count: firstNumber(details, ["total_candidates", "totalMatches"]),
+		returned_match_count: firstNumber(details, ["returnedMatches", "returned_regions"]),
+		returned_file_count: number(details["returned_files"]),
+		returned_entry_count: number(details["returned_entries"]),
+		scanned_file_count: number(details["scanned_files"]),
+		replacement_count: number(details["replacements"]),
+		size_bytes: firstNumber(details, ["size_bytes", "bytes"]),
+		before_size_bytes: firstNumber(details, ["before_size_bytes", "old_size_bytes"]),
+		after_size_bytes: firstNumber(details, ["after_size_bytes", "new_size_bytes"]),
+		repo_map_used: isRecord(details["repo_map"])
+			? true
+			: Array.isArray(details["related"])
+				? details["related"].length > 0
+				: undefined,
+		repo_map_status: string(repoMap["status"]),
+	});
 }
 
 export function appendPathCandidates(
-	result: TelemetryReference[],
+	result: Candidate[],
 	value: unknown,
 	group: string,
 	sources: (path: string) => string[],
 	forcedKind?: string,
 ): void {
 	if (!Array.isArray(value)) return;
-	for (const [index, item] of value.filter(isRecord).entries()) {
+	for (const item of value.filter(isRecord)) {
 		const path = string(item["path"]);
 		if (path === undefined) continue;
-		const kind = forcedKind ?? (item["kind"] === "directory" ? "directory" : item["kind"] === "file" ? "file" : "path");
-		result.push(candidate(result.length + 1, index + 1, kind, path, group, sources(path)));
+		result.push({
+			kind: forcedKind ?? (item["kind"] === "directory" ? "directory" : item["kind"] === "file" ? "file" : "path"),
+			value: path,
+			rank: result.length + 1,
+			group,
+			sources: [...new Set(sources(path))].sort(),
+			...lineRange(item),
+		});
 	}
 }
 
 export function appendRegionCandidates(
-	result: TelemetryReference[],
+	result: Candidate[],
 	value: unknown,
 	group: string,
 	sources: (item: Record<string, unknown>) => string[],
 ): void {
 	if (!Array.isArray(value)) return;
-	for (const [index, item] of value.filter(isRecord).entries()) {
+	for (const item of value.filter(isRecord)) {
 		const path = string(item["path"]);
 		if (path === undefined) continue;
-		const start = number(item["start_line"]);
-		const end = number(item["end_line"]);
 		result.push({
-			...candidate(result.length + 1, index + 1, "region", path, group, sources(item)),
-			...(start === undefined && end === undefined ? {} : { resource: {
-				...(start === undefined ? {} : { start_line: start }),
-				...(end === undefined ? {} : { end_line: end }),
-			} }),
+			kind: "region",
+			value: path,
+			rank: result.length + 1,
+			group,
+			sources: [...new Set(sources(item))].sort(),
+			...lineRange(item),
 		});
 	}
 }
 
-export function candidate(globalRank: number, groupRank: number, kind: string, value: string, group: string, sources: string[]): TelemetryReference {
+export function pathTarget(value: string, kind = "path", startLine?: number, endLine?: number): Resource {
 	return {
-		relation: "candidate",
-		global_rank: globalRank,
-		group_rank: groupRank,
-		kind,
+		kind: startLine === undefined && endLine === undefined ? kind : "region",
 		value,
-		group,
-		sources: sources.map((id) => {
-			const family = sourceFamily(id);
-			return { id, ...(family === undefined ? {} : { family }) };
-		}),
-	};
-}
-
-export function projection(value: InputProjection["value"], reference?: TelemetryReference): InputProjection {
-	return { value, ...(reference === undefined ? {} : { references: [reference] }) };
-}
-
-export function pathReference(value: string | undefined, start?: number, end?: number, hash?: string): TelemetryReference | undefined {
-	if (value === undefined) return undefined;
-	return {
-		relation: "target",
-		kind: start === undefined && end === undefined ? "path" : "region",
-		value,
-		...(start === undefined && end === undefined && hash === undefined ? {} : { resource: {
-			...(hash === undefined ? {} : { content_hash: { algorithm: "sha256", value: hash } }),
-			...(start === undefined ? {} : { start_line: start }),
-			...(end === undefined ? {} : { end_line: end }),
-		} }),
+		...(startLine === undefined ? {} : { start_line: startLine }),
+		...(endLine === undefined ? {} : { end_line: endLine }),
 	};
 }
 
 export function sourceLabels(value: unknown, fallback: string): string[] {
-	const raw = Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-	const labels = [...raw];
-	if (labels.length === 0) labels.push(fallback);
-	return [...new Set(labels)].sort();
-}
-
-export function contentHash(value: unknown): string | undefined {
-	const summary = textSummary(value);
-	return typeof summary?.["sha256"] === "string" ? summary["sha256"] : undefined;
-}
-
-export function resultFileReference(path: string, details: Record<string, unknown>): TelemetryReference | undefined {
-	const revision = string(details["new_version"]) ?? string(details["version"]);
-	const hash = contentHash(details["content"]);
-	const start = number(details["start_line"]);
-	const end = number(details["end_line"]);
-	if (revision === undefined && hash === undefined && start === undefined && end === undefined) return undefined;
-	return {
-		relation: "result",
-		kind: start === undefined && end === undefined ? "file" : "region",
-		value: path,
-		resource: {
-			...(hash === undefined ? {} : { content_hash: { algorithm: "sha256", value: hash } }),
-			...(revision === undefined ? {} : { revision }),
-			...(start === undefined ? {} : { start_line: start }),
-			...(end === undefined ? {} : { end_line: end }),
-		},
-	};
+	const values = Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+	return [...new Set(values.length === 0 ? [fallback] : values)].sort();
 }
 
 export function record(value: unknown): Record<string, unknown> {
@@ -168,55 +118,33 @@ export function number(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function isTruncated(details: Record<string, unknown>): boolean {
-	return details["truncated"] === true
-		|| details["outputTruncated"] === true
-		|| details["resultLimited"] === true
-		|| details["scanTruncated"] === true
-		|| details["output_state"] === "truncated"
-		|| details["output_state"] === "capture_truncated";
-}
-
 function errorCode(details: Record<string, unknown>): string | undefined {
-	const error = record(details["error"]);
-	return string(error["code"]) ?? string(details["error_code"]);
+	return string(record(details["error"])["code"]) ?? string(details["error_code"]);
 }
 
-function pickCount(target: MetricMap, name: string, source: Record<string, unknown>, keys: readonly string[], unit: string): void {
-	for (const key of keys) {
-		const value = number(source[key]);
-		if (value !== undefined) {
-			target[name] = countMetric(value, unit);
-			return;
-		}
-	}
-}
-
-function pickCategorical(target: MetricMap, name: string, source: Record<string, unknown>, keys: readonly string[]): void {
-	for (const key of keys) {
-		const value = source[key];
-		if (typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) {
-			target[name] = categoricalMetric(value);
-			return;
-		}
-	}
-}
-
-function pickBytes(target: MetricMap, name: string, source: Record<string, unknown>, keys: readonly string[]): void {
-	for (const key of keys) {
-		const value = number(source[key]);
-		if (value !== undefined) {
-			target[name] = bytesMetric(value);
-			return;
-		}
-	}
-}
-
-function sourceFamily(source: string): string | undefined {
-	if (source.startsWith("lsp-")) return "lsp";
-	if (source.startsWith("repo-map-") || source === "repo-map") return "repo-map";
-	if (source === "path" || source === "text" || source === "bm25" || source === "lexical" || source === "fuzzy") return "lexical";
-	if (source.startsWith("ast-")) return "ast";
-	if (source === "filesystem") return "filesystem";
+function truncated(details: Record<string, unknown>): boolean | undefined {
+	if (["truncated", "outputTruncated", "resultLimited", "scanTruncated"].some((key) => details[key] === true)) return true;
 	return undefined;
+}
+
+function firstNumber(details: Record<string, unknown>, keys: readonly string[]): number | undefined {
+	for (const key of keys) {
+		const value = number(details[key]);
+		if (value !== undefined) return value;
+	}
+	return undefined;
+}
+
+function stringList(value: unknown): string[] | undefined {
+	if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return undefined;
+	return value;
+}
+
+function lineRange(value: Record<string, unknown>): Pick<Resource, "start_line" | "end_line"> {
+	const startLine = number(value["start_line"]);
+	const endLine = number(value["end_line"]);
+	return {
+		...(startLine === undefined ? {} : { start_line: startLine }),
+		...(endLine === undefined ? {} : { end_line: endLine }),
+	};
 }

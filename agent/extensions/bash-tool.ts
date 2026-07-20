@@ -10,7 +10,6 @@ import {
 	type BashToolDetails,
 } from "../../src/bash-tool/index.js";
 import { bashTelemetry } from "../../src/bash-tool/telemetry.js";
-import { loadApprovalGateConfig } from "../../src/approval/config.js";
 import { registerObservedTool } from "../../src/telemetry/tool.js";
 
 const bashParameters = Type.Object({
@@ -54,8 +53,6 @@ export default function bashTool(pi: ExtensionAPI): void {
 		},
 		repair: { singleStringField: "command" },
 		telemetry: bashTelemetry,
-		source: new URL("../../src/bash-tool/index.ts", import.meta.url),
-		config: async () => ({ bash: await loadBashToolConfig(), approval: await loadApprovalGateConfig() }),
 	});
 
 	pi.on("tool_result", (event) => {

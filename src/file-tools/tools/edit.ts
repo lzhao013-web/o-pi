@@ -58,6 +58,8 @@ export async function editWorkspace(cwd: string, params: unknown, runtime: EditR
 		replacements: prepared.replacements,
 		old_version: prepared.file.version,
 		new_version: sha256Version(bytes),
+		old_size_bytes: prepared.file.sizeBytes,
+		new_size_bytes: bytes.byteLength,
 		diff: diff.diff,
 		...(diff.firstChangedLine !== undefined ? { firstChangedLine: diff.firstChangedLine } : {}),
 	};

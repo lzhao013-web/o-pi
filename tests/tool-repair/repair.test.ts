@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import fileTools from "../../agent/extensions/file-tools.js";
 import subagentExtension from "../../agent/extensions/subagent.js";
-import { repairableTool } from "../../src/tool-repair/index.js";
+import { repairableTool, type RepairObservation } from "../../src/tool-repair/index.js";
 
 const simpleSchema = Type.Object(
 	{
@@ -53,6 +53,34 @@ describe("tool-input repair", () => {
 
 		const invalid = { path: 42, start_line: "3" };
 		expect(tool.prepareArguments?.(invalid)).toBe(invalid);
+	});
+
+	it("识别原 prepareArguments 原地修复并返回同一对象", () => {
+		let observation: RepairObservation | undefined;
+		const tool = repairableTool(
+			defineNoopTool(simpleSchema, {
+				prepareArguments(args) {
+					const mutable = args as Record<string, unknown>;
+					mutable.path = mutable.file;
+					delete mutable.file;
+					return mutable as { path: string; start_line?: number; end_line?: number };
+				},
+			}),
+			{},
+			{
+				onPreparation(value) {
+					observation = value;
+				},
+			},
+		);
+		const raw = { file: "src/a.ts" };
+
+		expect(tool.prepareArguments?.(raw)).toBe(raw);
+		expect(raw).toEqual({ path: "src/a.ts" });
+		expect(observation).toMatchObject({
+			status: "repaired",
+			operations: ["original_prepare"],
+		});
 	});
 
 	it("修复 edit 常见结构错误，但不改写 old/new 内容", () => {

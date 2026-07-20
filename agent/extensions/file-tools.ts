@@ -2,8 +2,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { ReadVersionCache } from "../../src/file-tools/core/read-cache.js";
-import { loadApprovalGateConfig } from "../../src/approval/config.js";
-import { loadFileToolsConfig } from "../../src/file-tools/config.js";
 import { isFailedDetails, isFileToolName } from "../../src/file-tools/pi/guards.js";
 import { createLazyLspFileHooks } from "../../src/file-tools/pi/lazy-lsp.js";
 import { appendRepoMapEntry, createLazyRepoMap, type LazyRepoMap } from "../../src/file-tools/pi/lazy-repo-map.js";
@@ -30,8 +28,6 @@ import { lsTelemetry } from "../../src/file-tools/telemetry/ls.js";
 import { readTelemetry } from "../../src/file-tools/telemetry/read.js";
 import { writeTelemetry } from "../../src/file-tools/telemetry/write.js";
 import { registerObservedTool } from "../../src/telemetry/tool.js";
-import { loadLspConfig } from "../../src/lsp/config.js";
-import { loadRepoMapConfig } from "../../src/repo-map/config.js";
 
 const lsParameters = Type.Object({ path: Type.Optional(Type.String({ minLength: 1, description: "Directory; default workspace." })) }, { additionalProperties: false });
 const findParameters = Type.Object(
@@ -153,8 +149,6 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		repair: { singleStringField: "path", pathFields: ["path"] },
 		telemetry: lsTelemetry,
-		source: new URL("../../src/file-tools/pi/adapters/ls.ts", import.meta.url),
-		config: (ctx) => loadFileToolsConfig(ctx.cwd),
 	});
 
 	registerObservedTool(pi, {
@@ -176,8 +170,6 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		repair: { singleStringField: "query", pathFields: ["path"] },
 		telemetry: findTelemetry,
-		source: new URL("../../src/file-tools/pi/adapters/find.ts", import.meta.url),
-		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), repoMap: await loadRepoMapConfig() }),
 	});
 
 	registerObservedTool(pi, {
@@ -200,8 +192,6 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		repair: { singleStringField: "query", pathFields: ["path"] },
 		telemetry: grepTelemetry,
-		source: new URL("../../src/file-tools/pi/adapters/grep.ts", import.meta.url),
-		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig() }),
 	});
 
 	registerObservedTool(pi, {
@@ -231,8 +221,6 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		},
 		telemetry: readTelemetry,
-		source: new URL("../../src/file-tools/pi/adapters/read.ts", import.meta.url),
-		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig() }),
 	});
 
 	registerObservedTool(pi, {
@@ -260,8 +248,6 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		},
 		telemetry: writeTelemetry,
-		source: new URL("../../src/file-tools/pi/adapters/write.ts", import.meta.url),
-		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig(), approval: await loadApprovalGateConfig() }),
 	});
 
 	registerObservedTool(pi, {
@@ -296,8 +282,6 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		objectArrayFromFields: [{ arrayField: "edits", fields: ["old", "new"] }],
 		},
 		telemetry: editTelemetry,
-		source: new URL("../../src/file-tools/pi/adapters/edit.ts", import.meta.url),
-		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig(), approval: await loadApprovalGateConfig() }),
 	});
 
 	pi.on("tool_result", (event) => {

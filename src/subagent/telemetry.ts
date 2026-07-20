@@ -1,43 +1,46 @@
-import { defineToolTelemetry } from "../telemetry/adapter.js";
-import { categoricalMetric, compactJson, countMetric, distributionMetric, isRecord, scalar, textSummary } from "../telemetry/projectors.js";
-import type { InputProjection, MetricMap, TelemetryReference } from "../telemetry/types.js";
+import { fields, isRecord, scalar, textFields } from "../telemetry/projection.js";
+import { defineToolTelemetry } from "../telemetry/tool.js";
+import type { Resource, TelemetryFacts } from "../telemetry/types.js";
 import type { SubagentDetails, SubagentToolParams } from "./types.js";
 
-export const subagentTelemetry = defineToolTelemetry<SubagentToolParams, SubagentDetails>(import.meta.url, {
+export const subagentTelemetry = defineToolTelemetry<SubagentToolParams, SubagentDetails>({
 	input: projectInput,
 	result(_params, result) {
 		const details = result.details;
-		const metrics: MetricMap = {
-			mode: categoricalMetric(details.mode),
-			tasks: countMetric(details.tasks.length, "task"),
-			failed: countMetric(details.results.filter((item) => item.error !== undefined || item.exitCode !== 0).length, "task"),
-			attempts: countMetric(sum(details.results.map((item) => item.attempts)), "attempt"),
+		return {
+			fields: fields({
+				mode: details.mode,
+				task_count: details.tasks.length,
+				failed_task_count: details.results.filter((item) => item.error !== undefined || item.exitCode !== 0).length,
+				attempt_count: sum(details.results.map((item) => item.attempts)),
+				duration_ms: sum(details.results.map((item) => item.durationMs)),
+				input_tokens: sum(details.results.map((item) => item.usage.input)),
+				output_tokens: sum(details.results.map((item) => item.usage.output)),
+			}),
 		};
-		for (const key of ["input", "output", "cacheRead", "cacheWrite", "contextTokens", "turns", "cost"] as const) {
-			const total = sum(details.results.map((item) => item.usage[key] ?? 0));
-			if (total !== 0) metrics[`usage_${key}`] = key === "cost"
-				? distributionMetric(total, "usd")
-				: countMetric(total, key === "turns" ? "turn" : "token");
-		}
-		return { metrics };
 	},
 });
 
-function projectInput(value: unknown): InputProjection {
-	if (!isRecord(value)) return { value: {} };
-	const tasks = Array.isArray(value["tasks"])
-		? value["tasks"].filter(isRecord).map((task) => compactJson({
-			agent: scalar(task["agent"]),
-			cwd: scalar(task["cwd"]),
-			task: textSummary(task["task"]),
-		}))
-		: undefined;
-	const references = Array.isArray(value["tasks"])
-		? value["tasks"].filter(isRecord).flatMap((task): TelemetryReference[] => typeof task["cwd"] === "string"
-			? [{ relation: "target", kind: "directory", value: task["cwd"] }]
-			: [])
-		: [];
-	return { value: compactJson({ tasks }), references };
+function projectInput(value: unknown): TelemetryFacts {
+	if (!isRecord(value) || !Array.isArray(value["tasks"])) return {};
+	const tasks = value["tasks"].filter(isRecord);
+	let chars = 0;
+	let lines = 0;
+	const agents: string[] = [];
+	const targets: Resource[] = [];
+	for (const task of tasks) {
+		const agent = scalar(task["agent"]);
+		if (typeof agent === "string") agents.push(agent);
+		const cwd = scalar(task["cwd"]);
+		if (typeof cwd === "string") targets.push({ kind: "directory", value: cwd });
+		const summary = textFields("task", task["task"]);
+		chars += typeof summary["task_chars"] === "number" ? summary["task_chars"] : 0;
+		lines += typeof summary["task_lines"] === "number" ? summary["task_lines"] : 0;
+	}
+	return {
+		fields: { input_task_count: tasks.length, input_agents: agents, input_task_chars: chars, input_task_lines: lines },
+		...(targets.length === 0 ? {} : { targets }),
+	};
 }
 
 function sum(values: readonly number[]): number {

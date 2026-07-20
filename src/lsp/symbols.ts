@@ -96,6 +96,7 @@ export function workspaceSymbolSeeds(root: string, query: string, symbols: Array
 			kind: symbolKindName(symbol.kind),
 			symbol: symbol.name,
 			exact: symbol.name.toLocaleLowerCase() === queryLower,
+			origin: "workspace-symbol",
 			uri: location.uri,
 			line: location.range.start.line,
 			character: location.range.start.character,
@@ -119,6 +120,7 @@ export function referenceHits(root: string, seed: WorkspaceSymbolSeed, locations
 			kind: seed.kind,
 			symbol: seed.symbol,
 			exact: false,
+			origin: "reference",
 		});
 	}
 	return hits;

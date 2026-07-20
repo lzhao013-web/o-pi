@@ -62,8 +62,27 @@ describe("Repo Map change impact", () => {
 			expect.objectContaining({ path: "src/caller.ts", role: "caller" }),
 			expect.objectContaining({ path: "tests/user.test.ts", role: "test" }),
 		]));
-		const writeText = formatWriteModelResult({ status: "written", path: "src/user.ts", bytes: 1, diff: "", repo_map: mutation });
-		const editText = formatEditModelResult({ status: "applied", path: "src/user.ts", replacements: 1, old_version: "old", new_version: "new", diff: "", repo_map: mutation });
+		const writeText = formatWriteModelResult({
+			status: "written",
+			path: "src/user.ts",
+			bytes: 1,
+			action: "modify",
+			after_version: "new",
+			after_size_bytes: 1,
+			diff: "",
+			repo_map: mutation,
+		});
+		const editText = formatEditModelResult({
+			status: "applied",
+			path: "src/user.ts",
+			replacements: 1,
+			old_version: "old",
+			new_version: "new",
+			old_size_bytes: 1,
+			new_size_bytes: 1,
+			diff: "",
+			repo_map: mutation,
+		});
 		for (const text of [writeText, editText]) {
 			expect(text).toContain('<repo_impact>\nsymbols="api changed function loadUser"');
 			expect(text).toContain("\n</repo_impact>");

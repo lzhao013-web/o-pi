@@ -1,6 +1,6 @@
 # Tool Input Repair
 
-`tool-repair` 是工具注册边界的轻量参数修复层，用于提升本地和开源模型的工具调用稳定性。它只负责纯参数修复；可选 observer 会报告参数状态和 repair operation，但不依赖 telemetry，也不负责执行计时。
+`tool-repair` 是工具注册边界的轻量参数修复层，用于提升本地和开源模型的工具调用稳定性。它只负责纯参数修复；可选 observer 会报告参数状态和 repair operation，但不负责持久化或执行计时。
 
 它不增加模型可见工具，不放宽公开 schema，也不把兼容逻辑散落到各个工具的 `execute` 中。所有修复都挂在工具定义的 `prepareArguments(args)` 上，在 Pi schema validation 和 execute 前运行。
 
@@ -127,7 +127,7 @@ repair 层不做语义推断：
 * `agent/extensions/subagent.ts`
   * `subagent`
 
-仓库内的模型工具通过统一观测注册入口组合 repair 和 telemetry：
+仓库内的模型工具通过统一注册入口组合 repair 和 telemetry。`registerObservedTool` 将 repair observer 直接连接到当前 Pi 的 `TelemetryService`；只有状态和 operation 会合并进内存中的 pending call，原始和修复后参数不会由 repair observer 落盘，工具 execute 不会被 telemetry 包裹：
 
 ```ts
 registerObservedTool(pi, {
@@ -138,7 +138,6 @@ registerObservedTool(pi, {
       // ...
     },
   },
-  source: import.meta.url,
   repair: {
     singleStringField: "path",
     pathFields: ["path"],
@@ -148,7 +147,6 @@ registerObservedTool(pi, {
     },
   },
   telemetry: readTelemetry,
-  config: loadFileToolsConfig,
 });
 ```
 

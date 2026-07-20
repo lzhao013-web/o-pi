@@ -1,41 +1,35 @@
-import { defineToolTelemetry } from "../../telemetry/adapter.js";
-import { compactJson, isRecord, scalar } from "../../telemetry/projectors.js";
-import type { TelemetryReference } from "../../telemetry/types.js";
+import { fields, isRecord, scalar, textFields } from "../../telemetry/projection.js";
+import { defineToolTelemetry } from "../../telemetry/tool.js";
+import type { Candidate } from "../../telemetry/types.js";
 import type { WebSearchDetails, WebSearchParams } from "../types.js";
-import { errorCode, number, record, string, webMetrics } from "./common.js";
+import { record, string, webResultFields } from "./common.js";
 
-export const webSearchTelemetry = defineToolTelemetry<WebSearchParams, WebSearchDetails>(import.meta.url, {
+export const webSearchTelemetry = defineToolTelemetry<WebSearchParams, WebSearchDetails>({
 	input(value) {
-		if (!isRecord(value)) return { value: {} };
-		return { value: compactJson({ query: scalar(value["query"]), limit: scalar(value["limit"]) }) };
+		if (!isRecord(value)) return {};
+		return { fields: fields({ ...textFields("input_query", value["query"]), input_limit: scalar(value["limit"]) }) };
 	},
 	result(_params, result) {
 		const details = record(result.details);
-		const status = string(details["status"]);
-		const code = errorCode(details);
 		return {
-			metrics: webMetrics(details),
-			references: webCandidates(details),
-			...(status === undefined ? {} : { status }),
-			...(code === undefined ? {} : { error_code: code }),
+			fields: webResultFields(details),
+			candidates: webCandidates(details),
 		};
 	},
 });
 
-function webCandidates(details: Record<string, unknown>): TelemetryReference[] {
+function webCandidates(details: Record<string, unknown>): Candidate[] {
 	const provider = string(details["provider"]) ?? "provider";
 	const results = Array.isArray(details["results"]) ? details["results"].filter(isRecord) : [];
 	return results.flatMap((item, index) => {
 		const url = string(item["url"]);
-		const sourceRank = number(item["rank"]);
-		return url === undefined ? [] : [{
-			relation: "candidate",
-			global_rank: index + 1,
-			group_rank: index + 1,
+		if (url === undefined) return [];
+		return [{
 			kind: "url",
 			value: url,
+			rank: index + 1,
 			group: "primary",
-			sources: [{ id: provider, family: "websearch", ...(sourceRank === undefined ? {} : { source_rank: sourceRank }) }],
+			sources: [provider],
 		}];
 	});
 }

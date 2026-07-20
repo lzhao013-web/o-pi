@@ -1,7 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { LspClient } from "../../src/lsp/client.js";
+import { createLspFileHooks } from "../../src/lsp/file-hooks.js";
 import { LspManager } from "../../src/lsp/manager.js";
 import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
@@ -14,6 +16,10 @@ preserveEnv("PI_LSP_CONFIG");
 beforeEach(() => {
 	workspace = workspaceTemp.path;
 	configDir = configTemp.path;
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 describe("lsp references", () => {
@@ -56,33 +62,40 @@ describe("lsp references", () => {
 		await manager.reload();
 	});
 
-	it("grep references 开启时把 textDocument/references 转为 symbol 候选", async () => {
-		await mkdir(path.join(workspace, "src"));
-		await writeFile(path.join(workspace, "src", "def.ts"), "export function target() {}\n");
-		await writeFile(path.join(workspace, "src", "use.ts"), "target();\n");
-		const server = path.join(configDir, "fake-lsp.mjs");
-		await writeFile(server, fakeServerSource(workspace));
+	it("grep references 经 workspaceSymbols 与 file hook 保留 symbol 和 reference 来源", async () => {
+		const definitionUri = pathToUri(path.join(workspace, "src", "def.ts"));
+		const referenceUri = pathToUri(path.join(workspace, "src", "use.ts"));
 		const config = path.join(configDir, "lsp.jsonc");
-		await writeFile(
-			config,
-			JSON.stringify({
-				enabled: true,
-				startup_timeout_ms: 2000,
-				request_timeout_ms: 2000,
-				grep: { workspace_symbols: true, references: true, max_symbols: 4, max_references: 4 },
-				servers: [{ id: "fake", command: process.execPath, args: [server], extensions: [".ts"] }],
-			}),
-		);
+		await writeFile(config, JSON.stringify({
+			enabled: true,
+			grep: { workspace_symbols: true, references: true, max_symbols: 4, max_references: 4 },
+			servers: [{ id: "fake", command: "unused-lsp", extensions: [".ts"] }],
+		}));
 		process.env.PI_LSP_CONFIG = config;
+		vi.spyOn(LspClient.prototype, "ensureReady").mockResolvedValue(true);
+		vi.spyOn(LspClient.prototype, "workspaceSymbols").mockResolvedValue([{
+			name: "target",
+			kind: 12,
+			location: {
+				uri: definitionUri,
+				range: { start: { line: 0, character: 16 }, end: { line: 0, character: 22 } },
+			},
+		}]);
+		vi.spyOn(LspClient.prototype, "references").mockResolvedValue([{
+			uri: referenceUri,
+			range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } },
+		}]);
 
 		const manager = new LspManager();
-		const hits = await manager.workspaceSymbols(workspace, "target");
+		const grepSymbols = createLspFileHooks(manager).grepSymbols;
+		if (grepSymbols === undefined) throw new Error("grepSymbols hook missing");
+		const hits = await grepSymbols({ workspaceRoot: workspace, query: "target", path: "." });
 		await manager.reload();
 
-		expect(hits).toEqual(expect.arrayContaining([
-			expect.objectContaining({ path: "src/def.ts", symbol: "target", exact: true }),
-			expect.objectContaining({ path: "src/use.ts", symbol: "target", exact: false }),
-		]));
+		expect(hits).toEqual([
+			expect.objectContaining({ path: "src/def.ts", reason: "lsp exact symbol", origin: "workspace-symbol" }),
+			expect.objectContaining({ path: "src/use.ts", reason: "lsp reference", origin: "reference" }),
+		]);
 	});
 
 	it.skipIf(process.platform === "win32")("reload 等待顽固 language server 退出并在超时后强杀", async () => {
@@ -118,6 +131,8 @@ function fakeServerSource(root: string): string {
 	const useUri = pathToUri(path.join(root, "src", "use.ts"));
 	return `
 let buffer = Buffer.alloc(0);
+setInterval(() => {}, 60_000);
+process.stdin.resume();
 process.stdin.on("data", (chunk) => {
 	buffer = Buffer.concat([buffer, chunk]);
 	while (true) {

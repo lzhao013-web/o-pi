@@ -3,7 +3,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { registerObservedTool } from "../../src/telemetry/tool.js";
-import { loadWebToolsConfig } from "../../src/web-tools/config.js";
 import { webFetchTelemetry } from "../../src/web-tools/telemetry/webfetch.js";
 import { webSearchTelemetry } from "../../src/web-tools/telemetry/websearch.js";
 import { isWebFetchDetails, renderWebFetchCall, renderWebFetchResult } from "../../src/web-tools/webfetch-renderer.js";
@@ -103,8 +102,6 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			},
 			repair: { singleStringField: "query" },
 			telemetry: webSearchTelemetry,
-			source: new URL("../../src/web-tools/websearch-runtime.ts", import.meta.url),
-			config: () => loadWebToolsConfig(),
 		});
 
 		registerObservedTool(pi, {
@@ -138,8 +135,6 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			},
 			repair: { singleStringField: "url" },
 			telemetry: webFetchTelemetry,
-			source: new URL("../../src/web-tools/webfetch-runtime.ts", import.meta.url),
-			config: () => loadWebToolsConfig(),
 		});
 
 		pi.on("tool_result", (event) => {

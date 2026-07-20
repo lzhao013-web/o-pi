@@ -316,6 +316,11 @@ export interface WriteSuccess {
 	status: "written";
 	path: string;
 	bytes: number;
+	action: "create" | "modify";
+	before_version?: string;
+	after_version: string;
+	before_size_bytes?: number;
+	after_size_bytes: number;
 	/** Pi TUI 展示用的带行号 diff。 */
 	diff: string;
 	firstChangedLine?: number;
@@ -404,6 +409,8 @@ export interface EditSuccess {
 	replacements: number;
 	old_version: string;
 	new_version: string;
+	old_size_bytes: number;
+	new_size_bytes: number;
 	/** Pi TUI 展示用的带行号 diff。 */
 	diff: string;
 	/** 第一处变更在新文件中的行号。 */

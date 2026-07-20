@@ -112,8 +112,8 @@ describe("web-tools extension", () => {
 		};
 		extension(pi as ExtensionAPI);
 
-		expect(handlers.get("session_start")?.({})).toBeUndefined();
-		expect(handlers.has("session_start")).toBe(true);
+		expect(handlers.has("session_start")).toBe(false);
+		expect(handlers.has("session_shutdown")).toBe(true);
 		expect(loadRuntime).not.toHaveBeenCalled();
 		const search = registered.find((tool) => tool.name === "websearch");
 		const fetch = registered.find((tool) => tool.name === "webfetch");

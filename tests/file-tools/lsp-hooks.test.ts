@@ -145,6 +145,8 @@ describe("file-tools lsp hooks", () => {
 			"prefix.ts:lsp symbol",
 			"reference.ts:lsp reference",
 		]);
+		expect(first.regions.find((region) => region.path === "exact.ts")?.sources).toContain("lsp-workspace-symbol");
+		expect(first.regions.find((region) => region.path === "reference.ts")?.sources).toContain("lsp-reference");
 	});
 });
 

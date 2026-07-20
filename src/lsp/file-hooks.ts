@@ -32,8 +32,8 @@ export function createLspFileHooks(manager: LspManager): FileToolLspHooks {
 						kind: hit.kind,
 						symbol: hit.symbol,
 						...(hit.signature !== undefined ? { signature: hit.signature } : {}),
-						reason: hit.exact ? "lsp exact symbol" : "lsp symbol",
-						origin: "workspace-symbol",
+						reason: hit.origin === "reference" ? "lsp reference" : hit.exact ? "lsp exact symbol" : "lsp symbol",
+						origin: hit.origin,
 					});
 				}
 				return candidates;

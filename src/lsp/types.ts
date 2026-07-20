@@ -102,6 +102,8 @@ export interface LspEnclosingSymbol {
 }
 
 /** workspace/symbol 转换后的 grep 候选。 */
+export type LspSymbolOrigin = "workspace-symbol" | "reference";
+
 export interface LspSymbolHit {
 	path: string;
 	start_line: number;
@@ -110,6 +112,7 @@ export interface LspSymbolHit {
 	symbol: string;
 	signature?: string;
 	exact: boolean;
+	origin: LspSymbolOrigin;
 }
 
 /** /lsp status 展示的单个 server 状态。 */

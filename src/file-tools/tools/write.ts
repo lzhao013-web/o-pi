@@ -1,11 +1,11 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { generateDiffString, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { guardWritablePath, PathGuardBlockedError } from "../../safety/path-guard.js";
 import { loadFileToolsConfig } from "../config.js";
 import { fail, isAccessDenied, isFailed, protectedPathFailure } from "../core/errors.js";
 import { normalizeToolPath, resolveWorkspaceRoot } from "../core/path-resolver.js";
-import { normalizeLineEndings } from "../core/text-file.js";
+import { normalizeLineEndings, sha256Version } from "../core/text-file.js";
 import type { FileToolLspHooks, LspDiagnosticsSummary, ToolOutcome, WriteParams, WriteSuccess } from "../types.js";
 
 interface WritablePath {
@@ -62,6 +62,11 @@ export async function writeWorkspaceFile(cwd: string, params: unknown, signal?: 
 			status: "written",
 			path: target.relativePath,
 			bytes: Buffer.byteLength(input.content, "utf8"),
+			action: diff.existed ? "modify" : "create",
+			...(diff.beforeVersion === undefined ? {} : { before_version: diff.beforeVersion }),
+			after_version: diff.afterVersion,
+			...(diff.beforeSizeBytes === undefined ? {} : { before_size_bytes: diff.beforeSizeBytes }),
+			after_size_bytes: diff.afterSizeBytes,
 			diff: diff.diff,
 			...(diff.firstChangedLine !== undefined ? { firstChangedLine: diff.firstChangedLine } : {}),
 		};
@@ -76,16 +81,32 @@ export async function writeWorkspaceFile(cwd: string, params: unknown, signal?: 
 	});
 }
 
-async function buildWriteDiff(absolutePath: string, newText: string): Promise<{ diff: string; firstChangedLine?: number }> {
-	let oldText = "";
+async function buildWriteDiff(absolutePath: string, newText: string): Promise<{
+	diff: string;
+	firstChangedLine?: number;
+	existed: boolean;
+	beforeVersion?: string;
+	afterVersion: string;
+	beforeSizeBytes?: number;
+	afterSizeBytes: number;
+}> {
+	let oldBytes: Buffer | undefined;
+	let existed = false;
 	try {
-		oldText = await readFile(absolutePath, "utf8");
-	} catch {
-		oldText = "";
+		oldBytes = await readFile(absolutePath);
+		existed = true;
+	} catch (error) {
+		if (!isNodeError(error) || error.code !== "ENOENT") existed = await pathExists(absolutePath);
 	}
+	const oldText = oldBytes?.toString("utf8") ?? "";
+	const newBytes = Buffer.from(newText, "utf8");
 	const result = generateDiffString(normalizeLineEndings(oldText), normalizeLineEndings(newText));
 	return {
 		diff: result.diff,
+		existed,
+		...(oldBytes === undefined ? {} : { beforeVersion: sha256Version(oldBytes), beforeSizeBytes: oldBytes.byteLength }),
+		afterVersion: sha256Version(newBytes),
+		afterSizeBytes: newBytes.byteLength,
 		...(result.firstChangedLine !== undefined ? { firstChangedLine: result.firstChangedLine } : {}),
 	};
 }
@@ -135,4 +156,17 @@ function checkAbort(signal: AbortSignal | undefined): ToolOutcome<never> | undef
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNodeError(value: unknown): value is NodeJS.ErrnoException {
+	return value instanceof Error;
+}
+
+async function pathExists(file: string): Promise<boolean> {
+	try {
+		await stat(file);
+		return true;
+	} catch {
+		return false;
+	}
 }

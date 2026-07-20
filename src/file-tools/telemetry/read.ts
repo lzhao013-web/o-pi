@@ -1,12 +1,11 @@
-import { defineToolTelemetry } from "../../telemetry/adapter.js";
+import { defineToolTelemetry } from "../../telemetry/tool.js";
 import type { ReadFileSuccess, ReadParams, ToolOutcome } from "../types.js";
-import { fileMetrics, observation, projectScalarInput, record, resultFileReference } from "./common.js";
+import { fileResultFields, projectFileInput, record } from "./common.js";
 
-export const readTelemetry = defineToolTelemetry<ReadParams, ToolOutcome<ReadFileSuccess>>(import.meta.url, {
-	input: projectScalarInput(["path", "start_line", "end_line"]),
-	result(params, result) {
+export const readTelemetry = defineToolTelemetry<ReadParams, ToolOutcome<ReadFileSuccess>>({
+	input: projectFileInput(["path", "start_line", "end_line"], "file"),
+	result(_params, result) {
 		const details = record(result.details);
-		const reference = resultFileReference(params.path, details);
-		return observation(details, fileMetrics(details), reference === undefined ? [] : [reference]);
+		return { fields: fileResultFields(details) };
 	},
 });

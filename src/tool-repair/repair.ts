@@ -24,6 +24,8 @@ export function repairableTool<TParams extends TSchema, TDetails = unknown, TSta
 	const spec = createRepairSpec(tool.parameters, hints);
 	const prepareArguments: ToolDefinition<TParams, TDetails, TState>["prepareArguments"] = (args) => {
 		const operations: RepairOperation[] = [];
+		const rawWasValid = isValid(tool.parameters, args);
+		const rawJson = structuralJson(args);
 		let prepared: unknown;
 		try {
 			prepared = originalPrepareArguments ? originalPrepareArguments(args) : args;
@@ -31,9 +33,9 @@ export function repairableTool<TParams extends TSchema, TDetails = unknown, TSta
 			notify(observer, tool.name, args, args, "invalid", operations);
 			throw error;
 		}
-		if (originalPrepareArguments !== undefined && !structurallyEqual(args, prepared)) operations.push("original_prepare");
+		if (originalPrepareArguments !== undefined && !matchesStructuralJson(rawJson, args, prepared)) operations.push("original_prepare");
 		if (isValid(tool.parameters, prepared)) {
-			const status: ToolArgumentStatus = isValid(tool.parameters, args) ? "accepted" : "repaired";
+			const status: ToolArgumentStatus = rawWasValid ? "accepted" : "repaired";
 			notify(observer, tool.name, args, prepared, status, operations);
 			return prepared as PreparedArguments<TParams, TDetails, TState>;
 		}
@@ -267,12 +269,16 @@ function cloneValue(value: unknown): unknown {
 	return result;
 }
 
-function structurallyEqual(left: unknown, right: unknown): boolean {
+function structuralJson(value: unknown): string | undefined {
 	try {
-		return JSON.stringify(left) === JSON.stringify(right);
+		return JSON.stringify(value);
 	} catch {
-		return left === right;
+		return undefined;
 	}
+}
+
+function matchesStructuralJson(rawJson: string | undefined, raw: unknown, prepared: unknown): boolean {
+	return rawJson === undefined ? raw === prepared : rawJson === structuralJson(prepared);
 }
 
 function isPlainObject(value: unknown): value is JsonObject {

@@ -1,9 +1,15 @@
-export { buildTelemetryReport, calculateTelemetryReport, type CalculateTelemetryReportOptions } from "./statistics.js";
-export { ingestTelemetryRecords, type IngestTelemetryOptions } from "./ingest.js";
-export { calculateLiveReport, LiveTelemetryReporter, type LiveTelemetryReport } from "./live.js";
-export { normalizePathTarget, normalizeUrlTarget } from "./normalize.js";
-export { readTelemetryRecord } from "./reader.js";
-export { applyAnalysisQuery, type QueryResult } from "./query.js";
-export type * from "./model.js";
-export { generateTelemetryReport, renderReport, toCsv, type GenerateTelemetryReportOptions, type GenerateTelemetryReportResult } from "./output.js";
+export { aggregateTelemetry, type AggregateTelemetryOptions } from "./aggregate.js";
+export { analyzeCandidateRanking } from "./analyzers/candidate-ranking.js";
+export { analyzeEdits } from "./analyzers/edit.js";
+export { generateTelemetryReport, type GenerateTelemetryReportOptions, type GenerateTelemetryReportResult } from "./command.js";
+export { formatTelemetrySummary, renderTelemetryHtml } from "./html.js";
+export { createLiveTelemetryReport, type LiveTelemetryReport } from "./live.js";
+export { formatLiveTelemetrySummary, renderLiveTelemetry } from "./render-live.js";
+export {
+	isTelemetryRecord,
+	readTelemetryDirectory,
+	readTelemetryJsonl,
+	type TelemetryDirectoryReadResult,
+	type TelemetryFileReadResult,
+} from "./read.js";
 export type * from "./types.js";

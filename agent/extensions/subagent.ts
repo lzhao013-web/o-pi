@@ -11,7 +11,6 @@ import {
 	type SubagentToolParams,
 } from "../../src/subagent/index.js";
 import { subagentTelemetry } from "../../src/subagent/telemetry.js";
-import { loadSubagentConfig } from "../../src/subagent/config.js";
 import { registerObservedTool } from "../../src/telemetry/tool.js";
 
 const taskItem = Type.Object({
@@ -56,8 +55,6 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		},
 		repair: { pathFields: ["tasks.*.cwd"] },
 		telemetry: subagentTelemetry,
-		source: new URL("../../src/subagent/index.ts", import.meta.url),
-		config: (ctx) => loadSubagentConfig(ctx.cwd),
 	});
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "subagent") return undefined;

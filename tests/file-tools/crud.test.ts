@@ -532,20 +532,38 @@ describe("write", () => {
 	});
 
 	it("创建缺失父目录并写入 UTF-8 内容", async () => {
-		const result = await writeWorkspaceFile(workspace, { path: "new/dir/file.txt", content: "hello\n你好\n" });
+		const content = "hello\n你好\n";
+		const bytes = Buffer.from(content, "utf8");
+		const result = await writeWorkspaceFile(workspace, { path: "new/dir/file.txt", content });
 		expect(result).toMatchObject({
 			status: "written",
 			path: "new/dir/file.txt",
-			bytes: Buffer.byteLength("hello\n你好\n", "utf8"),
+			bytes: bytes.byteLength,
+			action: "create",
+			after_version: sha256Version(bytes),
+			after_size_bytes: bytes.byteLength,
 			diff: expect.stringContaining("+1 hello"),
 		});
+		expect(result).not.toHaveProperty("before_version");
+		expect(result).not.toHaveProperty("before_size_bytes");
 		expect(await readFile(path.join(workspace, "new", "dir", "file.txt"), "utf8")).toBe("hello\n你好\n");
 	});
 
 	it("覆盖已有文件，不要求先 read", async () => {
-		await writeFile(path.join(workspace, "a.txt"), "old\n");
-		const result = await writeWorkspaceFile(workspace, { path: "a.txt", content: "new\n" });
-		expect(result).toMatchObject({ status: "written", path: "a.txt", diff: expect.stringContaining("-1 old") });
+		const before = Buffer.from("old\n");
+		const after = Buffer.from("new\n");
+		await writeFile(path.join(workspace, "a.txt"), before);
+		const result = await writeWorkspaceFile(workspace, { path: "a.txt", content: after.toString("utf8") });
+		expect(result).toMatchObject({
+			status: "written",
+			path: "a.txt",
+			action: "modify",
+			before_version: sha256Version(before),
+			after_version: sha256Version(after),
+			before_size_bytes: before.byteLength,
+			after_size_bytes: after.byteLength,
+			diff: expect.stringContaining("-1 old"),
+		});
 		expect(result).toMatchObject({ diff: expect.stringContaining("+1 new") });
 		expect(await readFile(path.join(workspace, "a.txt"), "utf8")).toBe("new\n");
 	});
@@ -641,7 +659,15 @@ describe("edit", () => {
 			],
 		});
 
-		expect(result).toMatchObject({ status: "applied", path: "a.txt", replacements: 2 });
+		expect(result).toMatchObject({
+			status: "applied",
+			path: "a.txt",
+			replacements: 2,
+			old_version: before.version,
+			old_size_bytes: Buffer.byteLength("one\ntwo\nthree\nfour\n"),
+			new_size_bytes: Buffer.byteLength("one\nTWO\nthree\nFOUR\n"),
+		});
+		if (!("error" in result)) expect(result.new_version).toBe(sha256Version(Buffer.from("one\nTWO\nthree\nFOUR\n")));
 		expect(await readFile(path.join(workspace, "a.txt"), "utf8")).toBe("one\nTWO\nthree\nFOUR\n");
 		if (!("error" in result)) {
 			expect(result.diff).toContain("-2 two");
