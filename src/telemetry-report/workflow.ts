@@ -267,6 +267,10 @@ function candidateInvalidated(calls: readonly CanonicalCall[], producerIndex: nu
 }
 
 function eligiblePair(left: CanonicalCall, right: CanonicalCall, excluded: Map<string, number>): boolean {
+	if (millis(left.timing.event_at) === undefined || millis(right.timing.event_at) === undefined) {
+		increment(excluded, "missing_event_time");
+		return false;
+	}
 	if (!withinTime(left, right)) {
 		increment(excluded, "outside_time_window");
 		return false;
@@ -294,7 +298,7 @@ function overlapsExecution(left: CanonicalCall, right: CanonicalCall): boolean {
 function withinTime(left: CanonicalCall, right: CanonicalCall): boolean {
 	const leftTime = millis(left.timing.event_at);
 	const rightTime = millis(right.timing.event_at);
-	return leftTime === undefined || rightTime === undefined || (rightTime >= leftTime && rightTime - leftTime <= TIME_WINDOW_MS);
+	return leftTime !== undefined && rightTime !== undefined && rightTime >= leftTime && rightTime - leftTime <= TIME_WINDOW_MS;
 }
 
 function resourceChanged(calls: readonly CanonicalCall[], previousIndex: number, currentIndex: number, previous: CanonicalCall, current: CanonicalCall): boolean {

@@ -5,15 +5,17 @@ export interface ActiveTurn {
 	id: string;
 	index: number;
 	startedAt: number;
+	startedMonotonic: number;
 	context: TelemetryContext;
 	interactionId?: string;
 	exposures: Map<string, ToolCallState["identity"]>;
 	startedCallIds: Set<string>;
 	endedCallIds: Set<string>;
 	projectionFailureIds: Set<string>;
+	projectionLimitedIds: Set<string>;
 }
 
-export function assembleToolCallEndRecord(base: TelemetryBase, call: ToolCallState, endedAt: number): ToolCallEndRecord {
+export function assembleToolCallEndRecord(base: TelemetryBase, call: ToolCallState, endedMonotonic: number): ToolCallEndRecord {
 	const observation = call.observation;
 	const classification = classifyOutcome(call, observation?.status, observation?.error_code);
 	return {
@@ -34,7 +36,7 @@ export function assembleToolCallEndRecord(base: TelemetryBase, call: ToolCallSta
 				...(call.executionStartedAt === undefined ? {} : { execution_started_at: new Date(call.executionStartedAt).toISOString() }),
 				...(call.executionEndedAt === undefined ? {} : { execution_ended_at: new Date(call.executionEndedAt).toISOString() }),
 				...(call.execute === undefined ? {} : { execution_duration_ms: call.execute.duration_ms }),
-				call_duration_ms: Math.max(0, endedAt - call.callStartedAt),
+				call_duration_ms: Math.max(0, endedMonotonic - call.callStartedMonotonic),
 			},
 			input: {
 				requested: call.requested,
@@ -45,6 +47,7 @@ export function assembleToolCallEndRecord(base: TelemetryBase, call: ToolCallSta
 				...(call.approval === undefined ? {} : { approval: call.approval }),
 				...(call.execute === undefined ? {} : { execution: call.execute }),
 				...(call.projectionFailed ? { projection_failed: true } : {}),
+				...(call.projectionLimited ? { projection_limited: true } : {}),
 			},
 			result: {
 				...(classification.ok === undefined ? {} : { ok: classification.ok }),
@@ -58,6 +61,9 @@ export function assembleToolCallEndRecord(base: TelemetryBase, call: ToolCallSta
 				output: outputStats(call.result?.content, observation?.truncated === true),
 				metrics: observation?.metrics ?? {},
 				references: observation?.references ?? [],
+				...(observation?.attributes === undefined ? {} : { attributes: observation.attributes }),
+				...(observation?.measurements === undefined ? {} : { measurements: observation.measurements }),
+				...(observation?.stages === undefined ? {} : { stages: observation.stages }),
 			},
 		},
 	};

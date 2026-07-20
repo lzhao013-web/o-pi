@@ -54,6 +54,7 @@ export function registerObservedTool<TParams extends TSchema, TDetails = unknown
 			execute: execution.completion,
 			observation: observation.value,
 			...(observation.failed ? { projection_failed: true } : {}),
+			...(observation.limited ? { projection_limited: true } : {}),
 		});
 	});
 	pi.on("session_start", () => {
@@ -73,7 +74,8 @@ export function registerObservedTool<TParams extends TSchema, TDetails = unknown
 				requested: requested.value,
 				status: observation.status,
 				operations: [...new Set(observation.operations)],
-				...(requested.failed ? { projection_failed: true } : {}),
+					...(requested.failed ? { projection_failed: true } : {}),
+					...(requested.limited ? { projection_limited: true } : {}),
 			});
 		},
 	});
@@ -83,23 +85,24 @@ export function registerObservedTool<TParams extends TSchema, TDetails = unknown
 			kind: "execute_start",
 			tool_call_id: toolCallId,
 			tool_name: tool.name,
-				executed: projected.value,
-				...(projected.failed ? { projection_failed: true } : {}),
+			executed: projected.value,
+			...(projected.failed ? { projection_failed: true } : {}),
+			...(projected.limited ? { projection_limited: true } : {}),
 		});
-		const startedAt = Date.now();
+		const startedAt = performance.now();
 		const execution: PendingExecution<ExecutedParams<TParams, TDetails, TState>> = { params };
 		executions.set(toolCallId, execution);
 		try {
 			const result = await preparedTool.execute(toolCallId, params, signal, onUpdate, ctx);
 			execution.completion = {
-				duration_ms: Math.max(0, Date.now() - startedAt),
+				duration_ms: Math.max(0, performance.now() - startedAt),
 				state: "returned",
 				signal_aborted: signal?.aborted === true,
 			};
 			return result;
 		} catch (error) {
 			execution.completion = {
-				duration_ms: Math.max(0, Date.now() - startedAt),
+				duration_ms: Math.max(0, performance.now() - startedAt),
 				state: "threw",
 				signal_aborted: signal?.aborted === true,
 				...(error instanceof Error && error.name.length > 0 ? { error_name: error.name } : {}),

@@ -15,6 +15,7 @@ import type {
 } from "./types.js";
 
 export const TELEMETRY_RUNTIME_CHANNEL = "o-pi:telemetry-runtime";
+export const TELEMETRY_RUNTIME_FAILURE_CHANNEL = "o-pi:telemetry-runtime-failure";
 
 export type TelemetryRuntimeEvent =
 	| {
@@ -25,6 +26,7 @@ export type TelemetryRuntimeEvent =
 			status: ToolArgumentStatus;
 			operations: RepairOperation[];
 			projection_failed?: true;
+			projection_limited?: true;
 	  }
 	| {
 			kind: "execute_start";
@@ -32,6 +34,7 @@ export type TelemetryRuntimeEvent =
 			tool_name: string;
 			executed: InputProjection;
 			projection_failed?: true;
+			projection_limited?: true;
 	  }
 	| {
 			kind: "execute_end";
@@ -40,6 +43,7 @@ export type TelemetryRuntimeEvent =
 			execute: ExecuteTelemetry;
 			observation?: ToolObservation;
 			projection_failed?: true;
+			projection_limited?: true;
 	  }
 	| {
 			kind: "approval";
@@ -48,11 +52,17 @@ export type TelemetryRuntimeEvent =
 			approval: ApprovalTelemetry;
 	  };
 
-export function emitTelemetryRuntime(events: EventBus, event: TelemetryRuntimeEvent): void {
+export function emitTelemetryRuntime(events: EventBus, event: TelemetryRuntimeEvent): boolean {
 	try {
 		events.emit(TELEMETRY_RUNTIME_CHANNEL, event);
+		return true;
 	} catch {
-		// Cross-extension diagnostics are best effort.
+		try {
+			events.emit(TELEMETRY_RUNTIME_FAILURE_CHANNEL, { tool_call_id: event.tool_call_id, tool_name: event.tool_name, kind: event.kind });
+		} catch {
+			// Final best-effort boundary.
+		}
+		return false;
 	}
 }
 
@@ -76,6 +86,7 @@ export function decodeTelemetryRuntimeEvent(value: unknown): TelemetryRuntimeEve
 					status,
 					operations,
 					...(payload["projection_failed"] === true ? { projection_failed: true } : {}),
+					...(payload["projection_limited"] === true ? { projection_limited: true } : {}),
 				};
 			}
 			case "execute_start": {
@@ -85,6 +96,7 @@ export function decodeTelemetryRuntimeEvent(value: unknown): TelemetryRuntimeEve
 					tool_name: toolName,
 					executed: inputProjection(payload["executed"]),
 					...(payload["projection_failed"] === true ? { projection_failed: true } : {}),
+					...(payload["projection_limited"] === true ? { projection_limited: true } : {}),
 				};
 			}
 			case "execute_end": {
@@ -100,6 +112,7 @@ export function decodeTelemetryRuntimeEvent(value: unknown): TelemetryRuntimeEve
 					execute,
 					...(observation === undefined ? {} : { observation }),
 					...(payload["projection_failed"] === true ? { projection_failed: true } : {}),
+					...(payload["projection_limited"] === true ? { projection_limited: true } : {}),
 				};
 			}
 			case "approval": {

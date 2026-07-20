@@ -1,8 +1,10 @@
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 
 import type {
 	InputProjection,
 	JsonObject,
+	JsonValue,
 	MetricMap,
 	TelemetryReference,
 	ToolObservation,
@@ -33,23 +35,25 @@ export function minimalTelemetry<TParams, TDetails>(): ToolTelemetryAdapter<TPar
 export function safeProjectRequested<TParams, TDetails>(
 	adapter: ToolTelemetryAdapter<TParams, TDetails>,
 	value: unknown,
-): { value: InputProjection; failed: boolean } {
-	if (adapter.projectRequested === undefined) return { value: { value: {} }, failed: false };
+): { value: InputProjection; failed: boolean; limited: boolean } {
+	if (adapter.projectRequested === undefined) return { value: { value: {} }, failed: false, limited: false };
 	try {
-		return { value: sanitizeProjection(adapter.projectRequested(value)), failed: false };
+		const bounded = boundedTelemetryPayload(adapter.projectRequested(value));
+		return { value: decodeProjection(bounded.value), failed: false, limited: bounded.limited };
 	} catch {
-		return { value: { value: {} }, failed: true };
+		return { value: { value: {} }, failed: true, limited: false };
 	}
 }
 
 export function safeProjectExecuted<TParams, TDetails>(
 	adapter: ToolTelemetryAdapter<TParams, TDetails>,
 	params: TParams,
-): { value: InputProjection; failed: boolean } {
+): { value: InputProjection; failed: boolean; limited: boolean } {
 	try {
-		return { value: sanitizeProjection(adapter.projectExecuted(params)), failed: false };
+		const bounded = boundedTelemetryPayload(adapter.projectExecuted(params));
+		return { value: decodeProjection(bounded.value), failed: false, limited: bounded.limited };
 	} catch {
-		return { value: { value: {} }, failed: true };
+		return { value: { value: {} }, failed: true, limited: false };
 	}
 }
 
@@ -57,16 +61,16 @@ export function safeObserve<TParams, TDetails>(
 	adapter: ToolTelemetryAdapter<TParams, TDetails>,
 	params: TParams,
 	result: AgentToolResult<TDetails>,
-): { value: ToolObservation; failed: boolean } {
+): { value: ToolObservation; failed: boolean; limited: boolean } {
 	try {
-		return { value: sanitizeObservation(adapter.observeResult(params, result)), failed: false };
+		const bounded = boundedTelemetryPayload(adapter.observeResult(params, result));
+		return { value: decodeToolObservation(bounded.value), failed: false, limited: bounded.limited };
 	} catch {
-		return { value: {}, failed: true };
+		return { value: {}, failed: true, limited: false };
 	}
 }
 
-function sanitizeProjection(value: InputProjection): InputProjection {
-	const projection = cloneTelemetryPayload(value);
+function decodeProjection(projection: unknown): InputProjection {
 	if (!isRecord(projection)) throw new Error("Telemetry input projection must be an object");
 	const references = parseReferences(projection["references"]);
 	return {
@@ -75,28 +79,112 @@ function sanitizeProjection(value: InputProjection): InputProjection {
 	};
 }
 
-function sanitizeObservation(value: ToolObservation): ToolObservation {
-	return decodeToolObservation(cloneTelemetryPayload(value));
-}
-
 export function decodeToolObservation(observation: unknown): ToolObservation {
 	if (!isRecord(observation)) throw new Error("Tool observation must be an object");
 	const metrics = parseMetricMap(observation["metrics"]);
 	const references = parseReferences(observation["references"]);
+	const attributes = observation["attributes"] === undefined ? undefined : decodeTelemetryJsonObject(observation["attributes"]);
+	const measurements = parseMeasurements(observation["measurements"]);
+	const stages = parseStages(observation["stages"]);
 	return {
 		...(metrics === undefined ? {} : { metrics }),
 		...(references === undefined ? {} : { references }),
+		...(attributes === undefined ? {} : { attributes }),
+		...(measurements === undefined ? {} : { measurements }),
+		...(stages === undefined ? {} : { stages }),
 		...(typeof observation["truncated"] === "boolean" ? { truncated: observation["truncated"] } : {}),
 		...(typeof observation["status"] === "string" ? { status: observation["status"] } : {}),
 		...(typeof observation["error_code"] === "string" ? { error_code: observation["error_code"] } : {}),
 	};
 }
 
+function parseMeasurements(value: unknown): NonNullable<ToolObservation["measurements"]> | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const result = value.flatMap((item) => {
+		if (!isRecord(item)) return [];
+		const name = string(item["name"]);
+		const measurement = finiteNumber(item["value"]);
+		const unit = string(item["unit"]);
+		return name === undefined || measurement === undefined ? [] : [{ name, value: measurement, ...(unit === undefined ? {} : { unit }) }];
+	});
+	return result.length === 0 ? undefined : result;
+}
+
+function parseStages(value: unknown): NonNullable<ToolObservation["stages"]> | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const result = value.flatMap((item) => {
+		if (!isRecord(item)) return [];
+		const name = string(item["name"]);
+		if (name === undefined) return [];
+		const status = string(item["status"]);
+		const duration = finiteNumber(item["duration_ms"]);
+		const attributes = item["attributes"] === undefined ? undefined : decodeTelemetryJsonObject(item["attributes"]);
+		const measurements = parseMeasurements(item["measurements"]);
+		return [{ name, ...(status === undefined ? {} : { status }), ...(duration === undefined || duration < 0 ? {} : { duration_ms: duration }),
+			...(attributes === undefined ? {} : { attributes }), ...(measurements === undefined ? {} : { measurements }) }];
+	});
+	return result.length === 0 ? undefined : result;
+}
+
 export function cloneTelemetryPayload(value: unknown): unknown {
-	const encoded = JSON.stringify(value);
-	if (encoded === undefined) throw new Error("Telemetry projection is not JSON-serializable");
-	const decoded: unknown = JSON.parse(encoded);
-	return decoded;
+	return boundedTelemetryPayload(value).value;
+}
+
+export function boundedTelemetryPayload(value: unknown): { value: unknown; limited: boolean } {
+	const state = { nodes: 0, limited: false, ancestors: new WeakSet<object>() };
+	const cloned = boundedJson(value, state, 0);
+	if (cloned === undefined) throw new Error("Telemetry projection is not JSON-serializable");
+	return { value: cloned, limited: state.limited };
+}
+
+const MAX_DEPTH = 8;
+const MAX_NODES = 4096;
+const MAX_STRING_CHARS = 4096;
+const MAX_ARRAY_ITEMS = 256;
+const MAX_OBJECT_KEYS = 128;
+
+function boundedJson(
+	value: unknown,
+	state: { nodes: number; limited: boolean; ancestors: WeakSet<object> },
+	depth: number,
+): JsonValue | undefined {
+	state.nodes += 1;
+	if (state.nodes > MAX_NODES || depth > MAX_DEPTH) {
+		state.limited = true;
+		return "[telemetry-limit]";
+	}
+	if (value === null || typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+	if (typeof value === "string") {
+		if (value.length <= MAX_STRING_CHARS) return value;
+		state.limited = true;
+		const digest = createHash("sha256").update(value).digest("hex");
+		return `${value.slice(0, 1024)}...[chars=${value.length};sha256=${digest}]`;
+	}
+	if (typeof value !== "object") return undefined;
+	if (state.ancestors.has(value)) throw new Error("Telemetry projection contains a cycle");
+	state.ancestors.add(value);
+	try {
+		if (Array.isArray(value)) {
+			if (value.length > MAX_ARRAY_ITEMS) state.limited = true;
+			const result: JsonValue[] = [];
+			for (const child of value.slice(0, MAX_ARRAY_ITEMS)) {
+				const parsed = boundedJson(child, state, depth + 1);
+				if (parsed !== undefined) result.push(parsed);
+			}
+			return result;
+		}
+		const entries = Object.entries(value);
+		if (entries.length > MAX_OBJECT_KEYS) state.limited = true;
+		const result: JsonObject = {};
+		for (const [key, child] of entries.slice(0, MAX_OBJECT_KEYS)) {
+			const parsed = boundedJson(child, state, depth + 1);
+			if (parsed !== undefined) result[key] = parsed;
+		}
+		return result;
+	} finally {
+		state.ancestors.delete(value);
+	}
 }
 
 export function decodeTelemetryJsonObject(value: unknown): JsonObject {

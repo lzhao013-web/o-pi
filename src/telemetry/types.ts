@@ -23,6 +23,20 @@ export type TelemetryMetric =
 
 export type MetricMap = Record<string, TelemetryMetric>;
 
+export interface Measurement {
+	name: string;
+	value: number;
+	unit?: string;
+}
+
+export interface StageObservation {
+	name: string;
+	status?: string;
+	duration_ms?: number;
+	attributes?: JsonObject;
+	measurements?: Measurement[];
+}
+
 export interface TelemetryReferenceSource {
 	id: string;
 	family?: string;
@@ -70,6 +84,9 @@ export interface ToolPreparationTelemetry {
 export interface ToolObservation {
 	metrics?: MetricMap;
 	references?: TelemetryReference[];
+	attributes?: JsonObject;
+	measurements?: Measurement[];
+	stages?: StageObservation[];
 	truncated?: boolean;
 	status?: string;
 	error_code?: string;
@@ -94,6 +111,15 @@ export interface ToolRuntimeTelemetry {
 	execute?: ExecuteTelemetry;
 	observation?: ToolObservation;
 	projection_failed?: boolean;
+	projection_limited?: boolean;
+}
+
+export interface WorkloadTelemetry {
+	prompt_hash: string;
+	shape: string;
+	prompt_chars: number;
+	prompt_tokens: { value: number; method: string };
+	image_count: number;
 }
 
 export interface TelemetryContext {
@@ -101,6 +127,7 @@ export interface TelemetryContext {
 	model?: { provider: string; id: string };
 	thinking_level?: string;
 	toolset?: { active: string[]; hash: string };
+	workload?: WorkloadTelemetry;
 	host: {
 		pi_version: string;
 		mode?: string;
@@ -119,6 +146,9 @@ export interface TelemetryBase {
 	id: string;
 	timestamp: string;
 	session_id: string;
+	run_id: string;
+	stream_id: string;
+	collector_contract_hash: string;
 	sequence: number;
 	context: TelemetryContext;
 }
@@ -159,6 +189,9 @@ export interface ToolCallStartRecord extends TelemetryBase, CallDimensions {
 	data: {
 		turn_index: number;
 		tool: { name: string; identity: ToolIdentity };
+		input: { requested: InputProjection };
+		projection_failed?: boolean;
+		projection_limited?: boolean;
 	};
 }
 
@@ -173,6 +206,7 @@ export interface ToolExecutionStartRecord extends TelemetryBase, CallDimensions 
 		preparation?: ToolPreparationTelemetry;
 		approval?: ApprovalTelemetry;
 		projection_failed?: boolean;
+		projection_limited?: boolean;
 	};
 }
 
@@ -196,6 +230,7 @@ export interface ToolCallEndRecord extends TelemetryBase, CallDimensions {
 			approval?: ApprovalTelemetry;
 			execution?: ExecuteTelemetry;
 			projection_failed?: boolean;
+			projection_limited?: boolean;
 		};
 		result: {
 			ok?: boolean;
@@ -208,6 +243,9 @@ export interface ToolCallEndRecord extends TelemetryBase, CallDimensions {
 			};
 			metrics: MetricMap;
 			references: TelemetryReference[];
+			attributes?: JsonObject;
+			measurements?: Measurement[];
+			stages?: StageObservation[];
 		};
 	};
 }
@@ -224,6 +262,7 @@ export interface TurnEndRecord extends TelemetryBase {
 		observed_end_count: number;
 		unfinished_call_count: number;
 		projection_failure_count: number;
+		projection_limit_count: number;
 		missing_start_ids: string[];
 		missing_end_ids: string[];
 	};
@@ -236,8 +275,17 @@ export type CollectionHealthIssue =
 	| "missing_end"
 	| "unfinished_turn"
 	| "projection_failed"
+	| "projection_limited"
 	| "metric_schema_conflict"
-	| "writer_failure";
+	| "writer_failure"
+	| "collector_handler_failure"
+	| "session_hydration_failure"
+	| "identity_resolution_failure"
+	| "config_capture_failure"
+	| "runtime_event_drop"
+	| "context_capture_failure"
+	| "manifest_write_failure"
+	| "live_store_truncated";
 
 export interface CollectionHealthRecord extends TelemetryBase {
 	event: "collection_health";

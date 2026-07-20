@@ -35,6 +35,8 @@ export function renderLiveTelemetry(value: LiveTelemetryReport, width: number): 
 			`${health.counts.missing_ends} missing ends`,
 			`${health.counts.unfinished_turns} unfinished turns`,
 			`${health.counts.writer_failures} writer failures`,
+			`${health.counts.dropped_writes} dropped writes`,
+			`${health.counts.omitted_live_records} omitted live records`,
 		]),
 		health.warnings.join(" · "),
 	];
@@ -55,7 +57,7 @@ export function formatLiveTelemetrySummary(value: LiveTelemetryReport): string {
 function wideSlices(slices: LiveTelemetryReport["report"]["current_slices"]): string[] {
 	return [
 		`${pad("tool / slice", 32)} ${pad("calls", 7, true)} ${pad("success", 10, true)} ${pad("n", 7, true)} ${pad("p50 ms", 10, true)} ${pad("missing", 10, true)}`,
-		...slices.slice(0, 20).map((slice) => `${pad(`${slice.tool_name} / ${shortId(slice.slice_id)}`, 32)} ${pad(slice.calls, 7, true)} ${pad(slice.success_rate.value === undefined ? "n/a" : percent(slice.success_rate.value), 10, true)} ${pad(slice.success_rate.samples, 7, true)} ${pad(slice.duration_ms.p50, 10, true)} ${pad(percent(slice.duration_ms.missing_rate), 10, true)}`),
+		...slices.slice(0, 20).map((slice) => `${pad(`${slice.tool_name} / ${shortId(slice.slice_id)}`, 32)} ${pad(slice.calls, 7, true)} ${pad(slice.execution_success_rate.value === undefined ? "n/a" : percent(slice.execution_success_rate.value), 10, true)} ${pad(slice.execution_success_rate.samples, 7, true)} ${pad(slice.duration_ms.p50 ?? "n/a", 10, true)} ${pad(percent(slice.duration_ms.missing_rate), 10, true)}`),
 	];
 }
 
@@ -65,8 +67,8 @@ function compactSlices(slices: LiveTelemetryReport["report"]["current_slices"]):
 		slice.tool_name,
 		shortId(slice.slice_id),
 		`${slice.calls} calls`,
-		`${slice.success_rate.samples} outcome samples`,
-		slice.success_rate.value === undefined ? "success n/a" : `${percent(slice.success_rate.value)} success`,
+		`${slice.execution_success_rate.samples} execution outcome samples`,
+		slice.execution_success_rate.value === undefined ? "execution success n/a" : `${percent(slice.execution_success_rate.value)} execution success`,
 	]));
 }
 

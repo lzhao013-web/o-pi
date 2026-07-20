@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -15,18 +15,22 @@ import { describe, expect, it } from "vitest";
 import telemetryExtension from "../../agent/extensions/telemetry.js";
 import { bashTelemetry } from "../../src/bash-tool/telemetry.js";
 import { findTelemetry, readTelemetry } from "../../src/file-tools/telemetry.js";
-import { decodeToolObservation, defineToolTelemetry, minimalTelemetry, type ToolTelemetryAdapter } from "../../src/telemetry/adapter.js";
+import { boundedTelemetryPayload, decodeToolObservation, defineToolTelemetry, minimalTelemetry, type ToolTelemetryAdapter } from "../../src/telemetry/adapter.js";
 import { registerTelemetry } from "../../src/telemetry/collector.js";
+import { COLLECTOR_CONTRACT_HASH } from "../../src/telemetry/contract.js";
 import { computeTelemetryHash, computeToolBehaviorHash } from "../../src/telemetry/identity.js";
 import { categoricalMetric, compactJson, countMetric, scalar } from "../../src/telemetry/projectors.js";
+import { manifestValueFingerprint } from "../../src/telemetry/manifest.js";
 import { registerObservedTool } from "../../src/telemetry/tool.js";
+import { readTelemetrySessionDirectory } from "../../src/telemetry/jsonl-reader.js";
 import type {
 	CollectionHealthRecord,
 	TelemetryRecord,
 	TurnStartRecord,
 } from "../../src/telemetry/types.js";
-import { JsonlTelemetryWriter, type TelemetryWriter } from "../../src/telemetry/writer.js";
+import { JsonlTelemetryWriter, telemetrySessionFile, type TelemetryWriter } from "../../src/telemetry/writer.js";
 import { webSearchTelemetry } from "../../src/web-tools/telemetry.js";
+import { calculateLiveReport } from "../../src/telemetry-report/live.js";
 import { useTempDir } from "../helpers/lifecycle.js";
 
 const paramsSchema = Type.Object(
@@ -59,6 +63,7 @@ describe("telemetry raw collection", () => {
 
 		expect(lifecycleEvents).toEqual([
 			"session_start",
+			"before_agent_start",
 			"agent_start",
 			"turn_start",
 			"message_end",
@@ -96,7 +101,37 @@ describe("telemetry raw collection", () => {
 			toolset: { active: ["test"], hash: expect.any(String) },
 			host: { pi_version: expect.any(String), platform: process.platform },
 			branch: { lineage_hash: expect.any(String), depth: 1, leaf_id: "entry-1" },
+			workload: { prompt_hash: expect.stringMatching(/^[a-f0-9]{64}$/u), shape: "xs:one_image", prompt_chars: 12, image_count: 1 },
 		});
+		expect(harness.records.every((record) => /^[a-f0-9]{64}$/u.test(record.collector_contract_hash))).toBe(true);
+		expect(new Set(harness.records.map((record) => record.run_id)).size).toBe(1);
+	});
+
+	it("sanitizes structured observations without retaining result bodies", () => {
+		expect(decodeToolObservation({
+			attributes: { cache: { layer: "memory", hit: true }, ignored: Number.NaN },
+			measurements: [{ name: "matches", value: 3, unit: "item" }, { name: "bad", value: Number.NaN }],
+			stages: [{ name: "primary", status: "failed", duration_ms: 5, attributes: { backend: "local" } }, { body: "discard" }],
+		})).toEqual({
+			attributes: { cache: { layer: "memory", hit: true } },
+			measurements: [{ name: "matches", value: 3, unit: "item" }],
+			stages: [{ name: "primary", status: "failed", duration_ms: 5, attributes: { backend: "local" } }],
+		});
+	});
+
+	it("bounds projection depth, width, and string payloads before they enter the runtime channel", () => {
+		const payload = { text: "x".repeat(10_000), values: Array.from({ length: 400 }, (_value, index) => index) };
+		const bounded = boundedTelemetryPayload(payload);
+		expect(bounded.limited).toBe(true);
+		expect(JSON.stringify(bounded.value).length).toBeLessThan(8_000);
+		expect((bounded.value as { values: unknown[] }).values).toHaveLength(256);
+	});
+
+	it("fingerprints complete manifest values even when their inspectable projection is bounded", () => {
+		const left = Array.from({ length: 300 }, (_value, index) => index);
+		const right = [...left];
+		right[299] = 999;
+		expect(manifestValueFingerprint(left)).not.toBe(manifestValueFingerprint(right));
 	});
 
 	it("persists a minimal call start before preparation so a crash remains unfinished", async () => {
@@ -112,6 +147,7 @@ describe("telemetry raw collection", () => {
 			tool_batch_id: expect.any(String),
 			batch_size: 1,
 			batch_index: 0,
+			data: { input: { requested: { value: { path: "src/a.ts" } } } },
 		});
 		expect(harness.ofType("tool_call_end")).toHaveLength(0);
 		expect(harness.collector.snapshot().inProgressCalls).toBe(1);
@@ -153,7 +189,7 @@ describe("telemetry raw collection", () => {
 		expect(ends.every((record) => record.data.timing.execution_started_at !== undefined)).toBe(true);
 	});
 
-	it("records stable metric semantics and rejects schema conflicts", async () => {
+	it("records stable metric semantics and reports schema conflicts without dropping observations", async () => {
 		expect(decodeToolObservation({ metrics: { exit_code: { value: 2 } } }).metrics).toEqual({});
 		expect(decodeToolObservation({
 			metrics: { exit_code: { kind: "categorical", aggregation: "count_by_value", value: 2 } },
@@ -182,7 +218,7 @@ describe("telemetry raw collection", () => {
 		}
 		const ends = harness.ofType("tool_call_end");
 		expect(ends[0]?.data.result.metrics["unstable"]).toMatchObject({ kind: "categorical" });
-		expect(ends[1]?.data.result.metrics).not.toHaveProperty("unstable");
+		expect(ends[1]?.data.result.metrics["unstable"]).toMatchObject({ kind: "count", value: 1, unit: "item" });
 		expect(harness.ofType("collection_health").some((record) => record.data.issue === "metric_schema_conflict")).toBe(true);
 	});
 
@@ -356,10 +392,44 @@ describe("telemetry raw collection", () => {
 		});
 	});
 
-	it("detects historical sequence gaps on resume", async () => {
+	it("drops beyond the bounded writer queue and persists one backpressure health fact", async () => {
+		const blocked = deferred<void>();
+		const health: string[] = [];
+		const writer = new JsonlTelemetryWriter("bounded", {
+			directory: temp.path,
+			maxPending: 1,
+			append: async () => blocked.promise,
+			appendHealth: async (_file, content) => { health.push(content); },
+			acquireLock: async () => async () => undefined,
+		});
+		writer.append(baseRecord());
+		writer.append({ ...baseRecord(), id: "overflow", sequence: 1 });
+		expect(writer.status()).toMatchObject({ dropped: 1, failed: 1 });
+		blocked.resolve();
+		await writer.flush();
+		expect(health).toHaveLength(1);
+		expect(health[0]).toContain("TELEMETRY_BACKPRESSURE");
+	});
+
+	it("streams only the newest requested session records while observing the full history", async () => {
+		const directory = path.join(temp.path, "bounded-reader");
+		await mkdir(directory, { recursive: true });
+		const sessionId = "bounded-session";
+		const rows = [0, 1, 2].map((index) => ({ ...baseRecord(), id: `row-${index}`, session_id: sessionId,
+			timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(), sequence: index }));
+		await writeFile(telemetrySessionFile(sessionId, "run-1", directory), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`, "utf8");
+		let observed = 0;
+		const snapshot = await readTelemetrySessionDirectory(sessionId, { directory, maxRecords: 2, onRecord: () => { observed += 1; } });
+		expect(snapshot.records.map((record) => isRecord(record) ? record["id"] : undefined)).toEqual(["row-1", "row-2"]);
+		expect(snapshot).toMatchObject({ omittedRecords: 1 });
+		expect(observed).toBe(3);
+	});
+
+	it("analyzes historical integrity without replaying duplicate health events on resume", async () => {
 		const records: TelemetryRecord[] = [];
 		const collector = registerTelemetry(minimalPi(), {
 			writerFactory: () => memoryWriter(records),
+			manifestStore: memoryManifestStore(),
 			sessionLoader: async () => ({
 				records: [
 					{ ...baseRecord(), session_id: "session-1", sequence: 0 },
@@ -370,8 +440,10 @@ describe("telemetry raw collection", () => {
 		});
 		await collector.onSessionStart({ type: "session_start", reason: "resume" }, context());
 		const health = records.filter((record): record is CollectionHealthRecord => record.event === "collection_health");
-		expect(health.map((record) => record.data.issue)).toEqual(["invalid_jsonl", "sequence_gap"]);
-		expect(records.map((record) => record.sequence)).toEqual([3, 4, 5]);
+		expect(health).toEqual([]);
+		expect(records.map((record) => record.sequence)).toEqual([0]);
+		const report = calculateLiveReport(collector.snapshot());
+		expect(report.collection_health.counts).toMatchObject({ invalid_lines: 1, sequence_gaps: 1 });
 	});
 });
 
@@ -427,7 +499,7 @@ async function createHarness(
 	} as unknown as ExtensionAPI;
 	let tick = 0;
 	const now = () => new Date(Date.UTC(2026, 0, 1, 0, 0, 0, tick++));
-	const collector = registerTelemetry(pi, { writerFactory: () => memoryWriter(records), now });
+	const collector = registerTelemetry(pi, { writerFactory: () => memoryWriter(records), now, manifestStore: memoryManifestStore() });
 	registerObservedTool(pi, {
 		tool: testTool(execute),
 		repair: { pathFields: ["path"] },
@@ -439,6 +511,7 @@ async function createHarness(
 		},
 	});
 	await invoke(lifecycle, "session_start", { type: "session_start", reason: "startup" }, contextValue);
+	await invoke(lifecycle, "before_agent_start", { type: "before_agent_start", prompt: "inspect repo", images: [{}] }, contextValue);
 	await invoke(lifecycle, "agent_start", { type: "agent_start" }, contextValue);
 	await invoke(lifecycle, "turn_start", { type: "turn_start", turnIndex: 0, timestamp: 1 }, contextValue);
 	const tool = registered;
@@ -546,8 +619,12 @@ function memoryWriter(records: TelemetryRecord[]): TelemetryWriter {
 			records.push(record);
 		},
 		async flush() {},
-		status: () => ({ pending: 0, persisted: records.length, failed: 0, health_persisted: 0, health_failed: 0 }),
+		status: () => ({ pending: 0, persisted: records.length, failed: 0, health_persisted: 0, health_failed: 0, dropped: 0 }),
 	};
+}
+
+function memoryManifestStore() {
+	return { append() {}, async flush() {}, status: () => ({ failed: 0 }) };
 }
 
 function minimalPi(): ExtensionAPI {
@@ -566,6 +643,9 @@ function baseRecord(): TelemetryRecord {
 		id: "record-0",
 		timestamp: "2026-01-01T00:00:00.000Z",
 		session_id: "failed/session",
+		run_id: "run-1",
+		stream_id: "main",
+		collector_contract_hash: COLLECTOR_CONTRACT_HASH,
 		sequence: 0,
 		context: {
 			cwd: "/workspace",

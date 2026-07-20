@@ -19,10 +19,14 @@ export interface ToolCallState extends CallDimensions {
 	turnIndex: number;
 	identity: ToolIdentity;
 	callStartedAt: number;
+	callStartedMonotonic: number;
 	executionStartedAt?: number;
+	executionStartedMonotonic?: number;
 	executionEndedAt?: number;
+	executionEndedMonotonic?: number;
 	requested: InputProjection;
 	projectionFailed: boolean;
+	projectionLimited: boolean;
 	preparation?: ToolRuntimeTelemetry["preparation"];
 	executed?: InputProjection;
 	approval?: ToolRuntimeTelemetry["approval"];
@@ -38,6 +42,10 @@ export interface StartCallInput extends CallDimensions {
 	turnIndex: number;
 	identity: ToolIdentity;
 	startedAt: number;
+	startedMonotonic: number;
+	requested: InputProjection;
+	projectionFailed: boolean;
+	projectionLimited: boolean;
 }
 
 /** Session-scoped raw call state. It never invents missing lifecycle facts. */
@@ -52,8 +60,10 @@ export class TelemetryCallStore {
 			turnIndex: input.turnIndex,
 			identity: input.identity,
 			callStartedAt: input.startedAt,
-			requested: { value: {} },
-			projectionFailed: false,
+			callStartedMonotonic: input.startedMonotonic,
+			requested: input.requested,
+			projectionFailed: input.projectionFailed,
+			projectionLimited: input.projectionLimited,
 			...(input.interaction_id === undefined ? {} : { interaction_id: input.interaction_id }),
 			...(input.assistant_message_id === undefined ? {} : { assistant_message_id: input.assistant_message_id }),
 			...(input.tool_batch_id === undefined ? {} : { tool_batch_id: input.tool_batch_id }),
@@ -64,7 +74,7 @@ export class TelemetryCallStore {
 		return call;
 	}
 
-	apply(event: TelemetryRuntimeEvent, observedAt: number): ToolCallState | undefined {
+	apply(event: TelemetryRuntimeEvent, observedAt: number, observedMonotonic: number): ToolCallState | undefined {
 		const call = this.#calls.get(event.tool_call_id);
 		if (call === undefined || event.tool_name !== call.toolName) return undefined;
 		switch (event.kind) {
@@ -72,17 +82,22 @@ export class TelemetryCallStore {
 				call.requested = event.requested;
 				call.preparation = { status: event.status, operations: event.operations };
 				call.projectionFailed ||= event.projection_failed === true;
+				call.projectionLimited ||= event.projection_limited === true;
 				break;
 			case "execute_start":
 				call.executed = event.executed;
 				call.executionStartedAt ??= observedAt;
+				call.executionStartedMonotonic ??= observedMonotonic;
 				call.projectionFailed ||= event.projection_failed === true;
+				call.projectionLimited ||= event.projection_limited === true;
 				break;
 			case "execute_end":
 				call.execute = event.execute;
 				call.observation = event.observation;
 				call.executionEndedAt ??= observedAt;
+				call.executionEndedMonotonic ??= observedMonotonic;
 				call.projectionFailed ||= event.projection_failed === true;
+				call.projectionLimited ||= event.projection_limited === true;
 				break;
 			case "approval":
 				call.approval = event.approval;

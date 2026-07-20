@@ -1,32 +1,39 @@
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ExtensionContext, ToolDefinition, ToolInfo } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 
-import type { ToolTelemetryAdapter } from "./adapter.js";
-import { stableHash } from "./projectors.js";
-import type { ToolIdentity } from "./types.js";
+import { safeProjectRequested, type ToolTelemetryAdapter } from "./adapter.js";
+import { createManifest, manifestValueFingerprint, safeManifestValue, type TelemetryManifest } from "./manifest.js";
+import { sourceBundleDescriptor } from "./source-identity.js";
+import type { InputProjection, JsonObject, ToolIdentity } from "./types.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const IMPORT_PATTERN = /(?:import|export)\s+(?:[^"']*?\s+from\s+)?["'](\.[^"']+)["']|import\s*\(\s*["'](\.[^"']+)["']\s*\)/gu;
-const HASH_FORMAT = 1;
 
 export interface ToolIdentitySpec {
 	/** Behavior sources only. Telemetry adapter sources must not be listed here. */
 	behaviorEntrypoints: readonly string[];
 	/** Adapter and projection sources only. */
 	telemetryEntrypoints: readonly string[];
-	/** Effective behavior-affecting configuration. The raw value is never persisted. */
+	/** Effective behavior-affecting configuration. Raw secrets are redacted in its manifest. */
 	config?: (ctx: ExtensionContext) => unknown | Promise<unknown>;
 }
 
+export interface ResolvedToolIdentity {
+	identity: ToolIdentity;
+	manifests: TelemetryManifest[];
+	config_capture_failed: boolean;
+}
+
 interface RegisteredIdentity {
-	behaviorHash: string;
-	definitionHash: string;
-	telemetryHash: string;
+	behavior: TelemetryManifest;
+	definition: TelemetryManifest;
+	instrumentation: TelemetryManifest;
+	coreDefinitionHash: string;
+	modelDefinition: unknown;
+	projectRequested: (value: unknown) => { value: InputProjection; failed: boolean; limited: boolean };
 	loadConfig?: ToolIdentitySpec["config"];
 }
 
@@ -38,45 +45,82 @@ export function registerToolIdentity<TParams extends TSchema, TDetails, TState, 
 	spec: ToolIdentitySpec,
 	repair: unknown,
 ): void {
+	const definition = definitionManifest(tool);
 	registered.set(tool.name, {
-		behaviorHash: computeToolBehaviorHash(tool, spec.behaviorEntrypoints, repair),
-		definitionHash: computeToolDefinitionHash(tool),
-		telemetryHash: computeTelemetryHash(telemetry, spec.telemetryEntrypoints),
+		behavior: behaviorManifest(tool, spec.behaviorEntrypoints, repair, definition.hash),
+		definition,
+		instrumentation: instrumentationManifest(tool.name, telemetry, spec.telemetryEntrypoints),
+		coreDefinitionHash: coreDefinitionManifest(tool).hash,
+		modelDefinition: modelDefinitionValue(tool),
+		projectRequested: (value) => safeProjectRequested(telemetry, value),
 		...(spec.config === undefined ? {} : { loadConfig: spec.config }),
 	});
 }
 
-export async function resolveToolIdentity(
-	tool: ToolInfo | undefined,
+export function projectRequestedInput(
 	name: string,
-	ctx: ExtensionContext,
-): Promise<ToolIdentity> {
-	const definitionHash = computeToolDefinitionHash(tool ?? { name });
+	instrumentationHash: string,
+	value: unknown,
+): { value: InputProjection; failed: boolean; limited: boolean } {
 	const identity = registered.get(name);
-	if (identity === undefined || identity.definitionHash !== definitionHash) {
+	return identity === undefined || identity.instrumentation.hash !== instrumentationHash
+		? { value: { value: {} }, failed: false, limited: false }
+		: identity.projectRequested(value);
+}
+
+export async function resolveToolIdentity(tool: ToolInfo | undefined, name: string, ctx: ExtensionContext): Promise<ResolvedToolIdentity> {
+	const fallbackDefinition = coreDefinitionManifest(tool ?? { name });
+	const registeredIdentity = registered.get(name);
+	if (registeredIdentity === undefined || registeredIdentity.coreDefinitionHash !== fallbackDefinition.hash) {
+		const fallbackBehavior = createManifest("tool_behavior", {
+			tool_name: name,
+			definition_hash: fallbackDefinition.hash,
+			implementation: "host_unavailable",
+		});
 		return {
-			behavior_hash: "unavailable",
-			definition_hash: definitionHash,
-			telemetry_hash: "unavailable",
-			config_hash: "unavailable",
+			identity: {
+				behavior_hash: fallbackBehavior.hash,
+				definition_hash: fallbackDefinition.hash,
+				telemetry_hash: "unavailable",
+				config_hash: "unavailable",
+			},
+			manifests: [fallbackDefinition, fallbackBehavior],
+			config_capture_failed: false,
 		};
 	}
 	let config: unknown = null;
+	let configCaptureFailed = false;
 	try {
-		config = identity.loadConfig === undefined ? null : await identity.loadConfig(ctx);
+		config = registeredIdentity.loadConfig === undefined ? null : await registeredIdentity.loadConfig(ctx);
 	} catch {
-		config = { unavailable: true };
+		configCaptureFailed = true;
+		config = { capture_failed: true };
 	}
+	const configManifest = createManifest("tool_config", {
+		tool_name: name,
+		capture_failed: configCaptureFailed,
+		value_fingerprint: manifestValueFingerprint(config),
+		value: safeManifestValue(config),
+	});
 	return {
-		behavior_hash: identity.behaviorHash,
-		definition_hash: definitionHash,
-		telemetry_hash: identity.telemetryHash,
-		config_hash: stableHash(config),
+		identity: {
+			behavior_hash: registeredIdentity.behavior.hash,
+			definition_hash: registeredIdentity.definition.hash,
+			telemetry_hash: registeredIdentity.instrumentation.hash,
+			config_hash: configManifest.hash,
+		},
+		manifests: [registeredIdentity.behavior, registeredIdentity.definition, registeredIdentity.instrumentation, configManifest],
+		config_capture_failed: configCaptureFailed,
 	};
 }
 
-export function isObservedTool(name: string): boolean {
-	return registered.has(name);
+/** Exact model-visible definition captured at registration, with ToolInfo as a fallback for host tools. */
+export function toolDefinitionValue(tool: ToolInfo | undefined, name: string): unknown {
+	const fallback = coreDefinitionManifest(tool ?? { name });
+	const candidate = registered.get(name);
+	return candidate !== undefined && candidate.coreDefinitionHash === fallback.hash
+		? candidate.modelDefinition
+		: modelDefinitionValue(tool ?? { name });
 }
 
 export function computeToolBehaviorHash<TParams extends TSchema, TDetails, TState>(
@@ -84,92 +128,96 @@ export function computeToolBehaviorHash<TParams extends TSchema, TDetails, TStat
 	entrypoints: readonly string[],
 	repair: unknown,
 ): string {
-	return stableHash({
-		format: HASH_FORMAT,
-		sources: sourceGraph([...entrypoints, "src/tool-repair/repair.ts"]),
-		definition: behaviorDefinition(tool),
-		repair,
-	});
+	return behaviorManifest(tool, entrypoints, repair, definitionManifest(tool).hash).hash;
 }
 
 export function computeTelemetryHash<TParams, TDetails>(
 	telemetry: ToolTelemetryAdapter<TParams, TDetails>,
 	entrypoints: readonly string[],
 ): string {
-	return stableHash({
-		format: HASH_FORMAT,
-		sources: sourceGraph(entrypoints),
-		adapter: {
-			projectRequested: String(telemetry.projectRequested),
-			projectExecuted: String(telemetry.projectExecuted),
-			observeResult: String(telemetry.observeResult),
+	return instrumentationManifest("unknown", telemetry, entrypoints).hash;
+}
+
+export function computeToolDefinitionHash(tool: Pick<ToolInfo, "name"> & Partial<ToolInfo>): string {
+	return coreDefinitionManifest(tool).hash;
+}
+
+function behaviorManifest<TParams extends TSchema, TDetails, TState>(
+	tool: ToolDefinition<TParams, TDetails, TState>,
+	entrypoints: readonly string[],
+	repair: unknown,
+	definitionHash: string,
+): TelemetryManifest {
+	return createManifest("tool_behavior", {
+		tool_name: tool.name,
+		definition_hash: definitionHash,
+		sources: sourceDescriptors([...entrypoints, "src/tool-repair/repair.ts"]),
+		repair: safeManifestValue(repair),
+		repair_fingerprint: manifestValueFingerprint(repair),
+		execution_mode: tool.executionMode ?? "default",
+	});
+}
+
+function definitionManifest<TParams extends TSchema, TDetails, TState>(tool: ToolDefinition<TParams, TDetails, TState>): TelemetryManifest {
+	return createManifest("tool_definition", {
+		name: tool.name,
+		description: safeManifestValue(tool.description),
+		description_fingerprint: manifestValueFingerprint(tool.description),
+		parameters: safeManifestValue(tool.parameters),
+		parameters_fingerprint: manifestValueFingerprint(tool.parameters),
+		...(tool.promptSnippet === undefined ? {} : { prompt_snippet: safeManifestValue(tool.promptSnippet),
+			prompt_snippet_fingerprint: manifestValueFingerprint(tool.promptSnippet) }),
+		...(tool.promptGuidelines === undefined ? {} : { prompt_guidelines: safeManifestValue(tool.promptGuidelines),
+			prompt_guidelines_fingerprint: manifestValueFingerprint(tool.promptGuidelines) }),
+	});
+}
+
+function coreDefinitionManifest(tool: Pick<ToolInfo, "name"> & Partial<ToolInfo>): TelemetryManifest {
+	return createManifest("tool_definition", {
+		name: tool.name,
+		...(tool.description === undefined ? {} : { description: safeManifestValue(tool.description),
+			description_fingerprint: manifestValueFingerprint(tool.description) }),
+		...(tool.parameters === undefined ? {} : { parameters: safeManifestValue(tool.parameters),
+			parameters_fingerprint: manifestValueFingerprint(tool.parameters) }),
+		...(tool.promptGuidelines === undefined ? {} : { prompt_guidelines: safeManifestValue(tool.promptGuidelines),
+			prompt_guidelines_fingerprint: manifestValueFingerprint(tool.promptGuidelines) }),
+	});
+}
+
+function modelDefinitionValue(tool: {
+	name: string;
+	description?: unknown;
+	parameters?: unknown;
+	promptSnippet?: unknown;
+	promptGuidelines?: unknown;
+}): unknown {
+	return {
+		name: tool.name,
+		...(tool.description === undefined ? {} : { description: tool.description }),
+		...(tool.parameters === undefined ? {} : { parameters: tool.parameters }),
+		...(tool.promptSnippet === undefined ? {} : { promptSnippet: tool.promptSnippet }),
+		...(tool.promptGuidelines === undefined ? {} : { promptGuidelines: tool.promptGuidelines }),
+	};
+}
+
+function instrumentationManifest<TParams, TDetails>(
+	toolName: string,
+	telemetry: ToolTelemetryAdapter<TParams, TDetails>,
+	entrypoints: readonly string[],
+): TelemetryManifest {
+	return createManifest("tool_instrumentation", {
+		tool_name: toolName,
+		sources: sourceDescriptors(entrypoints),
+		capabilities: {
+			requested_projection: telemetry.projectRequested !== undefined,
+			executed_projection: true,
+			result_observation: true,
 		},
 	});
 }
 
-export function computeToolDefinitionHash(tool: Pick<ToolInfo, "name"> & Partial<ToolInfo>): string {
-	return stableHash({
-		format: HASH_FORMAT,
-		name: tool.name,
-		description: tool.description,
-		parameters: tool.parameters,
-		promptGuidelines: tool.promptGuidelines,
-	});
-}
-
-function behaviorDefinition<TParams extends TSchema, TDetails, TState>(tool: ToolDefinition<TParams, TDetails, TState>): unknown {
-	return {
-		name: tool.name,
-		description: tool.description,
-		promptSnippet: tool.promptSnippet,
-		promptGuidelines: tool.promptGuidelines,
-		parameters: tool.parameters,
-		executionMode: tool.executionMode,
-		execute: String(tool.execute),
-	};
-}
-
-function sourceGraph(entrypoints: readonly string[]): Array<{ path: string; sha256: string }> {
-	const pending = entrypoints.map((entry) => path.resolve(ROOT, entry));
-	const visited = new Set<string>();
-	const files: Array<{ path: string; sha256: string }> = [];
-	while (pending.length > 0) {
-		const file = pending.pop();
-		if (file === undefined || visited.has(file)) continue;
-		visited.add(file);
-		if (!isFileInsideRoot(file)) throw new Error(`Invalid telemetry identity entrypoint: ${path.relative(ROOT, file)}`);
-		const content = readFileSync(file, "utf8");
-		files.push({ path: relativePath(file), sha256: sha256(content) });
-		for (const specifier of relativeImports(content)) {
-			const resolved = resolveSourceImport(file, specifier);
-			if (resolved !== undefined && !visited.has(resolved)) pending.push(resolved);
-		}
-	}
-	return files.sort((left, right) => left.path.localeCompare(right.path));
-}
-
-function relativeImports(content: string): string[] {
-	const imports: string[] = [];
-	for (const match of content.matchAll(IMPORT_PATTERN)) {
-		const specifier = match[1] ?? match[2];
-		if (specifier !== undefined) imports.push(specifier);
-	}
-	return imports;
-}
-
-function resolveSourceImport(importer: string, specifier: string): string | undefined {
-	const base = path.resolve(path.dirname(importer), specifier);
-	const extension = path.extname(base);
-	const candidates = extension === ".js" || extension === ".mjs" || extension === ".cjs"
-		? [base.slice(0, -extension.length) + ".ts", base.slice(0, -extension.length) + ".tsx"]
-		: extension.length > 0 ? [base] : [base + ".ts", base + ".tsx", path.join(base, "index.ts")];
-	return candidates.find(isFileInsideRoot);
-}
-
-function isFileInsideRoot(file: string): boolean {
-	const relative = path.relative(ROOT, file);
-	if (relative.startsWith("..") || path.isAbsolute(relative) || !existsSync(file)) return false;
-	return statSync(file).isFile();
+function sourceDescriptors(entrypoints: readonly string[]): JsonObject {
+	return sourceBundleDescriptor(entrypoints);
 }
 
 let cachedPiVersion: string | undefined;
@@ -184,14 +232,6 @@ export function piVersion(): string {
 		cachedPiVersion = "unknown";
 	}
 	return cachedPiVersion ?? "unknown";
-}
-
-function relativePath(file: string): string {
-	return path.relative(ROOT, file).replace(/\\/gu, "/");
-}
-
-function sha256(value: string): string {
-	return createHash("sha256").update(value).digest("hex");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

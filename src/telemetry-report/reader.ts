@@ -13,6 +13,7 @@ import type {
 	DecodeContext,
 	DecodedRecord,
 	TelemetryReadResult,
+	TokenEstimate,
 	ToolIdentityDimensions,
 } from "./model.js";
 
@@ -33,6 +34,7 @@ export function readTelemetryRecord(value: unknown, fallback: DecodeContext): Te
 		] };
 	}
 	const issues: string[] = [];
+	validateEnvelope(value, issues);
 	let record: DecodedRecord | undefined;
 	switch (event) {
 		case "session_start":
@@ -48,7 +50,7 @@ export function readTelemetryRecord(value: unknown, fallback: DecodeContext): Te
 			record = decodeTurnEnd(value, issues);
 			break;
 		case "tool_call_start":
-			record = decodeCallStart(value, issues);
+			record = decodeCallStart(value, fallback.cwd, issues);
 			break;
 		case "tool_call_end":
 			record = decodeToolCall(value, fallback.cwd, issues);
@@ -57,7 +59,7 @@ export function readTelemetryRecord(value: unknown, fallback: DecodeContext): Te
 			record = decodeCollectionHealth(value, sessionId, issues);
 			break;
 		case "tool_execution_start":
-			record = { event: "ignored" };
+			record = decodeExecutionStart(value, fallback.cwd, issues);
 			break;
 		default:
 			return { status: "unknown_event", event, raw: value };
@@ -82,7 +84,8 @@ function decodeTurnStart(record: Record<string, unknown>, fallbackCwd: string, i
 			...(context.branch === undefined ? {} : { branch_lineage: context.branch.lineage_hash }),
 			...optionalCount(data["turn_index"], "turn_index", issues),
 			...optionalTimestamp(record["timestamp"], "started_at", issues),
-			exposures: exposures(data["tools"], issues),
+				exposures: exposures(data["tools"], issues),
+				repo_map: repoMap(data["repo_map"], issues),
 			missing_start_ids: [],
 			missing_end_ids: [],
 		},
@@ -105,16 +108,62 @@ function decodeTurnEnd(record: Record<string, unknown>, issues: string[]): Decod
 			...optionalCount(data["observed_end_count"], "observed_end_count", issues),
 			...optionalCount(data["unfinished_call_count"], "unfinished_call_count", issues),
 			...optionalCount(data["projection_failure_count"], "projection_failure_count", issues),
+			...optionalCount(data["projection_limit_count"], "projection_limit_count", issues),
 			missing_start_ids: stringArray(data["missing_start_ids"], "invalid_missing_start_ids", issues),
-			missing_end_ids: stringArray(data["missing_end_ids"], "invalid_missing_end_ids", issues),
+				missing_end_ids: stringArray(data["missing_end_ids"], "invalid_missing_end_ids", issues),
+				repo_map: { enabled: false },
 		},
 	};
 }
 
-function decodeCallStart(record: Record<string, unknown>, issues: string[]): DecodedRecord | undefined {
+function decodeCallStart(record: Record<string, unknown>, fallbackCwd: string, issues: string[]): DecodedRecord | undefined {
 	const turnId = requiredText(record["turn_id"], "missing_turn_id", issues);
 	const callId = requiredText(record["tool_call_id"], "missing_tool_call_id", issues);
-	return turnId === undefined || callId === undefined ? undefined : { event: "tool_call_start", turn_id: turnId, tool_call_id: callId };
+	const sequence = requiredInteger(record["sequence"], "missing_sequence", issues);
+	const runId = runIdentity(record, issues);
+	const data = object(record["data"], "invalid_data", issues);
+	const tool = object(data["tool"], "invalid_tool", issues);
+	const toolName = requiredText(tool["name"], "missing_tool_name", issues);
+	if (turnId === undefined || callId === undefined || sequence === undefined || toolName === undefined) return undefined;
+	const identity = identityDimensions(tool["identity"], issues);
+	const context = decodeContext(record, fallbackCwd, issues);
+	const input = optionalObject(data["input"], "invalid_input", issues);
+	const requested = input["requested"] === undefined ? undefined : projection(input["requested"], "requested", context.project, issues);
+	return { event: "tool_call_fragment", call: {
+		phase: "start", run_id: runId, turn_id: turnId, ...optionalCount(data["turn_index"], "turn_index", issues), sequence,
+		tool_call_id: callId, tool_name: toolName, identity,
+		context,
+		timing: { ...optionalTimestamp(record["timestamp"], "call_started_at", issues), ...optionalTimestamp(record["timestamp"], "event_at", issues) },
+		slice_id: sliceId(toolName, identity.behavior_hash, identity.instrumentation_hash, identity.config_hash),
+		...(requested === undefined ? {} : { requested_input: requested.value, requested_references: requested.references }),
+		...optionalBooleanField(data["projection_failed"], "projection_failed", "invalid_projection_failed", issues),
+		...optionalBooleanField(data["projection_limited"], "projection_limited", "invalid_projection_limited", issues),
+	} };
+}
+
+function decodeExecutionStart(record: Record<string, unknown>, fallbackCwd: string, issues: string[]): DecodedRecord | undefined {
+	const base = decodeCallStart(record, fallbackCwd, issues);
+	if (base?.event !== "tool_call_fragment") return base;
+	const data = object(record["data"], "invalid_data", issues);
+	const input = object(data["input"], "invalid_input", issues);
+	const requested = projection(input["requested"], "requested", base.call.context.project, issues);
+	const executed = projection(input["executed"], "executed", base.call.context.project, issues);
+	const preparation = optionalObject(data["preparation"], "invalid_preparation", issues);
+		const approval = optionalObject(data["approval"], "invalid_approval", issues);
+	return { event: "tool_call_fragment", call: {
+		...base.call,
+		phase: "execution_start",
+		timing: { ...optionalTimestamp(record["timestamp"], "event_at", issues), ...optionalTimestamp(record["timestamp"], "execution_started_at", issues) },
+		requested_input: requested.value, requested_references: requested.references,
+		executed_input: executed.value, executed_references: executed.references,
+		...optionalText(preparation["status"], "preparation_status", "invalid_preparation_status", issues),
+		repair_operations: stringArray(preparation["operations"], "invalid_repair_operations", issues),
+			...optionalText(approval["outcome"], "approval_outcome", "invalid_approval_outcome", issues),
+			...optionalText(approval["decision"], "approval_decision", "invalid_approval_decision", issues),
+			...optionalNumberField(approval["wait_ms"], "approval_wait_ms", "invalid_approval_wait_ms", issues),
+			...optionalBooleanField(data["projection_failed"], "projection_failed", "invalid_projection_failed", issues),
+			...optionalBooleanField(data["projection_limited"], "projection_limited", "invalid_projection_limited", issues),
+	} };
 }
 
 function decodeCollectionHealth(record: Record<string, unknown>, sessionId: string, issues: string[]): DecodedRecord | undefined {
@@ -135,6 +184,7 @@ function decodeToolCall(record: Record<string, unknown>, fallbackCwd: string, is
 	const turnId = requiredText(record["turn_id"], "missing_turn_id", issues);
 	const callId = requiredText(record["tool_call_id"], "missing_tool_call_id", issues);
 	const sequence = requiredInteger(record["sequence"], "missing_sequence", issues);
+	const runId = runIdentity(record, issues);
 	const data = object(record["data"], "invalid_data", issues);
 	const tool = object(data["tool"], "invalid_tool", issues);
 	const toolName = requiredText(tool["name"], "missing_tool_name", issues);
@@ -160,21 +210,25 @@ function decodeToolCall(record: Record<string, unknown>, fallbackCwd: string, is
 	if (result["outcome"] === undefined) issues.push("missing_outcome");
 	const duration = optionalFinite(timing["execution_duration_ms"], "invalid_execution_duration_ms", issues)
 		?? optionalFinite(execution["duration_ms"], "invalid_duration_ms", issues);
+	const callDuration = optionalFinite(timing["call_duration_ms"], "invalid_call_duration_ms", issues);
 	const call: CanonicalCallDraft = {
+		run_id: runId,
 		turn_id: turnId,
 		...optionalCount(data["turn_index"], "turn_index", issues),
 		sequence,
 		tool_call_id: callId,
 		tool_name: toolName,
-		slice_id: sliceId(toolName, identity.behavior_hash, identity.instrumentation_hash),
+		slice_id: sliceId(toolName, identity.behavior_hash, identity.instrumentation_hash, identity.config_hash),
 		identity,
+		phase: "ended",
+		terminal_status: outcome === "blocked" ? "blocked" : outcome === "validation_error" ? "validation_failed" : "completed",
 		context,
 		timing: {
 			...optionalTimestamp(record["timestamp"], "event_at", issues),
 			...timestampField(timing["call_started_at"], "call_started_at", issues),
 			...timestampField(timing["execution_started_at"], "execution_started_at", issues),
 			...timestampField(timing["execution_ended_at"], "execution_ended_at", issues),
-			...optionalNumberField(timing["call_duration_ms"], "call_duration_ms", "invalid_call_duration_ms", issues),
+			...(callDuration === undefined ? {} : { call_duration_ms: callDuration }),
 			...(duration === undefined ? {} : { execution_duration_ms: duration }),
 		},
 		requested_input: requested.value,
@@ -186,6 +240,7 @@ function decodeToolCall(record: Record<string, unknown>, fallbackCwd: string, is
 			tool: toolName,
 			behavior: identity.behavior_hash,
 			instrumentation: identity.instrumentation_hash,
+			config: identity.config_hash,
 			input: selected.value,
 			references: selected.references.map((reference) => ({
 				relation: reference.relation,
@@ -198,20 +253,28 @@ function decodeToolCall(record: Record<string, unknown>, fallbackCwd: string, is
 		...(ok === undefined ? {} : { ok }),
 		outcome,
 		...optionalText(error["code"], "error_code", "invalid_error_code", issues),
-		...optionalNumberField(estimatedTokens["value"], "output_tokens", "invalid_output_tokens", issues),
+		...tokenEstimateField(estimatedTokens, "output_tokens", issues),
 		...optionalBooleanField(output["truncated"], "output_truncated", "invalid_output_truncated", issues),
-		...(duration === undefined ? {} : { duration_ms: duration }),
+		...(callDuration === undefined ? {} : { duration_ms: callDuration }),
 		...optionalText(preparation["status"], "preparation_status", "invalid_preparation_status", issues),
 		repair_operations: stringArray(preparation["operations"], "invalid_repair_operations", issues),
 		...optionalText(approval["outcome"], "approval_outcome", "invalid_approval_outcome", issues),
+		...optionalText(approval["decision"], "approval_decision", "invalid_approval_decision", issues),
 		...optionalNumberField(approval["wait_ms"], "approval_wait_ms", "invalid_approval_wait_ms", issues),
 		...optionalBooleanField(annotations["projection_failed"], "projection_failed", "invalid_projection_failed", issues),
+		...optionalBooleanField(annotations["projection_limited"], "projection_limited", "invalid_projection_limited", issues),
 		candidates: resultReferences.filter((reference): reference is CanonicalCandidate =>
 			reference.relation === "candidate" && reference.global_rank !== undefined && reference.group !== undefined),
 		result_references: resultReferences,
 		metrics: metricRecord(result["metrics"], issues),
+		...jsonObjectField(result["attributes"], "attributes", "invalid_attributes", issues),
+		measurements: measurements(result["measurements"], "measurements", issues),
+		stages: stages(result["stages"], issues),
 	};
-	return { event: "tool_call", call };
+	return { event: "tool_call_fragment", call: {
+		phase: "end", run_id: runId, turn_id: turnId, ...optionalCount(data["turn_index"], "turn_index", issues), sequence,
+		tool_call_id: callId, tool_name: toolName, identity, context, timing: call.timing, slice_id: call.slice_id, completed: call,
+	} };
 }
 
 function decodeContext(record: Record<string, unknown>, fallbackCwd: string, issues: string[]): CanonicalContext {
@@ -223,15 +286,30 @@ function decodeContext(record: Record<string, unknown>, fallbackCwd: string, iss
 	const modelId = optionalValueText(model["id"], "invalid_model_id", issues);
 	const toolset = optionalObject(raw["toolset"], "invalid_context_toolset", issues);
 	const toolsetHash = optionalValueText(toolset["hash"], "invalid_toolset_hash", issues);
+	const workload = optionalObject(raw["workload"], "invalid_context_workload", issues);
+	const workloadPromptHash = optionalValueText(workload["prompt_hash"], "invalid_workload_prompt_hash", issues);
+	const workloadShape = optionalValueText(workload["shape"], "invalid_workload_shape", issues);
+	const workloadTokens = optionalObject(workload["prompt_tokens"], "invalid_workload_prompt_tokens", issues);
+	const workloadTokenEstimate = tokenEstimate(workloadTokens, "workload_prompt_tokens", issues);
+	const workloadPromptChars = optionalFinite(workload["prompt_chars"], "invalid_workload_prompt_chars", issues);
+	const workloadImageCount = optionalFinite(workload["image_count"], "invalid_workload_image_count", issues);
 	const host = optionalObject(raw["host"], "invalid_context_host", issues);
 	const branch = optionalObject(raw["branch"], "invalid_context_branch", issues);
 	const lineage = optionalValueText(branch["lineage_hash"], "invalid_branch_lineage", issues);
 	const batchId = optionalValueText(record["tool_batch_id"], "invalid_tool_batch_id", issues);
 	return {
-		collector_contract: collectorContract(record["collector_contract"] ?? raw["collector_contract"] ?? record["schema_version"], issues),
+		collector_contract_hash: collectorContract(record["collector_contract_hash"], record, issues),
 		...(provider === undefined || modelId === undefined ? {} : { model: { provider, id: modelId } }),
 		...optionalText(raw["thinking_level"], "thinking", "invalid_thinking_level", issues),
 		...(toolsetHash === undefined ? {} : { toolset: { active: stringArray(toolset["active"], "invalid_toolset_active", issues), hash: toolsetHash } }),
+		...(workloadPromptHash === undefined || workloadShape === undefined || workloadTokenEstimate === undefined
+			|| workloadPromptChars === undefined || workloadImageCount === undefined ? {} : { workload: {
+			prompt_hash: workloadPromptHash,
+			shape: workloadShape,
+			prompt_chars: workloadPromptChars,
+			prompt_tokens: workloadTokenEstimate,
+			image_count: workloadImageCount,
+		} }),
 		project,
 		environment: {
 			...optionalText(host["pi_version"], "pi_version", "invalid_pi_version", issues),
@@ -255,27 +333,25 @@ function decodeContext(record: Record<string, unknown>, fallbackCwd: string, iss
 	};
 }
 
-function collectorContract(value: unknown, issues: string[]): string {
-	if (value === undefined || value === null) return "unversioned";
-	if (typeof value === "string" && value.length > 0) return value;
-	if (isRecord(value)) return canonicalJson(value);
-	issues.push("invalid_collector_contract");
-	return "unversioned";
+function collectorContract(value: unknown, record: Record<string, unknown>, issues: string[]): string {
+	if (value === undefined || value === null) {
+		pushIssue(issues, "missing_collector_contract_hash");
+		return `missing:${text(record["id"]) ?? "unknown"}`;
+	}
+	if (typeof value === "string" && /^[a-f0-9]{64}$/iu.test(value)) return value.toLowerCase();
+	pushIssue(issues, "invalid_collector_contract_hash");
+	return `invalid:${text(record["id"]) ?? "unknown"}`;
 }
 
 function identityDimensions(value: unknown, issues: string[]): ToolIdentityDimensions {
 	const raw = object(value, "invalid_tool_identity", issues);
-	const behavior = optionalValueText(raw["behavior_hash"], "invalid_behavior_hash", issues) ?? UNAVAILABLE;
-	const instrumentation = optionalValueText(raw["telemetry_hash"], "invalid_telemetry_hash", issues)
-		?? optionalValueText(raw["instrumentation_hash"], "invalid_instrumentation_hash", issues)
-		?? UNAVAILABLE;
-	if (raw["behavior_hash"] === undefined) issues.push("missing_behavior_hash");
-	if (raw["telemetry_hash"] === undefined && raw["instrumentation_hash"] === undefined) issues.push("missing_instrumentation_hash");
+	const behavior = identityHash(raw["behavior_hash"], "behavior_hash", issues);
+	const instrumentation = identityHash(raw["telemetry_hash"] ?? raw["instrumentation_hash"], "instrumentation_hash", issues);
 	return {
 		behavior_hash: behavior,
 		instrumentation_hash: instrumentation,
-		definition_hash: optionalValueText(raw["definition_hash"], "invalid_definition_hash", issues) ?? UNAVAILABLE,
-		config_hash: optionalValueText(raw["config_hash"], "invalid_config_hash", issues) ?? UNAVAILABLE,
+		definition_hash: identityHash(raw["definition_hash"], "definition_hash", issues),
+		config_hash: identityHash(raw["config_hash"], "config_hash", issues),
 	};
 }
 
@@ -293,7 +369,9 @@ function exposures(value: unknown, issues: string[]): CanonicalToolExposure[] {
 		if (name === undefined) return [];
 		const estimate = optionalObject(item["definition_tokens"], `invalid_definition_tokens_${index}`, issues);
 		const identity = identityDimensions(item, issues);
-		return [{ name, slice_id: sliceId(name, identity.behavior_hash, identity.instrumentation_hash), identity, definition_tokens: optionalFinite(estimate["value"], `invalid_definition_tokens_${index}`, issues) ?? 0 }];
+		const definitionTokens = tokenEstimate(estimate, `definition_tokens_${index}`, issues);
+		return [{ name, slice_id: sliceId(name, identity.behavior_hash, identity.instrumentation_hash, identity.config_hash), identity,
+			...(definitionTokens === undefined ? {} : { definition_tokens: definitionTokens }) }];
 	});
 }
 
@@ -394,13 +472,100 @@ function metricRecord(value: unknown, issues: string[]): Record<string, Canonica
 	return result;
 }
 
+function repoMap(value: unknown, issues: string[]): { enabled: boolean; freshness?: string; map_id?: string } {
+	if (!isRecord(value)) {
+		issues.push("invalid_repo_map");
+		return { enabled: false };
+	}
+	const enabled = optionalBoolean(value["enabled"], "invalid_repo_map_enabled", issues) ?? false;
+	return {
+		enabled,
+		...optionalText(value["freshness"], "freshness", "invalid_repo_map_freshness", issues),
+		...optionalText(value["map_id"], "map_id", "invalid_repo_map_id", issues),
+	};
+}
+
+function runIdentity(record: Record<string, unknown>, issues: string[]): string {
+	const value = text(record["run_id"]);
+	if (value !== undefined) return value;
+	pushIssue(issues, "missing_run_id");
+	return `missing:${text(record["id"]) ?? "unknown"}`;
+}
+
+function validateEnvelope(record: Record<string, unknown>, issues: string[]): void {
+	if (text(record["run_id"]) === undefined) pushIssue(issues, "missing_run_id");
+	if (text(record["stream_id"]) === undefined) pushIssue(issues, "missing_stream_id");
+	if (requiredIntegerValue(record["sequence"]) === undefined) pushIssue(issues, "missing_sequence");
+	if (typeof record["timestamp"] !== "string" || !Number.isFinite(Date.parse(record["timestamp"]))) pushIssue(issues, "invalid_timestamp");
+	if (record["collector_contract_hash"] === undefined) pushIssue(issues, "missing_collector_contract_hash");
+	else if (typeof record["collector_contract_hash"] !== "string" || !/^[a-f0-9]{64}$/iu.test(record["collector_contract_hash"])) {
+		pushIssue(issues, "invalid_collector_contract_hash");
+	}
+}
+
+function requiredIntegerValue(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function pushIssue(issues: string[], issue: string): void {
+	if (!issues.includes(issue)) issues.push(issue);
+}
+
+function jsonObjectField(value: unknown, key: string, issue: string, issues: string[]): Record<string, Record<string, unknown>> {
+	if (value === undefined || value === null) return {};
+	if (!isRecord(value) || !isJsonValue(value)) {
+		issues.push(issue);
+		return {};
+	}
+	return { [key]: value };
+}
+
+function measurements(value: unknown, scope: string, issues: string[]): Array<{ name: string; value: number; unit?: string }> {
+	if (value === undefined || value === null) return [];
+	if (!Array.isArray(value)) {
+		issues.push(`invalid_${scope}`);
+		return [];
+	}
+	return value.flatMap((item, index) => {
+		if (!isRecord(item) || text(item["name"]) === undefined || optionalFinite(item["value"], `invalid_${scope}_${index}`, issues) === undefined) return [];
+		return [{ name: text(item["name"]) as string, value: item["value"] as number,
+			...optionalText(item["unit"], "unit", `invalid_${scope}_unit_${index}`, issues) }];
+	});
+}
+
+function stages(value: unknown, issues: string[]): Array<{ name: string; status?: string; duration_ms?: number; attributes?: Record<string, unknown>; measurements: Array<{ name: string; value: number; unit?: string }> }> {
+	if (value === undefined || value === null) return [];
+	if (!Array.isArray(value)) {
+		issues.push("invalid_stages");
+		return [];
+	}
+	return value.flatMap((item, index) => {
+		if (!isRecord(item) || text(item["name"]) === undefined) {
+			issues.push(`invalid_stage_${index}`);
+			return [];
+		}
+		return [{ name: text(item["name"]) as string,
+			...optionalText(item["status"], "status", `invalid_stage_status_${index}`, issues),
+			...optionalNumberField(item["duration_ms"], "duration_ms", `invalid_stage_duration_${index}`, issues),
+			...jsonObjectField(item["attributes"], "attributes", `invalid_stage_attributes_${index}`, issues),
+			measurements: measurements(item["measurements"], `stage_measurements_${index}`, issues) }];
+	});
+}
+
+function isJsonValue(value: unknown): boolean {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (Array.isArray(value)) return value.every(isJsonValue);
+	return isRecord(value) && Object.values(value).every(isJsonValue);
+}
+
 function normalizeReference(kind: string, value: string, cwd: string): string {
 	if (kind === "url") return normalizeUrlTarget(value) ?? value;
 	return PATH_KINDS.has(kind) ? normalizePathTarget(value, cwd) : value;
 }
 
-export function sliceId(tool: string, behavior: string, instrumentation: string): string {
-	const digest = createHash("sha256").update(canonicalJson({ tool, behavior, instrumentation })).digest("hex").slice(0, 16);
+export function sliceId(tool: string, behavior: string, instrumentation: string, config: string): string {
+	const digest = createHash("sha256").update(canonicalJson({ tool, behavior, instrumentation, config })).digest("hex").slice(0, 16);
 	return `${tool}:${digest}`;
 }
 
@@ -432,6 +597,25 @@ function optionalCount(value: unknown, key: string, issues: string[]): Record<st
 function optionalNumberField(value: unknown, key: string, issue: string, issues: string[]): Record<string, number> {
 	const parsed = optionalFinite(value, issue, issues);
 	return parsed === undefined ? {} : { [key]: parsed };
+}
+
+function tokenEstimate(value: Record<string, unknown>, scope: string, issues: string[]): TokenEstimate | undefined {
+	const amount = optionalFinite(value["value"], `invalid_${scope}_value`, issues);
+	const method = optionalValueText(value["method"], `invalid_${scope}_method`, issues);
+	if (amount === undefined || method === undefined) return undefined;
+	return { value: amount, method };
+}
+
+function tokenEstimateField(value: Record<string, unknown>, key: string, issues: string[]): Partial<Record<string, TokenEstimate>> {
+	const estimate = tokenEstimate(value, key, issues);
+	return estimate === undefined ? {} : { [key]: estimate };
+}
+
+function identityHash(value: unknown, name: string, issues: string[]): string {
+	if (value === UNAVAILABLE) return UNAVAILABLE;
+	if (typeof value === "string" && /^[a-f0-9]{64}$/iu.test(value)) return value.toLowerCase();
+	issues.push(value === undefined ? `missing_${name}` : `invalid_${name}`);
+	return UNAVAILABLE;
 }
 
 function optionalBooleanField(value: unknown, key: string, issue: string, issues: string[]): Record<string, boolean> {

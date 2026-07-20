@@ -13,6 +13,7 @@ Unified analysis query:
   --list-slices               print the slice inventory
   --tool NAME                 select tool (repeatable)
   --slice ID                  select strict slice (repeatable)
+  --config HASH               filter effective config hash
   --latest                    select each tool's latest active slice (default)
   --all-slices                analyze every matching strict slice
   --environment ID            filter platform/arch/mode/pi/node environment
@@ -21,6 +22,11 @@ Unified analysis query:
   --project PATH              filter canonical project cwd
   --collector-contract ID     filter collector contract
   --toolset HASH              filter toolset hash
+  --workload HASH             filter raw-prompt content hash
+  --workload-shape SHAPE      filter workload size/image bucket
+  --repo-map-enabled BOOL     filter repo-map activation (true/false)
+  --repo-map-freshness VALUE  filter repo-map freshness
+  --repo-map-id ID            filter repo-map identity
   --from ISO                  inclusive event time lower bound
   --to ISO                    inclusive event time upper bound
   --baseline SLICE_ID         comparison baseline
@@ -33,6 +39,7 @@ const { generateTelemetryReport } = await loadTypeScript("src/telemetry-report/o
 const query = {
 	...(options.tools.length === 0 ? {} : { tools: options.tools }),
 	...(options.slices.length === 0 ? {} : { slice_ids: options.slices }),
+	...(options.configs.length === 0 ? {} : { config_hashes: options.configs }),
 	latest: options.latest,
 	...(options.environments.length === 0 ? {} : { environments: options.environments }),
 	...(options.models.length === 0 ? {} : { models: options.models }),
@@ -40,6 +47,11 @@ const query = {
 	...(options.projects.length === 0 ? {} : { projects: options.projects.map((value) => path.resolve(value)) }),
 	...(options.contracts.length === 0 ? {} : { collector_contracts: options.contracts }),
 	...(options.toolsets.length === 0 ? {} : { toolset_hashes: options.toolsets }),
+	...(options.workloads.length === 0 ? {} : { workload_hashes: options.workloads }),
+	...(options.workloadShapes.length === 0 ? {} : { workload_shapes: options.workloadShapes }),
+	...(options.repoMapEnabled.length === 0 ? {} : { repo_map_enabled: options.repoMapEnabled }),
+	...(options.repoMapFreshness.length === 0 ? {} : { repo_map_freshnesses: options.repoMapFreshness }),
+	...(options.repoMapIds.length === 0 ? {} : { repo_map_identities: options.repoMapIds }),
 	...(options.from === undefined ? {} : { from: iso(options.from, "--from") }),
 	...(options.to === undefined ? {} : { to: iso(options.to, "--to") }),
 	...(options.baseline === undefined ? {} : { baseline_slice_id: options.baseline }),
@@ -68,14 +80,16 @@ if (options.listSlices) {
 function parseOptions(args) {
 	const options = {
 		help: false, listSlices: false, latest: true, input: undefined, output: undefined, from: undefined, to: undefined,
-		baseline: undefined, candidate: undefined, tools: [], slices: [], environments: [], models: [], thinking: [], projects: [], contracts: [], toolsets: [],
+		baseline: undefined, candidate: undefined, tools: [], slices: [], configs: [], environments: [], models: [], thinking: [], projects: [], contracts: [], toolsets: [], workloads: [], workloadShapes: [], repoMapEnabled: [], repoMapFreshness: [], repoMapIds: [],
 	};
 	const valueFlags = new Map([
 		["--input", "input"], ["--output", "output"], ["--from", "from"], ["--to", "to"], ["--baseline", "baseline"], ["--candidate", "candidate"],
 	]);
 	const repeatFlags = new Map([
-		["--tool", "tools"], ["--slice", "slices"], ["--environment", "environments"], ["--model", "models"], ["--thinking", "thinking"],
+			["--tool", "tools"], ["--slice", "slices"], ["--config", "configs"], ["--environment", "environments"], ["--model", "models"], ["--thinking", "thinking"],
 		["--project", "projects"], ["--collector-contract", "contracts"], ["--toolset", "toolsets"],
+		["--workload", "workloads"], ["--workload-shape", "workloadShapes"],
+		["--repo-map-enabled", "repoMapEnabled"], ["--repo-map-freshness", "repoMapFreshness"], ["--repo-map-id", "repoMapIds"],
 	]);
 	for (let index = 0; index < args.length; index += 1) {
 		const argument = args[index];

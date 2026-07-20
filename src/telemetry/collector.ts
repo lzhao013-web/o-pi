@@ -1,5 +1,6 @@
 import type {
 	AgentStartEvent,
+	BeforeAgentStartEvent,
 	ExtensionAPI,
 	ExtensionContext,
 	SessionShutdownEvent,
@@ -11,9 +12,11 @@ import { randomUUID } from "node:crypto";
 
 import { computeRepoMapActivation } from "../repo-map/activation.js";
 import { countTextTokensSync } from "../token-counter.js";
-import { decodeTelemetryRuntimeEvent, TELEMETRY_RUNTIME_CHANNEL } from "./channel.js";
-import { isObservedTool, piVersion, resolveToolIdentity } from "./identity.js";
-import { readTelemetryJsonlFile, type TelemetryJsonlSnapshot } from "./jsonl-reader.js";
+import { decodeTelemetryRuntimeEvent, TELEMETRY_RUNTIME_CHANNEL, TELEMETRY_RUNTIME_FAILURE_CHANNEL } from "./channel.js";
+import { COLLECTOR_CONTRACT_HASH, COLLECTOR_CONTRACT_MANIFEST } from "./contract.js";
+import { piVersion, projectRequestedInput, resolveToolIdentity, toolDefinitionValue } from "./identity.js";
+import { readTelemetrySessionDirectory, type TelemetryJsonlSnapshot } from "./jsonl-reader.js";
+import { TelemetryManifestStore, type TelemetryManifestSink } from "./manifest.js";
 import { stableHash } from "./projectors.js";
 import { assembleToolCallEndRecord, type ActiveTurn } from "./record.js";
 import { TelemetryCallStore, type ToolCallState } from "./runtime.js";
@@ -27,18 +30,20 @@ import type {
 	TelemetryRecord,
 	ToolExposure,
 	ToolIdentity,
+	WorkloadTelemetry,
 } from "./types.js";
 import {
 	JsonlTelemetryWriter,
-	telemetryHealthFile,
-	telemetrySessionFile,
+	flushEmergencyHealth,
 	type TelemetryWriter,
 	type TelemetryWriterStatus,
+	writeEmergencyHealth,
 } from "./writer.js";
 
 interface ToolExecutionStartData {
 	toolCallId: string;
 	toolName: string;
+	args: unknown;
 }
 
 interface MessageEndData {
@@ -58,8 +63,12 @@ interface CallPlacement extends CallDimensions {
 
 export interface TelemetryCollectorOptions {
 	now?: () => Date;
-	writerFactory?: (sessionId: string) => TelemetryWriter;
+	monotonicNow?: () => number;
+	writerFactory?: (sessionId: string, runId: string) => TelemetryWriter;
 	sessionLoader?: (sessionId: string) => Promise<TelemetryJsonlSnapshot>;
+	manifestStore?: TelemetryManifestSink;
+	identityTimeoutMs?: number;
+	maxLiveRecords?: number;
 }
 
 export interface TelemetryCollectorSnapshot {
@@ -67,6 +76,7 @@ export interface TelemetryCollectorSnapshot {
 	records: readonly unknown[];
 	revision: number;
 	invalidLines: number;
+	omittedRecords: number;
 	lastCompletedTurn?: number;
 	inProgressCalls: number;
 	writer: TelemetryWriterStatus;
@@ -74,11 +84,16 @@ export interface TelemetryCollectorSnapshot {
 
 export class TelemetryCollector {
 	readonly #now: () => Date;
-	readonly #writerFactory: (sessionId: string) => TelemetryWriter;
+	readonly #monotonicNow: () => number;
+	readonly #writerFactory: (sessionId: string, runId: string) => TelemetryWriter;
 	readonly #sessionLoader: (sessionId: string) => Promise<TelemetryJsonlSnapshot>;
+	readonly #manifestStore: TelemetryManifestSink;
+	readonly #identityTimeoutMs: number;
+	readonly #maxLiveRecords: number;
 	readonly #callStore = new TelemetryCallStore();
 	readonly #placements = new Map<string, CallPlacement>();
 	readonly #metricSchemas = new Map<string, string>();
+	#runId = randomUUID();
 	#sessionStore: SessionTelemetryStore | undefined;
 	#writer: TelemetryWriter | undefined;
 	#sessionId: string | undefined;
@@ -87,44 +102,77 @@ export class TelemetryCollector {
 	#sequence = 0;
 	#lastCompletedTurn: number | undefined;
 	#interactionId: string | undefined;
+	#workload: WorkloadTelemetry | undefined;
+	#manifestFailuresReported = 0;
 
 	constructor(options: TelemetryCollectorOptions = {}) {
 		this.#now = options.now ?? (() => new Date());
-		this.#writerFactory = options.writerFactory ?? ((sessionId) => new JsonlTelemetryWriter(sessionId));
-		this.#sessionLoader = options.sessionLoader ?? loadTelemetrySession;
+		this.#monotonicNow = options.monotonicNow ?? (() => performance.now());
+		this.#writerFactory = options.writerFactory ?? ((sessionId, runId) => new JsonlTelemetryWriter(sessionId, { runId }));
+		this.#manifestStore = options.manifestStore ?? new TelemetryManifestStore();
+		this.#identityTimeoutMs = options.identityTimeoutMs ?? 1_000;
+		this.#maxLiveRecords = options.maxLiveRecords ?? 50_000;
+		this.#sessionLoader = options.sessionLoader ?? ((sessionId) => loadTelemetrySession(sessionId, this.#maxLiveRecords));
 	}
 
 	async onSessionStart(event: SessionStartEvent, ctx: ExtensionContext): Promise<void> {
 		try {
-			await this.#writer?.flush();
+			if (this.#writer !== undefined) {
+				try {
+					await withTimeout(this.#writer.flush(), 1_000, "previous telemetry writer flush");
+				} catch (error) {
+					this.recordEmergencyHealth("writer_failure", error);
+				}
+			}
 			const sessionId = ctx.sessionManager.getSessionId();
+			this.#runId = randomUUID();
 			let historical: TelemetryJsonlSnapshot = { records: [], invalidLines: 0 };
 			try {
 				historical = await this.#sessionLoader(sessionId);
-			} catch {
-				// Hydration is diagnostic-only and must not affect the session.
+			} catch (error) {
+				this.recordEmergencyHealth("session_hydration_failure", error, sessionId);
 			}
 			this.#sessionId = sessionId;
-			this.#writer = this.#writerFactory(sessionId);
-			this.#sessionStore = new SessionTelemetryStore(sessionId, historical.records, historical.invalidLines);
-			this.#context = contextFor(ctx, undefined, []);
+			this.#writer = this.#writerFactory(sessionId, this.#runId);
+			this.#manifestStore.append(COLLECTOR_CONTRACT_MANIFEST);
+			await this.#manifestStore.flush();
+			this.#sessionStore = new SessionTelemetryStore(sessionId, historical.records, historical.invalidLines,
+				this.#maxLiveRecords, historical.omittedRecords ?? 0);
+			let contextCaptureFailed = false;
+			this.#context = contextFor(ctx, undefined, [], undefined, () => { contextCaptureFailed = true; });
 			this.#turn = undefined;
 			this.#interactionId = undefined;
+			this.#workload = undefined;
 			this.#placements.clear();
-			this.#metricSchemas.clear();
+			this.hydrateMetricSchemas(historical.records, historical.metricSchemas);
 			this.#callStore.reset();
-			this.#sequence = nextSequence(historical.records, sessionId);
+			this.#sequence = 0;
 			this.#lastCompletedTurn = latestCompletedTurn(historical.records, sessionId);
 			this.append({ event: "session_start", ...this.base(this.#context), data: { reason: event.reason } });
-			this.recordHistoricalHealth(historical);
-		} catch {
-			// Collection must never affect session startup.
+			this.recordManifestFailures();
+			if (contextCaptureFailed) this.health("context_capture_failure");
+			if (this.#sessionStore.snapshot().omittedRecords > 0) this.health("live_store_truncated", { count: this.#sessionStore.snapshot().omittedRecords });
+		} catch (error) {
+			this.recordEmergencyHealth("collector_handler_failure", error);
 		}
 	}
 
 	onAgentStart(_event: AgentStartEvent): void {
 		this.guard(() => {
 			this.#interactionId = randomUUID();
+		});
+	}
+
+	onBeforeAgentStart(event: BeforeAgentStartEvent, ctx: ExtensionContext): void {
+		this.guard(() => {
+			const estimate = countTextTokensSync(event.prompt, modelScope(ctx));
+			this.#workload = {
+				prompt_hash: stableHash(event.prompt),
+				shape: workloadShape(estimate.tokens, event.images?.length ?? 0),
+				prompt_chars: event.prompt.length,
+				prompt_tokens: { value: estimate.tokens, method: estimate.method },
+				image_count: event.images?.length ?? 0,
+			};
 		});
 	}
 
@@ -136,39 +184,53 @@ export class TelemetryCollector {
 		try {
 			const activeTools = [...pi.getActiveTools()].sort();
 			const toolsByName = new Map(pi.getAllTools().map((tool) => [tool.name, tool]));
-			const identities = await Promise.all(activeTools.map(async (name) => [
-				name,
-				await resolveToolIdentity(toolsByName.get(name), name, ctx),
-			] as const));
+			let identityFailures = 0;
+			let configCaptureFailures = 0;
+			const identities = await Promise.all(activeTools.map(async (name) => {
+				try {
+					const resolved = await withTimeout(resolveToolIdentity(toolsByName.get(name), name, ctx), this.#identityTimeoutMs, `identity ${name}`);
+					for (const manifest of resolved.manifests) this.#manifestStore.append(manifest);
+					if (resolved.config_capture_failed) configCaptureFailures += 1;
+					return [name, resolved.identity] as const;
+				} catch {
+					identityFailures += 1;
+					return [name, unavailableIdentity()] as const;
+				}
+			}));
 			const exposures = new Map(identities);
+			await this.#manifestStore.flush();
 			const toolsetValue = activeTools.map((name) => {
 				const tool = toolsByName.get(name);
-				return tool === undefined ? { name } : definitionValue(tool);
+				return toolDefinitionValue(tool, name);
 			});
-			const context = contextFor(ctx, pi.getThinkingLevel(), toolsetValue);
+			let contextCaptureFailed = false;
+			const markContextFailure = () => { contextCaptureFailed = true; };
+			const context = contextFor(ctx, pi.getThinkingLevel(), toolsetValue, this.#workload, markContextFailure);
 			const id = `${this.#sessionId ?? "unknown"}:${event.turnIndex}:${event.timestamp}`;
 			this.#context = context;
 			this.#turn = {
 				id,
 				index: event.turnIndex,
 				startedAt: this.#now().getTime(),
+				startedMonotonic: this.#monotonicNow(),
 				context,
 				exposures,
 				startedCallIds: new Set(),
 				endedCallIds: new Set(),
 				projectionFailureIds: new Set(),
+				projectionLimitedIds: new Set(),
 				...(this.#interactionId === undefined ? {} : { interactionId: this.#interactionId }),
 			};
 			const tools: ToolExposure[] = activeTools.map((name) => {
 				const definition = toolsByName.get(name);
-				const counted = countTextTokensSync(JSON.stringify(definition === undefined ? { name } : definitionValue(definition)), modelScope(ctx));
+				const counted = countTextTokensSync(JSON.stringify(toolDefinitionValue(definition, name)), modelScope(ctx));
 				return {
 					name,
 					...(exposures.get(name) ?? unavailableIdentity()),
-					definition_tokens: { value: counted.tokens, method: counted.method },
+					definition_tokens: { value: counted.tokens, method: `serialized_tool_definition:${counted.method}` },
 				};
 			});
-			const activation = computeRepoMapActivation(safeBranch(ctx));
+			const activation = computeRepoMapActivation(safeBranch(ctx, markContextFailure));
 			this.append({
 				event: "turn_start",
 				...this.base(context),
@@ -182,8 +244,12 @@ export class TelemetryCollector {
 						: { enabled: true, freshness: activation.freshness ?? "fresh", map_id: activation.mapId },
 				},
 			});
-		} catch {
-			// Turn collection failure does not affect model execution.
+			if (identityFailures > 0) this.health("identity_resolution_failure", { count: identityFailures });
+			if (configCaptureFailures > 0) this.health("config_capture_failure", { count: configCaptureFailures });
+			this.recordManifestFailures();
+			if (contextCaptureFailed) this.health("context_capture_failure");
+		} catch (error) {
+			this.recordEmergencyHealth("collector_handler_failure", error);
 		}
 	}
 
@@ -210,9 +276,14 @@ export class TelemetryCollector {
 	onToolExecutionStart(event: ToolExecutionStartData): void {
 		this.guard(() => {
 			const turn = this.requireTurn();
+			if (this.#callStore.get(event.toolCallId) !== undefined) {
+				this.health("runtime_event_drop", { turn, toolCallId: event.toolCallId, details: { reason: "duplicate_tool_call_start" } });
+				return;
+			}
 			const candidatePlacement = this.#placements.get(event.toolCallId);
 			const placement = candidatePlacement?.toolName === event.toolName ? candidatePlacement : undefined;
 			const identity = turn.exposures.get(event.toolName) ?? unavailableIdentity();
+			const requested = projectRequestedInput(event.toolName, identity.telemetry_hash, event.args);
 			const call = this.#callStore.start({
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
@@ -220,6 +291,10 @@ export class TelemetryCollector {
 				turnIndex: turn.index,
 				identity,
 				startedAt: this.#now().getTime(),
+				startedMonotonic: this.#monotonicNow(),
+				requested: requested.value,
+				projectionFailed: requested.failed,
+				projectionLimited: requested.limited,
 				...(placement?.interaction_id === undefined ? {} : { interaction_id: placement.interaction_id }),
 				...(placement?.assistant_message_id === undefined ? {} : { assistant_message_id: placement.assistant_message_id }),
 				...(placement?.tool_batch_id === undefined ? {} : { tool_batch_id: placement.tool_batch_id }),
@@ -233,18 +308,28 @@ export class TelemetryCollector {
 				turn_id: turn.id,
 				tool_call_id: event.toolCallId,
 				...dimensions(call),
-				data: { turn_index: turn.index, tool: { name: event.toolName, identity } },
+				data: { turn_index: turn.index, tool: { name: event.toolName, identity }, input: { requested: requested.value },
+					...(requested.failed ? { projection_failed: true } : {}), ...(requested.limited ? { projection_limited: true } : {}) },
 			});
+			if (call.projectionFailed) this.recordProjectionFailure(call);
+			if (call.projectionLimited) this.recordProjectionLimited(call);
 		});
 	}
 
 	onRuntimeEvent(value: unknown): void {
 		this.guard(() => {
 			const event = decodeTelemetryRuntimeEvent(value);
-			if (event === undefined) return;
+			if (event === undefined) {
+				this.health("runtime_event_drop");
+				return;
+			}
 			const observedAt = this.#now().getTime();
-			const call = this.#callStore.apply(event, observedAt);
-			if (call === undefined) return;
+			const observedMonotonic = this.#monotonicNow();
+			const call = this.#callStore.apply(event, observedAt, observedMonotonic);
+			if (call === undefined) {
+				this.health("runtime_event_drop", { toolCallId: event.tool_call_id, details: { reason: "orphan_or_tool_mismatch", kind: event.kind, tool_name: event.tool_name } });
+				return;
+			}
 			if (event.kind === "execute_start") {
 				this.append({
 					event: "tool_execution_start",
@@ -259,11 +344,27 @@ export class TelemetryCollector {
 						...(call.preparation === undefined ? {} : { preparation: call.preparation }),
 						...(call.approval === undefined ? {} : { approval: call.approval }),
 						...(call.projectionFailed ? { projection_failed: true } : {}),
+						...(call.projectionLimited ? { projection_limited: true } : {}),
 					},
 				});
 			}
 			if (call.projectionFailed) this.recordProjectionFailure(call);
-			if (event.kind === "execute_end" && call.result !== undefined) this.finalizeCall(call, observedAt);
+			if (call.projectionLimited) this.recordProjectionLimited(call);
+			if (event.kind === "execute_end" && call.result !== undefined) this.finalizeCall(call, observedMonotonic);
+		});
+	}
+
+	onRuntimeFailure(value: unknown): void {
+		this.guard(() => {
+			const details = isRecord(value) ? value : {};
+			this.health("runtime_event_drop", {
+				...(typeof details["tool_call_id"] === "string" ? { toolCallId: details["tool_call_id"] } : {}),
+				details: {
+					reason: "runtime_channel_emit_failure",
+					...(typeof details["kind"] === "string" ? { kind: details["kind"] } : {}),
+					...(typeof details["tool_name"] === "string" ? { tool_name: details["tool_name"] } : {}),
+				},
+			});
 		});
 	}
 
@@ -275,9 +376,9 @@ export class TelemetryCollector {
 				isError: event.isError,
 			});
 			if (call === undefined) return;
-			if (!isObservedTool(event.toolName) || call.execute !== undefined || call.preparation?.status === "invalid" || isDenied(call)) {
-				this.finalizeCall(call, this.#now().getTime());
-			}
+			const observed = call.identity.telemetry_hash !== "unavailable";
+			const terminalBeforeExecute = call.preparation?.status === "invalid" || isDenied(call);
+			if (!observed || call.execute !== undefined || terminalBeforeExecute) this.finalizeCall(call, this.#monotonicNow());
 		});
 	}
 
@@ -287,7 +388,12 @@ export class TelemetryCollector {
 			const expectedIds = toolCalls(event).map((call) => call.id);
 			for (const id of expectedIds) {
 				const call = this.#callStore.get(id);
-				if (call?.result !== undefined) this.finalizeCall(call, this.#now().getTime());
+				if (call?.result === undefined) continue;
+				if (call.identity.telemetry_hash !== "unavailable" && call.execute === undefined
+					&& call.preparation?.status !== "invalid" && !isDenied(call)) {
+					this.health("runtime_event_drop", { call, details: { reason: "missing_execute_end" } });
+				}
+				this.finalizeCall(call, this.#monotonicNow());
 			}
 			const missingStartIds = expectedIds.filter((id) => !turn.startedCallIds.has(id));
 			const allCallIds = new Set([...expectedIds, ...turn.startedCallIds]);
@@ -301,12 +407,13 @@ export class TelemetryCollector {
 				...(turn.interactionId === undefined ? {} : { interaction_id: turn.interactionId }),
 				data: {
 					turn_index: turn.index,
-					duration_ms: Math.max(0, this.#now().getTime() - turn.startedAt),
+					duration_ms: Math.max(0, this.#monotonicNow() - turn.startedMonotonic),
 					expected_call_count: expectedIds.length,
 					observed_start_count: turn.startedCallIds.size,
 					observed_end_count: turn.endedCallIds.size,
 					unfinished_call_count: missingEndIds.length,
 					projection_failure_count: turn.projectionFailureIds.size,
+					projection_limit_count: turn.projectionLimitedIds.size,
 					missing_start_ids: missingStartIds,
 					missing_end_ids: missingEndIds,
 				},
@@ -331,9 +438,12 @@ export class TelemetryCollector {
 					unfinished_call_count: this.#callStore.size,
 				},
 			});
+			await this.#manifestStore.flush();
+			this.recordManifestFailures();
 			await this.#writer?.flush();
-		} catch {
-			// Writer failures are deliberately invisible to the agent lifecycle.
+			await flushEmergencyHealth();
+		} catch (error) {
+			this.recordEmergencyHealth("collector_handler_failure", error);
 		} finally {
 			this.#callStore.reset();
 		}
@@ -347,16 +457,17 @@ export class TelemetryCollector {
 			records: session?.records ?? [],
 			revision: session?.revision ?? 0,
 			invalidLines: session?.invalidLines ?? 0,
+			omittedRecords: session?.omittedRecords ?? 0,
 			...(this.#lastCompletedTurn === undefined ? {} : { lastCompletedTurn: this.#lastCompletedTurn }),
 			inProgressCalls: this.#callStore.size,
 			writer,
 		};
 	}
 
-	private finalizeCall(call: ToolCallState, endedAt: number): void {
+	private finalizeCall(call: ToolCallState, endedMonotonic: number): void {
 		if (this.#callStore.get(call.toolCallId) === undefined) return;
 		this.enforceMetricSchemas(call);
-		const record = assembleToolCallEndRecord(this.base(this.contextForCall(call)), call, endedAt);
+		const record = assembleToolCallEndRecord(this.base(this.contextForCall(call)), call, endedMonotonic);
 		this.append(record);
 		this.#turn?.endedCallIds.add(call.toolCallId);
 		this.#callStore.take(call.toolCallId);
@@ -367,12 +478,20 @@ export class TelemetryCollector {
 		if (metrics === undefined) return;
 		for (const [name, metric] of Object.entries(metrics)) {
 			const schema = stableHash({ kind: metric.kind, aggregation: metric.aggregation, unit: "unit" in metric ? metric.unit : null });
-			const previous = this.#metricSchemas.get(name);
-			if (previous === undefined) this.#metricSchemas.set(name, schema);
+			const key = metricSchemaKey(call.toolName, call.identity.telemetry_hash, name);
+			const previous = this.#metricSchemas.get(key);
+			if (previous === undefined) this.#metricSchemas.set(key, schema);
 			else if (previous !== schema) {
-				delete metrics[name];
-				this.health("metric_schema_conflict", { call, details: { metric: name } });
+				this.health("metric_schema_conflict", { call, details: { metric: name, observed_schema: schema, established_schema: previous } });
 			}
+		}
+	}
+
+	private hydrateMetricSchemas(records: readonly unknown[], schemas: readonly { key: string; schema: string }[] = []): void {
+		this.#metricSchemas.clear();
+		for (const schema of schemas) this.#metricSchemas.set(schema.key, schema.schema);
+		for (const record of [...records].sort(compareRecordTime)) {
+			for (const schema of metricSchemasFromRecord(record)) if (!this.#metricSchemas.has(schema.key)) this.#metricSchemas.set(schema.key, schema.schema);
 		}
 	}
 
@@ -383,15 +502,19 @@ export class TelemetryCollector {
 		this.health("projection_failed", { call });
 	}
 
-	private recordHistoricalHealth(snapshot: TelemetryJsonlSnapshot): void {
-		if (snapshot.invalidLines > 0) this.health("invalid_jsonl", { count: snapshot.invalidLines });
-		const sequences = [...new Set(snapshot.records.flatMap((record) => sequenceOf(record, this.#sessionId) ?? []))]
-			.sort((left, right) => left - right);
-		let gaps = sequences.length > 0 && sequences[0] !== 0 ? 1 : 0;
-		for (let index = 1; index < sequences.length; index += 1) {
-			if (sequences[index] !== (sequences[index - 1] ?? -1) + 1) gaps += 1;
-		}
-		if (gaps > 0) this.health("sequence_gap", { count: gaps });
+	private recordProjectionLimited(call: ToolCallState): void {
+		const turn = this.#turn;
+		if (turn?.projectionLimitedIds.has(call.toolCallId) === true) return;
+		turn?.projectionLimitedIds.add(call.toolCallId);
+		this.health("projection_limited", { call });
+	}
+
+	private recordManifestFailures(): void {
+		const failed = this.#manifestStore.status().failed;
+		const newFailures = failed - this.#manifestFailuresReported;
+		if (newFailures <= 0) return;
+		this.#manifestFailuresReported = failed;
+		this.health("manifest_write_failure", { count: newFailures });
 	}
 
 	private health(
@@ -422,11 +545,13 @@ export class TelemetryCollector {
 			id,
 			index,
 			startedAt: this.#now().getTime(),
+			startedMonotonic: this.#monotonicNow(),
 			context: this.#context,
 			exposures: new Map(),
 			startedCallIds: new Set(),
 			endedCallIds: new Set(),
 			projectionFailureIds: new Set(),
+			projectionLimitedIds: new Set(),
 		};
 		return this.#turn;
 	}
@@ -440,6 +565,9 @@ export class TelemetryCollector {
 			id: randomUUID(),
 			timestamp: this.#now().toISOString(),
 			session_id: this.#sessionId ?? "unknown",
+			run_id: this.#runId,
+			stream_id: "main",
+			collector_contract_hash: COLLECTOR_CONTRACT_HASH,
 			sequence: this.#sequence++,
 			context,
 		};
@@ -449,32 +577,54 @@ export class TelemetryCollector {
 		this.#sessionStore?.append(record);
 		try {
 			this.#writer?.append(record);
-		} catch {
-			// Custom writers share the same best-effort boundary as the JSONL writer.
+		} catch (error) {
+			writeEmergencyHealth({ sessionId: record.session_id, runId: record.run_id,
+				collectorContractHash: record.collector_contract_hash, issue: "writer_failure", error });
 		}
 	}
 
 	private guard(action: () => void): void {
 		try {
 			action();
+		} catch (error) {
+			this.recordEmergencyHealth("collector_handler_failure", error);
+		}
+	}
+
+	private recordEmergencyHealth(issue: CollectionHealthIssue, error: unknown, sessionId = this.#sessionId): void {
+		try {
+			if (sessionId === undefined) return;
+			if (this.#writer === undefined) {
+				writeEmergencyHealth({ sessionId, runId: this.#runId, collectorContractHash: COLLECTOR_CONTRACT_HASH, issue, error });
+				return;
+			}
+			const details: JsonObject = { error_name: error instanceof Error ? error.name : "unknown" };
+			this.health(issue, { details });
 		} catch {
-			// Collection must never affect Pi event handling.
+			// The writer itself retains a sidecar fallback for append failures.
 		}
 	}
 }
 
-function contextFor(ctx: ExtensionContext, thinkingLevel: string | undefined, toolset: unknown[]): TelemetryContext {
+function contextFor(
+	ctx: ExtensionContext,
+	thinkingLevel: string | undefined,
+	toolset: unknown[],
+	workload: WorkloadTelemetry | undefined,
+	onFailure?: () => void,
+): TelemetryContext {
 	const active = toolset.map((item) => isRecord(item) && typeof item["name"] === "string" ? item["name"] : "unknown");
-	const branch = safeBranch(ctx);
-	const leafId = safeLeafId(ctx);
+	const branch = safeBranch(ctx, onFailure);
+	const leafId = safeLeafId(ctx, onFailure);
 	return {
 		cwd: ctx.cwd,
 		...(ctx.model === undefined ? {} : { model: { provider: ctx.model.provider, id: ctx.model.id } }),
 		...(thinkingLevel === undefined ? {} : { thinking_level: thinkingLevel }),
 		toolset: { active, hash: stableHash(toolset) },
+		...(workload === undefined ? {} : { workload }),
 		host: {
 			pi_version: piVersion(),
-		...(ctx.mode === undefined ? {} : { mode: ctx.mode }),
+			...(ctx.mode === undefined ? {} : { mode: ctx.mode }),
 			platform: process.platform,
 			arch: process.arch,
 			node_version: process.version,
@@ -496,15 +646,6 @@ function hostContext(cwd: string): TelemetryContext {
 			arch: process.arch,
 			node_version: process.version,
 		},
-	};
-}
-
-function definitionValue(tool: ReturnType<ExtensionAPI["getAllTools"]>[number]) {
-	return {
-		name: tool.name,
-		description: tool.description,
-		parameters: tool.parameters,
-		...(tool.promptGuidelines === undefined ? {} : { promptGuidelines: tool.promptGuidelines }),
 	};
 }
 
@@ -532,32 +673,19 @@ function unavailableIdentity(): ToolIdentity {
 }
 
 function emptyWriterStatus(): TelemetryWriterStatus {
-	return { pending: 0, persisted: 0, failed: 0, health_persisted: 0, health_failed: 0 };
-}
-
-function nextSequence(records: readonly unknown[], sessionId: string): number {
-	let maximum = -1;
-	for (const record of records) {
-		const sequence = sequenceOf(record, sessionId);
-		if (sequence !== undefined) maximum = Math.max(maximum, sequence);
-	}
-	return maximum + 1;
-}
-
-function sequenceOf(record: unknown, sessionId: string | undefined): number | undefined {
-	if (!isRecord(record) || record["session_id"] !== sessionId) return undefined;
-	const sequence = record["sequence"];
-	return typeof sequence === "number" && Number.isInteger(sequence) ? sequence : undefined;
+	return { pending: 0, persisted: 0, failed: 0, health_persisted: 0, health_failed: 0, dropped: 0 };
 }
 
 function latestCompletedTurn(records: readonly unknown[], sessionId: string): number | undefined {
-	let latest: number | undefined;
+	let latest: { index: number; timestamp: string } | undefined;
 	for (const record of records) {
 		if (!isRecord(record) || record["session_id"] !== sessionId || record["event"] !== "turn_end") continue;
 		const data = record["data"];
-		if (isRecord(data) && typeof data["turn_index"] === "number") latest = data["turn_index"];
+		if (!isRecord(data) || typeof data["turn_index"] !== "number") continue;
+		const timestamp = typeof record["timestamp"] === "string" ? record["timestamp"] : "";
+		if (latest === undefined || timestamp > latest.timestamp) latest = { index: data["turn_index"], timestamp };
 	}
-	return latest;
+	return latest?.index;
 }
 
 function toolCalls(event: TurnEndEvent): Array<{ id: string; name: string }> {
@@ -572,18 +700,20 @@ function isDenied(call: ToolCallState): boolean {
 		|| call.approval?.outcome === "dismissed";
 }
 
-function safeBranch(ctx: ExtensionContext): ReturnType<ExtensionContext["sessionManager"]["getBranch"]> {
+function safeBranch(ctx: ExtensionContext, onFailure?: () => void): ReturnType<ExtensionContext["sessionManager"]["getBranch"]> {
 	try {
 		return typeof ctx.sessionManager.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
 	} catch {
+		onFailure?.();
 		return [];
 	}
 }
 
-function safeLeafId(ctx: ExtensionContext): string | null {
+function safeLeafId(ctx: ExtensionContext, onFailure?: () => void): string | null {
 	try {
 		return typeof ctx.sessionManager.getLeafId === "function" ? ctx.sessionManager.getLeafId() : null;
 	} catch {
+		onFailure?.();
 		return null;
 	}
 }
@@ -592,15 +722,51 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function loadTelemetrySession(sessionId: string): Promise<TelemetryJsonlSnapshot> {
-	const [events, health] = await Promise.all([
-		readTelemetryJsonlFile(telemetrySessionFile(sessionId)),
-		readTelemetryJsonlFile(telemetryHealthFile(sessionId)),
-	]);
+async function loadTelemetrySession(sessionId: string, maxRecords: number): Promise<TelemetryJsonlSnapshot> {
+	const schemas = new Map<string, { key: string; schema: string; timestamp: string }>();
+	const snapshot = await readTelemetrySessionDirectory(sessionId, { maxRecords, onRecord(record) {
+		if (!isRecord(record) || record["session_id"] !== sessionId) return;
+		for (const schema of metricSchemasFromRecord(record)) {
+			const existing = schemas.get(schema.key);
+			if (existing === undefined || schema.timestamp < existing.timestamp) schemas.set(schema.key, schema);
+		}
+	} });
 	return {
-		records: [...events.records, ...health.records],
-		invalidLines: events.invalidLines + health.invalidLines,
+		records: snapshot.records.filter((record) => isRecord(record) && record["session_id"] === sessionId),
+		invalidLines: snapshot.invalidLines,
+		...(snapshot.omittedRecords === undefined ? {} : { omittedRecords: snapshot.omittedRecords }),
+		metricSchemas: [...schemas.values()],
 	};
+}
+
+function compareRecordTime(left: unknown, right: unknown): number {
+	const leftTime = isRecord(left) && typeof left["timestamp"] === "string" ? left["timestamp"] : "";
+	const rightTime = isRecord(right) && typeof right["timestamp"] === "string" ? right["timestamp"] : "";
+	return leftTime < rightTime ? -1 : leftTime > rightTime ? 1 : 0;
+}
+
+function metricSchemaKey(toolName: string, instrumentationHash: string, metricName: string): string {
+	return `${toolName}\0${instrumentationHash}\0${metricName}`;
+}
+
+function metricSchemasFromRecord(record: unknown): Array<{ key: string; schema: string; timestamp: string }> {
+	if (!isRecord(record) || record["event"] !== "tool_call_end") return [];
+	const data = record["data"];
+	if (!isRecord(data)) return [];
+	const tool = data["tool"];
+	const result = data["result"];
+	if (!isRecord(tool) || !isRecord(result) || typeof tool["name"] !== "string") return [];
+	const identity = tool["identity"];
+	const metrics = result["metrics"];
+	if (!isRecord(identity) || !isRecord(metrics) || typeof identity["telemetry_hash"] !== "string") return [];
+	const toolName = tool["name"];
+	const instrumentationHash = identity["telemetry_hash"];
+	const timestamp = typeof record["timestamp"] === "string" ? record["timestamp"] : "";
+	return Object.entries(metrics).flatMap(([name, metric]) => !isRecord(metric) ? [] : [{
+		key: metricSchemaKey(toolName, instrumentationHash, name),
+		schema: stableHash({ kind: metric["kind"], aggregation: metric["aggregation"], unit: metric["unit"] ?? null }),
+		timestamp,
+	}]);
 }
 
 export function registerTelemetry(
@@ -609,7 +775,9 @@ export function registerTelemetry(
 ): TelemetryCollector {
 	const collector = new TelemetryCollector(options);
 	const disposeRuntime = pi.events.on(TELEMETRY_RUNTIME_CHANNEL, (value) => collector.onRuntimeEvent(value));
+	const disposeRuntimeFailure = pi.events.on(TELEMETRY_RUNTIME_FAILURE_CHANNEL, (value) => collector.onRuntimeFailure(value));
 	pi.on("session_start", (event, ctx) => collector.onSessionStart(event, ctx));
+	pi.on("before_agent_start", (event, ctx) => collector.onBeforeAgentStart(event, ctx));
 	pi.on("agent_start", (event) => collector.onAgentStart(event));
 	pi.on("turn_start", (event, ctx) => collector.onTurnStart(event, ctx, pi));
 	pi.on("message_end", (event) => collector.onMessageEnd(event));
@@ -618,7 +786,28 @@ export function registerTelemetry(
 	pi.on("turn_end", (event) => collector.onTurnEnd(event));
 	pi.on("session_shutdown", async (event) => {
 		await collector.onSessionShutdown(event);
-		if (event.reason === "reload" || event.reason === "quit") disposeRuntime();
+		if (event.reason === "reload" || event.reason === "quit") {
+			disposeRuntime();
+			disposeRuntimeFailure();
+		}
 	});
 	return collector;
+}
+
+function workloadShape(tokens: number, images: number): string {
+	const tokenBucket = tokens <= 64 ? "xs" : tokens <= 256 ? "s" : tokens <= 1024 ? "m" : tokens <= 4096 ? "l" : "xl";
+	const imageBucket = images === 0 ? "no_image" : images === 1 ? "one_image" : "multi_image";
+	return `${tokenBucket}:${imageBucket}`;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs); }),
+		]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
 }

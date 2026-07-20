@@ -45,10 +45,12 @@ export interface CanonicalEnvironment {
 }
 
 export interface CanonicalContext {
-	collector_contract: string;
+	collector_contract_hash: string;
+	repo_map?: { enabled: boolean; freshness?: string; map_id?: string };
 	model?: { provider: string; id: string };
 	thinking?: string;
 	toolset?: { active: string[]; hash: string };
+	workload?: { prompt_hash: string; shape: string; prompt_chars: number; prompt_tokens: TokenEstimate; image_count: number };
 	project: string;
 	environment: CanonicalEnvironment;
 	interaction?: string;
@@ -73,14 +75,22 @@ export interface ToolIdentityDimensions {
 	config_hash: string;
 }
 
+export interface TokenEstimate {
+	value: number;
+	method: string;
+}
+
 export interface CanonicalCall {
 	session_id: string;
+	run_id: string;
 	turn_id: string;
 	turn_index?: number;
 	sequence: number;
 	order: number;
 	tool_call_id: string;
 	tool_name: string;
+	phase: "declared" | "executing" | "ended";
+	terminal_status: "completed" | "blocked" | "validation_failed" | "unfinished";
 	slice_id: string;
 	identity: ToolIdentityDimensions;
 	context: CanonicalContext;
@@ -95,18 +105,23 @@ export interface CanonicalCall {
 	ok?: boolean;
 	outcome: string;
 	error_code?: string;
-	output_tokens?: number;
+	output_tokens?: TokenEstimate;
 	output_truncated?: boolean;
 	duration_ms?: number;
-	definition_tokens: number;
+	definition_tokens?: TokenEstimate;
 	preparation_status?: string;
 	repair_operations: string[];
 	approval_outcome?: string;
+	approval_decision?: string;
 	approval_wait_ms?: number;
 	projection_failed?: boolean;
+	projection_limited?: boolean;
 	candidates: CanonicalCandidate[];
 	result_references: CanonicalReference[];
 	metrics: Record<string, CanonicalMetric>;
+	attributes?: Record<string, unknown>;
+	measurements: Array<{ name: string; value: number; unit?: string }>;
+	stages: Array<{ name: string; status?: string; duration_ms?: number; attributes?: Record<string, unknown>; measurements: Array<{ name: string; value: number; unit?: string }> }>;
 	decode_status: "known" | "partial";
 	decode_issues: string[];
 }
@@ -115,7 +130,7 @@ export interface CanonicalToolExposure {
 	name: string;
 	slice_id: string;
 	identity: ToolIdentityDimensions;
-	definition_tokens: number;
+	definition_tokens?: TokenEstimate;
 }
 
 export interface CanonicalTurn {
@@ -133,14 +148,18 @@ export interface CanonicalTurn {
 	observed_end_count?: number;
 	unfinished_call_count?: number;
 	projection_failure_count?: number;
+	projection_limit_count?: number;
 	missing_start_ids: string[];
 	missing_end_ids: string[];
+	repo_map: { enabled: boolean; freshness?: string; map_id?: string };
 }
 
 export interface CanonicalEvent {
 	id: string;
 	event: string;
 	session_id: string;
+	run_id?: string;
+	stream_id?: string;
 	sequence?: number;
 	timestamp?: string;
 	turn_id?: string;
@@ -183,13 +202,38 @@ export interface DecodeContext {
 
 export type CanonicalCallDraft = Omit<CanonicalCall, "session_id" | "order" | "definition_tokens" | "decode_status" | "decode_issues">;
 
+export interface CanonicalCallFragment {
+	phase: "start" | "execution_start" | "end";
+	run_id: string;
+	turn_id: string;
+	turn_index?: number;
+	sequence: number;
+	tool_call_id: string;
+	tool_name: string;
+	identity: ToolIdentityDimensions;
+	context: CanonicalContext;
+	timing: CanonicalTiming;
+	slice_id: string;
+	requested_input?: Record<string, unknown>;
+	requested_references?: CanonicalReference[];
+	executed_input?: Record<string, unknown>;
+	executed_references?: CanonicalReference[];
+	preparation_status?: string;
+	repair_operations?: string[];
+	approval_outcome?: string;
+	approval_decision?: string;
+	approval_wait_ms?: number;
+	projection_failed?: boolean;
+	projection_limited?: boolean;
+	completed?: CanonicalCallDraft;
+}
+
 export type DecodedRecord =
 	| { event: "session_start"; cwd: string }
 	| { event: "session_end"; unfinished_call_count?: number }
 	| { event: "turn_start"; turn: Omit<CanonicalTurn, "session_id"> }
 	| { event: "turn_end"; turn: Omit<CanonicalTurn, "session_id" | "exposures" | "started_at"> }
-	| { event: "tool_call_start"; turn_id: string; tool_call_id: string }
-	| { event: "tool_call"; call: CanonicalCallDraft }
+	| { event: "tool_call_fragment"; call: CanonicalCallFragment }
 	| { event: "collection_health"; issue: CollectionIssue }
 	| { event: "ignored" };
 

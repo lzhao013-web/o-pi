@@ -3,11 +3,17 @@ import type { CanonicalCall, CanonicalEnvironment, CanonicalTurn } from "./model
 export interface AnalysisQuery {
 	tools?: string[];
 	slice_ids?: string[];
+	config_hashes?: string[];
 	latest?: boolean;
 	collector_contracts?: string[];
 	models?: string[];
 	thinking_levels?: string[];
 	toolset_hashes?: string[];
+	workload_hashes?: string[];
+	workload_shapes?: string[];
+	repo_map_enabled?: string[];
+	repo_map_freshnesses?: string[];
+	repo_map_identities?: string[];
 	projects?: string[];
 	environments?: string[];
 	from?: string;
@@ -26,8 +32,13 @@ export interface DimensionDistribution {
 	models: Record<string, number>;
 	thinking_levels: Record<string, number>;
 	toolsets: Record<string, number>;
+	workloads: Record<string, number>;
+	workload_identities: Record<string, number>;
 	projects: Record<string, number>;
 	environments: Record<string, number>;
+	repo_map_enabled: Record<string, number>;
+	repo_map_freshness: Record<string, number>;
+	repo_map_identities: Record<string, number>;
 }
 
 export interface SliceInventoryRow {
@@ -35,6 +46,7 @@ export interface SliceInventoryRow {
 	tool_name: string;
 	behavior_hash: string;
 	instrumentation_hash: string;
+	config_hash: string;
 	first_seen?: string;
 	last_seen?: string;
 	sessions: number;
@@ -47,12 +59,27 @@ export interface NumericStatistic {
 	samples: number;
 	missing: number;
 	missing_rate: number;
-	total: number;
-	min: number;
-	max: number;
-	mean: number;
-	p50: number;
-	p95: number;
+	total?: number;
+	min?: number;
+	max?: number;
+	mean?: number;
+	p50?: number;
+	p95?: number;
+	median_confidence_interval?: { low: number; high: number };
+}
+
+export interface RateStatistic {
+	numerator: number;
+	samples: number;
+	missing: number;
+	missing_rate: number;
+	value?: number;
+	wilson_interval?: { low: number; high: number };
+}
+
+export interface TokenStatistic extends NumericStatistic {
+	methods: Record<string, { samples: number; total: number }>;
+	mixed_methods: boolean;
 }
 
 export interface CategoricalStatistic {
@@ -79,23 +106,58 @@ export interface SliceStatistics {
 	tool_name: string;
 	behavior_hash: string;
 	instrumentation_hash: string;
+	config_hash: string;
 	sessions: number;
 	calls: number;
 	period: { from?: string; to?: string };
 	dimensions: DimensionDistribution;
 	outcomes: CategoricalStatistic;
-	success_rate: { value?: number; samples: number; missing: number; missing_rate: number };
+	execution_success_rate: RateStatistic;
 	duration_ms: NumericStatistic;
-	output_tokens: NumericStatistic;
+	start_to_execute_ms: NumericStatistic;
+	execution_duration_ms: NumericStatistic;
+	approval_wait_ms: NumericStatistic;
+	output_tokens: TokenStatistic;
+	exposed_turns: number;
+	selected_turns: number;
+	selected_calls: number;
+	selected_turn_rate: RateStatistic;
+	calls_per_exposed_turn?: number;
+	definition_token_cost: TokenStatistic;
+	unused_definition_token_cost: TokenStatistic;
+	validation_failure_rate: RateStatistic;
+	repair_rate: RateStatistic;
+	repair_operations: Record<string, number>;
+	requested_executed_difference_rate: RateStatistic;
+	approval_observation_rate: RateStatistic;
+	approval_ask_rate: RateStatistic;
+	user_approval_allow_rate: RateStatistic;
+	block_rate: RateStatistic;
+	unfinished_rate: RateStatistic;
+	unfinished_before_execute: number;
+	unfinished_during_execute: number;
+	truncation_rate: RateStatistic;
+	error_codes: Record<string, number>;
+	batch_call_rate: RateStatistic;
+	parallel_execution_rate: RateStatistic;
+	repo_map: { enabled: Record<string, number>; freshness: Record<string, number>; identities: Record<string, number> };
+	usefulness: { heuristic: true; signals: { produced_candidates: number; candidate_conversion_attributions: number; repeated_calls: number; fallbacks: number } };
 	projection_failures: number;
+	projection_limits: number;
 	metrics: Record<string, MetricStatistic>;
+	observations: {
+		attributes: Record<string, CategoricalStatistic>;
+		measurements: Record<string, NumericStatistic & { unit?: string; status: "ok" | "unit_conflict" }>;
+		stages: Record<string, { calls: number; occurrences: number; statuses: CategoricalStatistic; duration_ms: NumericStatistic; measurements: Record<string, NumericStatistic & { unit?: string; status: "ok" | "unit_conflict" }> }>;
+	};
 }
 
 export interface Comparability {
 	comparable: boolean;
 	reasons: string[];
 	environment_distance: number;
-	metric_flags: Record<string, { comparable: boolean; reasons: string[] }>;
+	dimension_distances: Record<string, number>;
+	metric_flags: Record<string, { comparable: boolean; reasons: string[]; baseline_samples: number; candidate_samples: number; baseline_missing_rate: number; candidate_missing_rate: number; effect?: { kind: string; value: number; confidence_interval?: { low: number; high: number } } }>;
 }
 
 export interface SliceComparison {
@@ -204,7 +266,12 @@ export interface CollectionHealthReport {
 		unfinished_turns: number;
 		call_count_mismatches: number;
 		projection_failures: number;
+		projection_limits: number;
 		writer_failures: number;
+		dropped_writes: number;
+		omitted_live_records: number;
+		manifest_failures: number;
+		runtime_event_drops: number;
 		invalid_lines: number;
 		invalid_records: number;
 		partial_records: number;
@@ -228,12 +295,11 @@ export interface InventorySummary {
 }
 
 export interface ReportMetadata {
-	schema_version: 1;
 	analysis_hash: string;
 	generated_at: string;
 	as_of?: string;
 	scope: "all_sessions" | "current_session";
-	consistency: "durable_snapshot" | "live_committed";
+	consistency: "durable_snapshot" | "live_observed";
 	input_directory?: string;
 	input_files: string[];
 	parsed_lines: number;
@@ -242,6 +308,8 @@ export interface ReportMetadata {
 	in_progress_calls: number;
 	pending_writes: number;
 	failed_writes: number;
+	dropped_writes: number;
+	omitted_live_records: number;
 	last_write_failure_at?: string;
 	decode_issue_counts: Record<string, number>;
 }
