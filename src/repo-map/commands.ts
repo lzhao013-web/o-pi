@@ -89,39 +89,54 @@ export function registerRepoMapAutoActivation(
 			setRepoMapStatus(ctx, false);
 			return;
 		}
-		safeSetStatus(ctx, "Repo Map: discovering");
-		try {
-			const discovered = await deps.discover(ctx.cwd, ctx.signal);
-			if (discovered === undefined) {
-				setRepoMapStatus(ctx, false);
-				return;
-			}
-			let activation = discovered;
-			if (discovered.needsRefresh) {
-				safeSetStatus(ctx, "Repo Map: refreshing");
-				const refreshed = await deps.initialize({
-					cwd: discovered.root,
-					mode: "refresh",
-					...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
-					onProgress(progress) {
-						const status = renderProgressStatus(progress);
-						if (status !== undefined) safeSetStatus(ctx, status);
-					},
-				});
-				activation = {
-					root: refreshed.metadata.repositoryRoot,
-					mapId: refreshed.metadata.mapId,
-					generation: refreshed.metadata.generation,
-					freshness: refreshed.metadata.freshness,
-					needsRefresh: false,
-				};
-			}
-			appendActivationIfChanged(pi, ctx, deps.now, activation);
-			setRepoMapStatus(ctx, true);
-		} catch {
-			setRepoMapStatus(ctx, isRepoMapActive(ctx));
-		}
+		// Defer to keep session_start fast; other extensions (including TUI) should install
+		// their own UI hooks before repo-map progress status is emitted.
+		const timer = setTimeout(() => {
+			void runRepoMapAutoActivation(pi, ctx, deps);
+		}, 0);
+		timer.unref?.();
+		return;
 	});
+}
+
+async function runRepoMapAutoActivation(
+	pi: RepoMapAutoActivationApi,
+	ctx: ExtensionContext,
+	deps: RepoMapAutoActivationDependencies,
+): Promise<void> {
+	if (ctx.signal?.aborted) return;
+	safeSetStatus(ctx, "Repo Map: discovering");
+	try {
+		const discovered = await deps.discover(ctx.cwd, ctx.signal);
+		if (discovered === undefined) {
+			setRepoMapStatus(ctx, false);
+			return;
+		}
+		let activation = discovered;
+		if (discovered.needsRefresh) {
+			safeSetStatus(ctx, "Repo Map: refreshing");
+			const refreshed = await deps.initialize({
+				cwd: discovered.root,
+				mode: "refresh",
+				...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+				onProgress(progress) {
+					const status = renderProgressStatus(progress);
+					if (status !== undefined) safeSetStatus(ctx, status);
+				},
+			});
+			activation = {
+				root: refreshed.metadata.repositoryRoot,
+				mapId: refreshed.metadata.mapId,
+				generation: refreshed.metadata.generation,
+				freshness: refreshed.metadata.freshness,
+				needsRefresh: false,
+			};
+		}
+		appendActivationIfChanged(pi, ctx, deps.now, activation);
+		setRepoMapStatus(ctx, true);
+	} catch {
+		setRepoMapStatus(ctx, isRepoMapActive(ctx));
+	}
 }
 
 export function registerRepoMapCommand(

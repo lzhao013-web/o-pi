@@ -45,10 +45,12 @@ describe("/init command", () => {
 		if (start === undefined) throw new Error("session_start was not registered");
 
 		await start({}, harness.ctx);
+		await waitForAsyncSessionStart();
 		expect(harness.appended).toHaveLength(1);
 		expect(harness.appended[0]).toMatchObject({ customType: REPO_MAP_SESSION_ENTRY, data: { kind: "activation" } });
 		expect(harness.status.at(-1)).toEqual(["repo-map", "Repo Map: active"]);
 		await start({}, harness.ctx);
+		await waitForAsyncSessionStart();
 		expect(harness.appended).toHaveLength(1);
 		expect(initialize).not.toHaveBeenCalled();
 	});
@@ -72,11 +74,13 @@ describe("/init command", () => {
 		if (start === undefined) throw new Error("session_start was not registered");
 
 		await start({}, harness.ctx);
+		await waitForAsyncSessionStart();
 		expect(initialize).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/repo", mode: "refresh" }));
 		expect(harness.appended.at(-1)?.data).toMatchObject({ generation: "b".repeat(64) });
 		await harness.handler("off", harness.ctx);
 		discover.mockClear();
 		await start({}, harness.ctx);
+		await waitForAsyncSessionStart();
 		expect(discover).not.toHaveBeenCalled();
 		expect(harness.status.at(-1)).toEqual(["repo-map", "Repo Map: inactive"]);
 	});
@@ -271,6 +275,11 @@ describe("/init command", () => {
 		]);
 	});
 });
+async function waitForAsyncSessionStart(): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, 0);
+	});
+}
 
 function commandHarness(overrides: Partial<RepoMapCommandDependencies> = {}) {
 	const branch: SessionEntry[] = [];
