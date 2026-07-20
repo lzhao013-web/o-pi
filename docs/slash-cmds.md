@@ -172,6 +172,30 @@
 - 关闭：`Esc`、`q` 或 `Enter`。
 - 滚动：方向键、`PageUp`、`PageDown`、`Home`、`End`。
 
+## `/telemetry`
+
+来源：`agent/extensions/telemetry.ts`
+
+用途：查看当前 session 的工具行为和工作流遥测分析。
+
+用法：
+
+```text
+/telemetry
+```
+
+行为：
+
+- 使用与 `npm run telemetry:report` 相同的 decoder 和分析内核。
+- 统计到最近一个完成的 turn；正在执行的调用只显示为 `in progress`，不进入成功率。
+- resume 时包含同一 session 已持久化的历史遥测，并合并本进程已经提交但尚未落盘的记录。
+- 展示调用成功率、工具耗时和输出、失败恢复、重复/修改重试、候选转化、A-B-A 振荡及 collection health。
+- TUI 中通过只读浮层展示；非 TUI 模式输出紧凑 notification。
+- 不扫描 session tree，不写入会话历史，不进入模型上下文。
+- 关闭：`Esc`、`q` 或 `Enter`。
+- 滚动：方向键、`PageUp`、`PageDown`、`Home`、`End`。
+- 完整边界见 [本地遥测](telemetry.md)。
+
 ## `/codex-reset-card`
 
 来源：`agent/extensions/codex-reset-card.ts`

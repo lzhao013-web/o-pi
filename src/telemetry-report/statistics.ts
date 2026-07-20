@@ -1,5 +1,5 @@
 import { ingestTelemetryRecords } from "./ingest.js";
-import type { CanonicalCall, CanonicalTurn } from "./model.js";
+import type { CanonicalCall, CanonicalDataset, CanonicalTurn } from "./model.js";
 import type { ReportMetadata, ReportSnapshot, RepeatedCallRow, ToolMetricStatistic, ToolReportRow, ToolTransitionRow } from "./types.js";
 import { analyzeWorkflow } from "./workflow.js";
 
@@ -26,13 +26,29 @@ interface MetricState {
 
 export interface CalculateTelemetryReportOptions {
 	generatedAt?: string;
+	scope?: ReportMetadata["scope"];
+	consistency?: ReportMetadata["consistency"];
 	inputDirectory?: string;
 	inputFiles?: string[];
 	invalidLines?: number;
+	lastCompletedTurn?: number;
+	inProgressCalls?: number;
+	pendingWrites?: number;
+	failedWrites?: number;
+	lastWriteFailureAt?: string;
 }
 
 export function calculateTelemetryReport(records: readonly unknown[], options: CalculateTelemetryReportOptions = {}): ReportSnapshot {
-	const { calls, turns, sessionIds, diagnostics } = ingestTelemetryRecords(records);
+	return buildTelemetryReport(ingestTelemetryRecords(records), records.length, options);
+}
+
+/** Shared pure analysis entrypoint used by durable CLI and live session reports. */
+export function buildTelemetryReport(
+	dataset: CanonicalDataset,
+	parsedLines: number,
+	options: CalculateTelemetryReportOptions = {},
+): ReportSnapshot {
+	const { calls, turns, sessionIds, sessionStates, diagnostics } = dataset;
 	const workflow = analyzeWorkflow(calls);
 	const repeated = findRepeatedCalls(calls);
 	const tools = buildToolReports(calls, collectExposure(turns, calls), workflow.transitions, repeated);
@@ -41,11 +57,22 @@ export function calculateTelemetryReport(records: readonly unknown[], options: C
 	const recovered = workflow.failureRecoveries.filter((row) => row.kind !== "unrecovered");
 	const candidateExposures = workflow.candidateExposures;
 	const candidateConversions = workflow.convertedCandidates;
+	const generatedAt = options.generatedAt ?? new Date().toISOString();
 	const metadata: ReportMetadata = {
-		generated_at: options.generatedAt ?? new Date().toISOString(),
+		generated_at: generatedAt,
+		as_of: generatedAt,
+		scope: options.scope ?? "all_sessions",
+		consistency: options.consistency ?? "durable_snapshot",
 		...(options.inputDirectory === undefined ? {} : { input_directory: options.inputDirectory }),
 		input_files: [...(options.inputFiles ?? [])].sort(),
-		parsed_lines: records.length,
+		complete_sessions: [...sessionStates.values()].filter((state) => state === "closed").length,
+		open_sessions: [...sessionIds].filter((sessionId) => sessionStates.get(sessionId) !== "closed").length,
+		...(options.lastCompletedTurn === undefined ? {} : { last_completed_turn: options.lastCompletedTurn }),
+		in_progress_calls: options.inProgressCalls ?? 0,
+		pending_writes: options.pendingWrites ?? 0,
+		failed_writes: options.failedWrites ?? 0,
+		...(options.lastWriteFailureAt === undefined ? {} : { last_write_failure_at: options.lastWriteFailureAt }),
+		parsed_lines: parsedLines,
 		...diagnostics,
 		invalid_lines: options.invalidLines ?? 0,
 	};

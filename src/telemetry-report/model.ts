@@ -68,6 +68,7 @@ export interface CanonicalDataset {
 	calls: CanonicalCall[];
 	turns: CanonicalTurn[];
 	sessionIds: Set<string>;
+	sessionStates: Map<string, "open" | "closed">;
 	diagnostics: IngestDiagnostics;
 }
 
@@ -79,6 +80,7 @@ export type CanonicalCallDraft = Omit<CanonicalCall, "session_id" | "order" | "d
 
 export type DecodedRecord =
 	| { event: "session_start"; cwd: string }
+	| { event: "session_end" }
 	| { event: "turn_start"; turn_id: string; active_tools: string[]; definitions: Map<string, number> }
 	| { event: "tool_call"; call: CanonicalCallDraft }
 	| { event: "ignored" };

@@ -12,7 +12,17 @@ const result = await generateTelemetryReport({
 	...(options.input === undefined ? {} : { inputDirectory: path.resolve(options.input) }),
 	...(options.output === undefined ? {} : { outputDirectory: path.resolve(options.output) }),
 });
-process.stdout.write(`${JSON.stringify({ output_directory: result.output_directory, summary: result.report.summary }, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify({
+	output_directory: result.output_directory,
+	summary: result.report.summary,
+	data_quality: {
+		as_of: result.report.metadata.as_of,
+		complete_sessions: result.report.metadata.complete_sessions,
+		open_sessions: result.report.metadata.open_sessions,
+		invalid_lines: result.report.metadata.invalid_lines,
+		partial_records: result.report.metadata.partial_records,
+	},
+}, null, 2)}\n`);
 
 function parseOptions(args) {
 	const options = { help: false, input: undefined, output: undefined };

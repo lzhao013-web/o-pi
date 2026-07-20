@@ -154,8 +154,18 @@ export interface ReportSummary {
 
 export interface ReportMetadata {
 	generated_at: string;
+	as_of: string;
+	scope: "all_sessions" | "current_session";
+	consistency: "durable_snapshot" | "live_committed";
 	input_directory?: string;
 	input_files: string[];
+	complete_sessions: number;
+	open_sessions: number;
+	last_completed_turn?: number;
+	in_progress_calls: number;
+	pending_writes: number;
+	failed_writes: number;
+	last_write_failure_at?: string;
 	parsed_lines: number;
 	decoded_records: number;
 	partial_records: number;

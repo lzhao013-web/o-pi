@@ -37,8 +37,10 @@ export function readTelemetryRecord(value: unknown, context: DecodeContext): Tel
 			record = decodeToolCall(value, context.cwd, issues);
 			break;
 		case "turn_end":
-		case "session_end":
 			record = { event: "ignored" };
+			break;
+		case "session_end":
+			record = { event: "session_end" };
 			break;
 		default:
 			return { status: "unknown_event", event, raw: value };

@@ -1,7 +1,8 @@
-import { readdir, readFile, mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { readTelemetryDirectory } from "../telemetry/jsonl-reader.js";
 import { calculateTelemetryReport } from "./statistics.js";
 import type { ReportSnapshot } from "./types.js";
 
@@ -29,25 +30,14 @@ export interface GenerateTelemetryReportResult {
 export async function generateTelemetryReport(options: GenerateTelemetryReportOptions = {}): Promise<GenerateTelemetryReportResult> {
 	const inputDirectory = path.resolve(options.inputDirectory ?? path.join(os.homedir(), ".pi", "telemetry", "sessions"));
 	const outputDirectory = path.resolve(options.outputDirectory ?? path.join(os.homedir(), ".pi", "telemetry", "reports", "latest"));
-	const inputFiles = await listInputFiles(inputDirectory);
-	const records: unknown[] = [];
-	let invalidLines = 0;
-	for (const file of inputFiles) {
-		const content = await readFile(file, "utf8");
-		for (const line of content.split(/\r?\n/u)) {
-			if (line.trim().length === 0) continue;
-			try {
-				records.push(JSON.parse(line) as unknown);
-			} catch {
-				invalidLines += 1;
-			}
-		}
-	}
-	const report = calculateTelemetryReport(records, {
+	const input = await readTelemetryDirectory(inputDirectory);
+	const report = calculateTelemetryReport(input.records, {
 		...(options.generatedAt === undefined ? {} : { generatedAt: options.generatedAt }),
+		scope: "all_sessions",
+		consistency: "durable_snapshot",
 		inputDirectory,
-		inputFiles: inputFiles.map((file) => path.relative(inputDirectory, file).replace(/\\/gu, "/")),
-		invalidLines,
+		inputFiles: input.files.map((file) => path.relative(inputDirectory, file).replace(/\\/gu, "/")),
+		invalidLines: input.invalidLines,
 	});
 	await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
 	const writes: Promise<void>[] = [];
@@ -66,6 +56,8 @@ export async function generateTelemetryReport(options: GenerateTelemetryReportOp
 	}, null, 2)}\n`));
 	writes.push(writeSnapshotFile(outputDirectory, "report.html", renderReport(report)));
 	await Promise.all(writes);
+	// The complete single-file artifact is published last and acts as the generation commit point.
+	await writeSnapshotFile(outputDirectory, "report.json", `${JSON.stringify(report, null, 2)}\n`);
 	return { report, output_directory: outputDirectory };
 }
 
@@ -106,7 +98,7 @@ export function renderReport(report: ReportSnapshot): string {
 </head>
 <body>
 <h1>Pi tool behavior report</h1>
-<p class="muted">Generated ${html(report.metadata.generated_at)} from ${report.metadata.input_files.length} telemetry JSONL file(s); ${report.metadata.invalid_lines} invalid line(s), ${report.metadata.partial_records} partial record(s), ${report.metadata.unknown_events} unknown event(s).</p>
+<p class="muted">Generated ${html(report.metadata.generated_at)} from ${report.metadata.input_files.length} telemetry JSONL file(s); ${report.metadata.complete_sessions} complete and ${report.metadata.open_sessions} open session(s); ${report.metadata.invalid_lines} invalid line(s), ${report.metadata.partial_records} partial record(s), ${report.metadata.unknown_events} unknown event(s).</p>
 <section class="cards">${cards.map(([label, value]) => `<div class="card"><span>${html(label)}</span><b>${html(value)}</b></div>`).join("")}</section>
 <h2>Tool comparison</h2>
 ${htmlTable(report.tools, comparisonColumns)}
@@ -121,18 +113,6 @@ ${htmlTable(report.tools, comparisonColumns)}
 </body>
 </html>
 `;
-}
-
-async function listInputFiles(directory: string): Promise<string[]> {
-	try {
-		const entries = await readdir(directory, { withFileTypes: true });
-		return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
-			.map((entry) => path.join(directory, entry.name))
-			.sort(compare);
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") return [];
-		throw error;
-	}
 }
 
 async function writeSnapshotFile(directory: string, fileName: string, content: string): Promise<void> {
@@ -184,12 +164,4 @@ function percent(value: number): string {
 
 function html(value: unknown): string {
 	return String(value).replace(/[&<>"']/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
-}
-
-function compare(left: string, right: string): number {
-	return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function isNodeError(value: unknown): value is NodeJS.ErrnoException {
-	return value instanceof Error;
 }

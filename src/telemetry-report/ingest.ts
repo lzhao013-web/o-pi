@@ -9,6 +9,7 @@ export function ingestTelemetryRecords(records: readonly unknown[], options: Ing
 	const calls: CanonicalDataset["calls"] = [];
 	const turns: CanonicalTurn[] = [];
 	const sessionIds = new Set<string>();
+	const sessionStates = new Map<string, "open" | "closed">();
 	const cwdBySession = new Map<string, string>();
 	const orderBySession = new Map<string, number>();
 	const turnsById = new Map<string, CanonicalTurn>();
@@ -48,6 +49,10 @@ export function ingestTelemetryRecords(records: readonly unknown[], options: Ing
 		switch (result.record.event) {
 			case "session_start":
 				cwdBySession.set(sessionId, result.record.cwd);
+				sessionStates.set(sessionId, "open");
+				break;
+			case "session_end":
+				sessionStates.set(sessionId, "closed");
 				break;
 			case "turn_start": {
 				const turn: CanonicalTurn = {
@@ -79,7 +84,7 @@ export function ingestTelemetryRecords(records: readonly unknown[], options: Ing
 		}
 	}
 
-	return { calls, turns, sessionIds, diagnostics };
+	return { calls, turns, sessionIds, sessionStates, diagnostics };
 }
 
 function turnKey(sessionId: string, turnId: string): string {

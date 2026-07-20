@@ -1,10 +1,15 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 
+import { registerTelemetryCommand } from "../../src/telemetry-report/command.js";
 import { ingestTelemetryRecords } from "../../src/telemetry-report/ingest.js";
+import { calculateLiveReport } from "../../src/telemetry-report/live.js";
 import { generateTelemetryReport } from "../../src/telemetry-report/output.js";
+import { renderLiveTelemetry } from "../../src/telemetry-report/render-tui.js";
 import { calculateTelemetryReport } from "../../src/telemetry-report/statistics.js";
+import type { TelemetryCollectorSnapshot } from "../../src/telemetry/collector.js";
 import { useTempDir } from "../helpers/lifecycle.js";
 
 const temp = useTempDir("o-pi-telemetry-report-");
@@ -227,20 +232,106 @@ describe("telemetry report", () => {
 		const records = prefixRecords([call("find", "find", { query: "a" }, { metrics: { scanned: 10 } })]);
 		await writeFile(path.join(input, "one.jsonl"), `${records.map((record) => JSON.stringify(record)).join("\n")}\nnot-json\n`, "utf8");
 		const result = await generateTelemetryReport({ inputDirectory: input, outputDirectory: output, generatedAt: "2026-01-01T00:00:00.000Z" });
-		expect(result.report.metadata).toMatchObject({ parsed_lines: records.length, decoded_records: records.length, invalid_lines: 1, input_files: ["one.jsonl"] });
+		expect(result.report.metadata).toMatchObject({
+			parsed_lines: records.length,
+			decoded_records: records.length,
+			invalid_lines: 1,
+			input_files: ["one.jsonl"],
+			scope: "all_sessions",
+			consistency: "durable_snapshot",
+			complete_sessions: 0,
+			open_sessions: 1,
+		});
 		expect((await readdir(output)).sort()).toEqual([
-			"candidate_conversions.csv", "failure_recoveries.csv", "metadata.json", "near_retries.csv", "repeated_calls.csv", "report.html",
+			"candidate_conversions.csv", "failure_recoveries.csv", "metadata.json", "near_retries.csv", "repeated_calls.csv", "report.html", "report.json",
 			"summary.json", "tool_oscillations.csv", "tool_transitions.csv", "tools.csv", "tools.json", "workflow.json",
 		]);
 		expect(await readFile(path.join(output, "tools.csv"), "utf8")).toContain("find");
 		expect(JSON.parse(await readFile(path.join(output, "tools.json"), "utf8"))).toEqual(expect.arrayContaining([expect.objectContaining({ tool: "find", calls: 1 })]));
 		expect(JSON.parse(await readFile(path.join(output, "workflow.json"), "utf8"))).toHaveProperty("candidate_conversions");
+		expect(JSON.parse(await readFile(path.join(output, "report.json"), "utf8"))).toMatchObject({ summary: { calls: 1 }, metadata: { consistency: "durable_snapshot" } });
 		const html = await readFile(path.join(output, "report.html"), "utf8");
 		expect(html).toContain("Per-tool statistics");
 		expect(html).toContain("<h2>find <small>cohort-a</small></h2>");
 		expect(html).toContain("Tool metrics");
 		expect(html).toContain("Session workflow analysis");
 		expect(html).not.toMatch(/<script\b/iu);
+	});
+
+	it("tracks the latest session lifecycle state for completeness metadata", () => {
+		const resumed = prefixRecords([]);
+		resumed.push(base("session_end", "s1", { data: { reason: "quit" } }));
+		const closed = calculateTelemetryReport(resumed, { generatedAt: "2026-01-01T00:00:00.000Z" });
+		expect(closed.metadata).toMatchObject({ complete_sessions: 1, open_sessions: 0 });
+
+		resumed.push(base("session_start", "s1", { data: { reason: "resume" } }));
+		const reopened = calculateTelemetryReport(resumed, { generatedAt: "2026-01-01T00:00:00.000Z" });
+		expect(reopened.metadata).toMatchObject({ complete_sessions: 0, open_sessions: 1 });
+	});
+
+	it("uses the same analysis for live session reports and renders bounded TUI lines", () => {
+		const records = prefixRecords([
+			call("find", "find", { query: "service" }, { duration: 20, outputTokens: 5 }),
+			call("read", "read", { path: "src/a.ts" }, { duration: 10, outputTokens: 3 }),
+		]);
+		const snapshot: TelemetryCollectorSnapshot = {
+			sessionId: "session-1234567890",
+			records,
+			revision: records.length,
+			invalidLines: 1,
+			lastCompletedTurn: 0,
+			inProgressCalls: 1,
+			writer: { pending: 2, persisted: 3, failed: 1, last_failure_at: "2026-01-01T00:00:00.000Z" },
+		};
+		const live = { report: calculateLiveReport(snapshot, "2026-01-02T00:00:00.000Z"), sessionId: "session-1234567890" };
+		const batch = calculateTelemetryReport(records, { generatedAt: "2026-01-02T00:00:00.000Z" });
+		expect(live.report.summary).toEqual(batch.summary);
+		expect(live.report.metadata).toMatchObject({
+			scope: "current_session",
+			consistency: "live_committed",
+			last_completed_turn: 0,
+			in_progress_calls: 1,
+			pending_writes: 2,
+			failed_writes: 1,
+		});
+		for (const width of [48, 110]) {
+			const lines = renderLiveTelemetry(live, width);
+			expect(lines.some((line) => line.includes("Collection health"))).toBe(true);
+			expect(lines.every((line) => line.length <= width)).toBe(true);
+		}
+	});
+
+	it("registers /telemetry and provides a compact non-TUI report", async () => {
+		type CommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
+		let command: CommandOptions | undefined;
+		const notifications: Array<[string, string | undefined]> = [];
+		registerTelemetryCommand({
+			registerCommand(name, options) {
+				expect(name).toBe("telemetry");
+				command = options;
+			},
+		}, {
+			snapshot: () => ({
+				sessionId: "s1",
+				records: prefixRecords([call("read", "read", { path: "src/a.ts" })]),
+				revision: 1,
+				invalidLines: 0,
+				lastCompletedTurn: 0,
+				inProgressCalls: 0,
+				writer: { pending: 0, persisted: 1, failed: 0 },
+			}),
+		});
+		const registered = command;
+		if (registered === undefined) throw new Error("telemetry command was not registered");
+		await registered.handler("", {
+			mode: "print",
+			ui: {
+				notify(message: string, type?: string) {
+					notifications.push([message, type]);
+				},
+			},
+		} as unknown as ExtensionCommandContext);
+		expect(notifications).toEqual([[expect.stringContaining("1 calls"), "info"]]);
 	});
 });
 
