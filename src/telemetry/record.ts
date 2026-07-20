@@ -1,49 +1,50 @@
-import type { TelemetryCallStore } from "./runtime.js";
-import type { TelemetryBase, TelemetryContext, ToolCallRecord, ToolRuntimeTelemetry } from "./types.js";
+import type { ToolCallState } from "./runtime.js";
+import type { TelemetryBase, TelemetryContext, ToolCallEndRecord, ToolRuntimeTelemetry } from "./types.js";
 
 export interface ActiveTurn {
 	id: string;
 	index: number;
 	startedAt: number;
 	context: TelemetryContext;
+	interactionId?: string;
+	exposures: Map<string, ToolCallState["identity"]>;
+	startedCallIds: Set<string>;
+	endedCallIds: Set<string>;
+	projectionFailureIds: Set<string>;
 }
 
-export interface ToolCallData {
-	id: string;
-	name: string;
-}
-
-export interface ToolResultData {
-	content: unknown;
-	details: unknown;
-	isError: boolean;
-}
-
-export function assembleToolCallRecord(
-	base: TelemetryBase,
-	turn: ActiveTurn,
-	call: ToolCallData,
-	result: ToolResultData | undefined,
-	store: TelemetryCallStore,
-): ToolCallRecord {
-	const runtime = store.take(call.id, call.name);
-	const observation = runtime?.observation;
-	const classification = classifyOutcome(runtime, observation?.status, observation?.error_code, result);
-	const output = outputStats(result?.content, observation?.truncated === true);
+export function assembleToolCallEndRecord(base: TelemetryBase, call: ToolCallState, endedAt: number): ToolCallEndRecord {
+	const observation = call.observation;
+	const classification = classifyOutcome(call, observation?.status, observation?.error_code);
 	return {
-		event: "tool_call",
+		event: "tool_call_end",
 		...base,
-		turn_id: turn.id,
-		tool_call_id: call.id,
+		turn_id: call.turnId,
+		tool_call_id: call.toolCallId,
+		...(call.interaction_id === undefined ? {} : { interaction_id: call.interaction_id }),
+		...(call.assistant_message_id === undefined ? {} : { assistant_message_id: call.assistant_message_id }),
+		...(call.tool_batch_id === undefined ? {} : { tool_batch_id: call.tool_batch_id }),
+		...(call.batch_size === undefined ? {} : { batch_size: call.batch_size }),
+		...(call.batch_index === undefined ? {} : { batch_index: call.batch_index }),
 		data: {
-			turn_index: turn.index,
-			tool: { name: call.name, cohort: runtime?.cohort_id ?? "unavailable" },
-			input: runtime?.input ?? { requested: { value: {} } },
+			turn_index: call.turnIndex,
+			tool: { name: call.toolName, identity: call.identity },
+			timing: {
+				call_started_at: new Date(call.callStartedAt).toISOString(),
+				...(call.executionStartedAt === undefined ? {} : { execution_started_at: new Date(call.executionStartedAt).toISOString() }),
+				...(call.executionEndedAt === undefined ? {} : { execution_ended_at: new Date(call.executionEndedAt).toISOString() }),
+				...(call.execute === undefined ? {} : { execution_duration_ms: call.execute.duration_ms }),
+				call_duration_ms: Math.max(0, endedAt - call.callStartedAt),
+			},
+			input: {
+				requested: call.requested,
+				...(call.executed === undefined ? {} : { executed: call.executed }),
+			},
 			annotations: {
-				...(runtime?.preparation === undefined ? {} : { preparation: runtime.preparation }),
-				...(runtime?.approval === undefined ? {} : { approval: runtime.approval }),
-				...(runtime?.execute === undefined ? {} : { execution: runtime.execute }),
-				...(runtime?.projection_failed === true ? { projection_failed: true } : {}),
+				...(call.preparation === undefined ? {} : { preparation: call.preparation }),
+				...(call.approval === undefined ? {} : { approval: call.approval }),
+				...(call.execute === undefined ? {} : { execution: call.execute }),
+				...(call.projectionFailed ? { projection_failed: true } : {}),
 			},
 			result: {
 				...(classification.ok === undefined ? {} : { ok: classification.ok }),
@@ -54,7 +55,7 @@ export function assembleToolCallRecord(
 						...(classification.errorCode === undefined ? {} : { code: classification.errorCode }),
 					},
 				}),
-				output,
+				output: outputStats(call.result?.content, observation?.truncated === true),
 				metrics: observation?.metrics ?? {},
 				references: observation?.references ?? [],
 			},
@@ -63,33 +64,28 @@ export function assembleToolCallRecord(
 }
 
 function classifyOutcome(
-	runtime: ToolRuntimeTelemetry | undefined,
+	call: ToolCallState,
 	status: string | undefined,
 	code: string | undefined,
-	result: ToolResultData | undefined,
 ): { outcome: string; ok?: boolean; errorSource?: string; errorCode?: string } {
-	if (result === undefined) return { outcome: "missing_result", errorSource: "runtime" };
-	if (runtime?.preparation?.status === "invalid") return { outcome: "validation_error", ok: false, errorSource: "validation" };
-	if (isDenied(runtime?.approval)) return { outcome: "blocked", ok: false, errorSource: "approval" };
+	if (call.result === undefined) return { outcome: "missing_result", errorSource: "runtime" };
+	if (call.preparation?.status === "invalid") return { outcome: "validation_error", ok: false, errorSource: "validation" };
+	if (isDenied(call.approval)) return { outcome: "blocked", ok: false, errorSource: "approval" };
 	if (status === "timed_out" || code === "TIMEOUT") return withCode("timeout", "tool", code);
-	if (status === "aborted" || code === "ABORTED" || code === "OPERATION_ABORTED" || runtime?.execute?.signal_aborted === true) {
-		return withCode("aborted", runtime?.execute?.state === "threw" ? "execute" : "tool", code);
+	if (status === "aborted" || code === "ABORTED" || code === "OPERATION_ABORTED" || call.execute?.signal_aborted === true) {
+		return withCode("aborted", call.execute?.state === "threw" ? "execute" : "tool", code);
 	}
-	if (runtime?.execute?.state === "threw") {
-		if (runtime.execute.error_name === "TimeoutError") return { outcome: "timeout", ok: false, errorSource: "execute", errorCode: runtime.execute.error_name };
-		if (runtime.execute.error_name === "AbortError") return { outcome: "aborted", ok: false, errorSource: "execute", errorCode: runtime.execute.error_name };
-		return withCode("exception", "execute", runtime.execute.error_name);
+	if (call.execute?.state === "threw") {
+		if (call.execute.error_name === "TimeoutError") return { outcome: "timeout", ok: false, errorSource: "execute", errorCode: call.execute.error_name };
+		if (call.execute.error_name === "AbortError") return { outcome: "aborted", ok: false, errorSource: "execute", errorCode: call.execute.error_name };
+		return withCode("exception", "execute", call.execute.error_name);
 	}
-	if (result.isError || status === "failed") return withCode("tool_error", "tool", code);
+	if (call.result.isError || status === "failed") return withCode("tool_error", "tool", code);
 	return { outcome: "success", ok: true };
 }
 
-function withCode(
-	outcome: string,
-	errorSource: string,
-	errorCode: string | undefined,
-): { outcome: string; ok: false; errorSource: string; errorCode?: string } {
-	return { outcome, ok: false, errorSource, ...(errorCode === undefined ? {} : { errorCode }) };
+function withCode(outcome: string, errorSource: string, errorCode: string | undefined) {
+	return { outcome, ok: false as const, errorSource, ...(errorCode === undefined ? {} : { errorCode }) };
 }
 
 function isDenied(approval: ToolRuntimeTelemetry["approval"]): boolean {
@@ -99,7 +95,7 @@ function isDenied(approval: ToolRuntimeTelemetry["approval"]): boolean {
 		|| approval?.outcome === "dismissed";
 }
 
-function outputStats(content: unknown, truncated: boolean): ToolCallRecord["data"]["result"]["output"] {
+function outputStats(content: unknown, truncated: boolean): ToolCallEndRecord["data"]["result"]["output"] {
 	let chars = 0;
 	if (Array.isArray(content)) {
 		for (const part of content) {

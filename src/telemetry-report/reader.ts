@@ -33,9 +33,12 @@ export function readTelemetryRecord(value: unknown, context: DecodeContext): Tel
 		case "turn_start":
 			record = decodeTurnStart(value, issues);
 			break;
-		case "tool_call":
+		case "tool_call_end":
 			record = decodeToolCall(value, context.cwd, issues);
 			break;
+		case "tool_call_start":
+		case "tool_execution_start":
+		case "collection_health":
 		case "turn_end":
 			record = { event: "ignored" };
 			break;
@@ -55,11 +58,12 @@ function decodeTurnStart(record: Record<string, unknown>, issues: string[]): Dec
 	const turnId = requiredString(record["turn_id"], "missing_turn_id", issues);
 	if (turnId === undefined) return undefined;
 	const data = object(record["data"], "invalid_data", issues);
+	const tools = data["tools"];
 	return {
 		event: "turn_start",
 		turn_id: turnId,
-		active_tools: stringArray(data["active_tools"], "invalid_active_tools", issues),
-		definitions: definitionMap(data["tool_definitions"], issues),
+		active_tools: toolNames(tools, issues),
+		definitions: definitionMap(tools, issues),
 	};
 }
 
@@ -71,8 +75,9 @@ function decodeToolCall(record: Record<string, unknown>, fallbackCwd: string, is
 	const toolName = requiredString(tool["name"], "missing_tool_name", issues);
 	if (turnId === undefined || callId === undefined || toolName === undefined) return undefined;
 	const callCwd = cwd(record, fallbackCwd, issues);
-	const cohortId = optionalString(tool["cohort"], "invalid_tool_cohort", issues) ?? "unavailable";
-	if (tool["cohort"] === undefined) issues.push("missing_tool_cohort");
+	const identity = object(tool["identity"], "invalid_tool_identity", issues);
+	const cohortId = optionalString(identity["behavior_hash"], "invalid_behavior_hash", issues) ?? "unavailable";
+	if (identity["behavior_hash"] === undefined) issues.push("missing_behavior_hash");
 	const inputEnvelope = object(data["input"], "invalid_input", issues);
 	const requested = projection(inputEnvelope["requested"], "requested", callCwd, issues);
 	const executed = inputEnvelope["executed"] === undefined
@@ -160,10 +165,11 @@ function references(value: unknown, cwdValue: string, scope: string, issues: str
 			issues.push(`invalid_${scope}_reference_${index}`);
 			return [];
 		}
-		const rank = optionalNumber(item["rank"], `invalid_${scope}_reference_rank_${index}`, issues);
+		const rank = optionalNumber(item["global_rank"], `invalid_${scope}_reference_global_rank_${index}`, issues);
 		const group = optionalString(item["group"], `invalid_${scope}_reference_group_${index}`, issues);
-		const start = optionalNumber(item["start_line"], `invalid_${scope}_reference_start_${index}`, issues);
-		const end = optionalNumber(item["end_line"], `invalid_${scope}_reference_end_${index}`, issues);
+		const resource = optionalObject(item["resource"], `invalid_${scope}_reference_resource_${index}`, issues);
+		const start = optionalNumber(resource["start_line"], `invalid_${scope}_reference_start_${index}`, issues);
+		const end = optionalNumber(resource["end_line"], `invalid_${scope}_reference_end_${index}`, issues);
 		const normalized = normalizeReference(kind, rawValue, cwdValue);
 		const canonicalRank = relation === "candidate" ? rank ?? index + 1 : rank;
 		const canonicalGroup = relation === "candidate" ? group ?? "unknown" : group;
@@ -173,7 +179,7 @@ function references(value: unknown, cwdValue: string, scope: string, issues: str
 			value: normalized,
 			...(canonicalRank === undefined ? {} : { rank: canonicalRank }),
 			...(canonicalGroup === undefined ? {} : { group: canonicalGroup }),
-			sources: stringArray(item["sources"], `invalid_${scope}_reference_sources_${index}`, issues),
+			sources: referenceSourceIds(item["sources"], `invalid_${scope}_reference_sources_${index}`, issues),
 			...(start === undefined ? {} : { start_line: start }),
 			...(end === undefined ? {} : { end_line: end }),
 		}];
@@ -207,7 +213,13 @@ function metricRecord(value: unknown, issues: string[]): Record<string, Canonica
 			continue;
 		}
 		const unit = optionalString(rawMetric["unit"], `invalid_metric_unit_${name}`, issues);
-		result[name] = { value: metricValue, ...(unit === undefined ? {} : { unit }) };
+		const kind = optionalString(rawMetric["kind"], `invalid_metric_kind_${name}`, issues);
+		const aggregation = optionalString(rawMetric["aggregation"], `invalid_metric_aggregation_${name}`, issues);
+		if (kind === undefined || aggregation === undefined) {
+			issues.push(`missing_metric_semantics_${name}`);
+			continue;
+		}
+		result[name] = { value: metricValue, kind, aggregation, ...(unit === undefined ? {} : { unit }) };
 	}
 	return result;
 }
@@ -229,10 +241,28 @@ function definitionMap(value: unknown, issues: string[]): Map<string, number> {
 	for (const item of value) {
 		if (!isRecord(item)) continue;
 		const name = string(item["name"]);
-		const tokens = number(item["estimated_tokens"]);
+		const tokenEstimate = isRecord(item["definition_tokens"]) ? item["definition_tokens"] : {};
+		const tokens = number(tokenEstimate["value"]);
 		if (name !== undefined && tokens !== undefined) result.set(name, tokens);
 	}
 	return result;
+}
+
+function toolNames(value: unknown, issues: string[]): string[] {
+	if (!Array.isArray(value)) {
+		issues.push("invalid_tools");
+		return [];
+	}
+	return value.flatMap((item) => isRecord(item) && typeof item["name"] === "string" ? [item["name"]] : []);
+}
+
+function referenceSourceIds(value: unknown, issue: string, issues: string[]): string[] {
+	if (value === undefined || value === null) return [];
+	if (!Array.isArray(value)) {
+		issues.push(issue);
+		return [];
+	}
+	return value.flatMap((item) => isRecord(item) && typeof item["id"] === "string" ? [item["id"]] : []);
 }
 
 function object(value: unknown, issue: string, issues: string[]): Record<string, unknown> {

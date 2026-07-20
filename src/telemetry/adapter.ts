@@ -131,20 +131,20 @@ function parseReferences(value: unknown): TelemetryReference[] | undefined {
 		const kind = string(item["kind"]);
 		const referenceValue = string(item["value"]);
 		if (relation === undefined || kind === undefined || referenceValue === undefined) return [];
-		const rank = finiteNumber(item["rank"]);
+		const globalRank = positiveInteger(item["global_rank"]);
+		const groupRank = positiveInteger(item["group_rank"]);
 		const group = string(item["group"]);
-		const start = finiteNumber(item["start_line"]);
-		const end = finiteNumber(item["end_line"]);
-		const sources = stringArray(item["sources"]);
+		const sources = referenceSources(item["sources"]);
+		const resource = resourceState(item["resource"]);
 		return [{
 			relation,
 			kind,
 			value: referenceValue,
-			...(rank === undefined ? {} : { rank }),
 			...(group === undefined ? {} : { group }),
+			...(globalRank === undefined ? {} : { global_rank: globalRank }),
+			...(groupRank === undefined ? {} : { group_rank: groupRank }),
 			...(sources === undefined ? {} : { sources }),
-			...(start === undefined ? {} : { start_line: start }),
-			...(end === undefined ? {} : { end_line: end }),
+			...(resource === undefined ? {} : { resource }),
 		}];
 	});
 }
@@ -154,18 +154,81 @@ function parseMetricMap(value: unknown): MetricMap | undefined {
 	const result: MetricMap = {};
 	for (const [key, child] of Object.entries(value)) {
 		if (!isRecord(child)) continue;
-		const metricValue = child["value"];
-		if (typeof metricValue !== "string" && typeof metricValue !== "boolean"
-			&& !(typeof metricValue === "number" && Number.isFinite(metricValue))) continue;
-		const unit = string(child["unit"]);
-		result[key] = { value: metricValue, ...(unit === undefined ? {} : { unit }) };
+		const metric = parseMetric(child);
+		if (metric !== undefined) result[key] = metric;
 	}
 	return result;
 }
 
-function stringArray(value: unknown): string[] | undefined {
+function parseMetric(value: Record<string, unknown>): MetricMap[string] | undefined {
+	const numeric = finiteNumber(value["value"]);
+	const unit = string(value["unit"]);
+	switch (value["kind"]) {
+		case "categorical": {
+			const category = value["value"];
+			if (value["aggregation"] !== "count_by_value" || unit !== undefined) return undefined;
+			if (typeof category === "string" || typeof category === "boolean") {
+				return { kind: "categorical", aggregation: "count_by_value", value: category };
+			}
+			return numeric === undefined ? undefined : { kind: "categorical", aggregation: "count_by_value", value: numeric };
+		}
+		case "count":
+			return value["aggregation"] === "sum" && numeric !== undefined && Number.isInteger(numeric) && numeric >= 0 && unit !== undefined
+				? { kind: "count", aggregation: "sum", value: numeric, unit }
+				: undefined;
+		case "distribution":
+			return value["aggregation"] === "distribution" && numeric !== undefined && unit !== undefined
+				? { kind: "distribution", aggregation: "distribution", value: numeric, unit }
+				: undefined;
+		case "duration":
+			return value["aggregation"] === "distribution" && numeric !== undefined && numeric >= 0 && (unit === "ms" || unit === "s")
+				? { kind: "duration", aggregation: "distribution", value: numeric, unit }
+				: undefined;
+		case "bytes":
+			return (value["aggregation"] === "sum" || value["aggregation"] === "distribution") && numeric !== undefined && numeric >= 0 && unit === "byte"
+				? { kind: "bytes", aggregation: value["aggregation"], value: numeric, unit: "byte" }
+				: undefined;
+		case "ratio":
+			return value["aggregation"] === "mean" && numeric !== undefined && numeric >= 0 && numeric <= 1 && unit === "ratio"
+				? { kind: "ratio", aggregation: "mean", value: numeric, unit: "ratio" }
+				: undefined;
+		default:
+			return undefined;
+	}
+}
+
+function referenceSources(value: unknown): TelemetryReference["sources"] | undefined {
 	if (!Array.isArray(value)) return undefined;
-	return value.filter((item): item is string => typeof item === "string");
+	const result = value.flatMap((item) => {
+		if (!isRecord(item)) return [];
+		const id = string(item["id"]);
+		if (id === undefined) return [];
+		const family = string(item["family"]);
+		const sourceRank = positiveInteger(item["source_rank"]);
+		return [{ id, ...(family === undefined ? {} : { family }), ...(sourceRank === undefined ? {} : { source_rank: sourceRank }) }];
+	});
+	return result.length === 0 ? undefined : result;
+}
+
+function resourceState(value: unknown): TelemetryReference["resource"] | undefined {
+	if (!isRecord(value)) return undefined;
+	const snapshot = string(value["snapshot"]);
+	const revision = string(value["revision"]);
+	const startLine = positiveInteger(value["start_line"]);
+	const endLine = positiveInteger(value["end_line"]);
+	const rawHash = value["content_hash"];
+	const contentHash = isRecord(rawHash) && rawHash["algorithm"] === "sha256" && typeof rawHash["value"] === "string"
+		&& /^[a-f0-9]{64}$/iu.test(rawHash["value"])
+		? { algorithm: "sha256" as const, value: rawHash["value"] }
+		: undefined;
+	if (snapshot === undefined && revision === undefined && startLine === undefined && endLine === undefined && contentHash === undefined) return undefined;
+	return {
+		...(contentHash === undefined ? {} : { content_hash: contentHash }),
+		...(snapshot === undefined ? {} : { snapshot }),
+		...(revision === undefined ? {} : { revision }),
+		...(startLine === undefined ? {} : { start_line: startLine }),
+		...(endLine === undefined ? {} : { end_line: endLine }),
+	};
 }
 
 function string(value: unknown): string | undefined {
@@ -174,6 +237,10 @@ function string(value: unknown): string | undefined {
 
 function finiteNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

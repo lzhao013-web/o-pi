@@ -98,8 +98,9 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			},
 			renderCall: renderWebSearchCall,
 			renderResult: renderWebSearchResult,
-		}, repair: { singleStringField: "query" }, telemetry: webSearchTelemetry, cohort: {
-			implementationEntrypoints: ["src/web-tools/websearch-runtime.ts", "src/web-tools/telemetry.ts"],
+		}, repair: { singleStringField: "query" }, telemetry: webSearchTelemetry, identity: {
+			behaviorEntrypoints: ["src/web-tools/websearch-runtime.ts"],
+			telemetryEntrypoints: ["src/web-tools/telemetry.ts"],
 			config: () => loadWebToolsConfig(),
 		} });
 
@@ -130,8 +131,9 @@ export function createWebToolsExtension(loadRuntime: WebToolsRuntimeLoader = loa
 			},
 			renderCall: renderWebFetchCall,
 			renderResult: renderWebFetchResult,
-		}, repair: { singleStringField: "url" }, telemetry: webFetchTelemetry, cohort: {
-			implementationEntrypoints: ["src/web-tools/webfetch-runtime.ts", "src/web-tools/telemetry.ts"],
+		}, repair: { singleStringField: "url" }, telemetry: webFetchTelemetry, identity: {
+			behaviorEntrypoints: ["src/web-tools/webfetch-runtime.ts"],
+			telemetryEntrypoints: ["src/web-tools/telemetry.ts"],
 			config: () => loadWebToolsConfig(),
 		} });
 

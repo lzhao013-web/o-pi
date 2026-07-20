@@ -9,24 +9,44 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 export type JsonObject = { [key: string]: JsonValue };
 export type MetricValue = string | number | boolean;
 
-/** Open, tool-independent metric. A published name/unit pair never changes meaning. */
-export interface TelemetryMetric {
-	value: MetricValue;
-	unit?: string;
-}
+export type MetricKind = "categorical" | "count" | "distribution" | "duration" | "bytes" | "ratio";
+export type MetricAggregation = "count_by_value" | "sum" | "distribution" | "mean";
+
+/** Metric semantics are part of the raw schema, not an analyzer guess. */
+export type TelemetryMetric =
+	| { kind: "categorical"; aggregation: "count_by_value"; value: MetricValue }
+	| { kind: "count"; aggregation: "sum"; value: number; unit: string }
+	| { kind: "distribution"; aggregation: "distribution"; value: number; unit: string }
+	| { kind: "duration"; aggregation: "distribution"; value: number; unit: "ms" | "s" }
+	| { kind: "bytes"; aggregation: "sum" | "distribution"; value: number; unit: "byte" }
+	| { kind: "ratio"; aggregation: "mean"; value: number; unit: "ratio" };
 
 export type MetricMap = Record<string, TelemetryMetric>;
+
+export interface TelemetryReferenceSource {
+	id: string;
+	family?: string;
+	source_rank?: number;
+}
+
+export interface TelemetryResourceState {
+	content_hash?: { algorithm: "sha256"; value: string };
+	snapshot?: string;
+	revision?: string;
+	start_line?: number;
+	end_line?: number;
+}
 
 /** Open semantic reference shared by tool inputs and results. */
 export interface TelemetryReference {
 	relation: string;
 	kind: string;
 	value: string;
-	rank?: number;
 	group?: string;
-	sources?: string[];
-	start_line?: number;
-	end_line?: number;
+	global_rank?: number;
+	group_rank?: number;
+	sources?: TelemetryReferenceSource[];
+	resource?: TelemetryResourceState;
 }
 
 export interface InputProjection {
@@ -55,10 +75,16 @@ export interface ToolObservation {
 	error_code?: string;
 }
 
+export interface ToolIdentity {
+	behavior_hash: string;
+	definition_hash: string;
+	telemetry_hash: string;
+	config_hash: string;
+}
+
 export interface ToolRuntimeTelemetry {
 	tool_call_id: string;
 	tool_name: string;
-	cohort_id?: string;
 	input: {
 		requested: InputProjection;
 		executed?: InputProjection;
@@ -74,10 +100,21 @@ export interface TelemetryContext {
 	cwd: string;
 	model?: { provider: string; id: string };
 	thinking_level?: string;
-	toolset_hash?: string;
+	toolset?: { active: string[]; hash: string };
+	host: {
+		pi_version: string;
+		mode?: string;
+		platform: NodeJS.Platform;
+		arch: string;
+		node_version: string;
+	};
+	branch?: {
+		leaf_id?: string;
+		lineage_hash: string;
+		depth: number;
+	};
 }
 
-/** Permanent event envelope. New capabilities are optional fields inside data. */
 export interface TelemetryBase {
 	id: string;
 	timestamp: string;
@@ -86,43 +123,74 @@ export interface TelemetryBase {
 	context: TelemetryContext;
 }
 
+export interface CallDimensions {
+	interaction_id?: string;
+	assistant_message_id?: string;
+	tool_batch_id?: string;
+	batch_size?: number;
+	batch_index?: number;
+}
+
 export interface SessionStartRecord extends TelemetryBase {
 	event: "session_start";
-	data: {
-		reason: "startup" | "reload" | "new" | "resume" | "fork";
-	};
+	data: { reason: "startup" | "reload" | "new" | "resume" | "fork" };
+}
+
+export interface ToolExposure extends ToolIdentity {
+	name: string;
+	definition_tokens: { value: number; method: string };
 }
 
 export interface TurnStartRecord extends TelemetryBase {
 	event: "turn_start";
 	turn_id: string;
+	interaction_id?: string;
 	data: {
 		turn_index: number;
-		active_tools: string[];
-		toolset_hash: string;
-		tool_definitions: Array<{ name: string; estimated_tokens: number }>;
-		repo_map: {
-			enabled: boolean;
-			freshness?: string;
-			map_id?: string;
-		};
+		tools: ToolExposure[];
+		repo_map: { enabled: boolean; freshness?: string; map_id?: string };
 	};
 }
 
-export interface ToolCallRecord extends TelemetryBase {
-	event: "tool_call";
+export interface ToolCallStartRecord extends TelemetryBase, CallDimensions {
+	event: "tool_call_start";
 	turn_id: string;
 	tool_call_id: string;
 	data: {
 		turn_index: number;
-		tool: {
-			name: string;
-			cohort: string;
+		tool: { name: string; identity: ToolIdentity };
+	};
+}
+
+export interface ToolExecutionStartRecord extends TelemetryBase, CallDimensions {
+	event: "tool_execution_start";
+	turn_id: string;
+	tool_call_id: string;
+	data: {
+		turn_index: number;
+		tool: { name: string; identity: ToolIdentity };
+		input: { requested: InputProjection; executed: InputProjection };
+		preparation?: ToolPreparationTelemetry;
+		approval?: ApprovalTelemetry;
+		projection_failed?: boolean;
+	};
+}
+
+export interface ToolCallEndRecord extends TelemetryBase, CallDimensions {
+	event: "tool_call_end";
+	turn_id: string;
+	tool_call_id: string;
+	data: {
+		turn_index: number;
+		tool: { name: string; identity: ToolIdentity };
+		timing: {
+			call_started_at: string;
+			execution_started_at?: string;
+			execution_ended_at?: string;
+			execution_duration_ms?: number;
+			call_duration_ms: number;
 		};
-		input: {
-			requested: InputProjection;
-			executed?: InputProjection;
-		};
+		input: { requested: InputProjection; executed?: InputProjection };
 		annotations: {
 			preparation?: ToolPreparationTelemetry;
 			approval?: ApprovalTelemetry;
@@ -132,16 +200,10 @@ export interface ToolCallRecord extends TelemetryBase {
 		result: {
 			ok?: boolean;
 			outcome: string;
-			error?: {
-				source: string;
-				code?: string;
-			};
+			error?: { source: string; code?: string };
 			output: {
 				text_chars: number;
-				estimated_tokens: {
-					value: number;
-					method: string;
-				};
+				estimated_tokens: { value: number; method: string };
 				truncated: boolean;
 			};
 			metrics: MetricMap;
@@ -153,10 +215,38 @@ export interface ToolCallRecord extends TelemetryBase {
 export interface TurnEndRecord extends TelemetryBase {
 	event: "turn_end";
 	turn_id: string;
+	interaction_id?: string;
 	data: {
 		turn_index: number;
-		tool_calls: number;
 		duration_ms: number;
+		expected_call_count: number;
+		observed_start_count: number;
+		observed_end_count: number;
+		unfinished_call_count: number;
+		projection_failure_count: number;
+		missing_start_ids: string[];
+		missing_end_ids: string[];
+	};
+}
+
+export type CollectionHealthIssue =
+	| "invalid_jsonl"
+	| "sequence_gap"
+	| "missing_start"
+	| "missing_end"
+	| "unfinished_turn"
+	| "projection_failed"
+	| "metric_schema_conflict"
+	| "writer_failure";
+
+export interface CollectionHealthRecord extends TelemetryBase {
+	event: "collection_health";
+	turn_id?: string;
+	tool_call_id?: string;
+	data: {
+		issue: CollectionHealthIssue;
+		count?: number;
+		details?: JsonObject;
 	};
 }
 
@@ -164,7 +254,17 @@ export interface SessionEndRecord extends TelemetryBase {
 	event: "session_end";
 	data: {
 		reason: "quit" | "reload" | "new" | "resume" | "fork";
+		unfinished_turn_id?: string;
+		unfinished_call_count: number;
 	};
 }
 
-export type TelemetryRecord = SessionStartRecord | TurnStartRecord | ToolCallRecord | TurnEndRecord | SessionEndRecord;
+export type TelemetryRecord =
+	| SessionStartRecord
+	| TurnStartRecord
+	| ToolCallStartRecord
+	| ToolExecutionStartRecord
+	| ToolCallEndRecord
+	| TurnEndRecord
+	| CollectionHealthRecord
+	| SessionEndRecord;

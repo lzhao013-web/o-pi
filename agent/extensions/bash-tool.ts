@@ -54,8 +54,9 @@ export default function bashTool(pi: ExtensionAPI): void {
 		},
 		repair: { singleStringField: "command" },
 		telemetry: bashTelemetry,
-		cohort: {
-			implementationEntrypoints: ["src/bash-tool/index.ts", "src/bash-tool/telemetry.ts"],
+		identity: {
+			behaviorEntrypoints: ["src/bash-tool/index.ts"],
+			telemetryEntrypoints: ["src/bash-tool/telemetry.ts"],
 			config: async () => ({ bash: await loadBashToolConfig(), approval: await loadApprovalGateConfig() }),
 		},
 	});

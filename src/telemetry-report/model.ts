@@ -17,6 +17,8 @@ export interface CanonicalCandidate extends CanonicalReference {
 
 export interface CanonicalMetric {
 	value: string | number | boolean;
+	kind: string;
+	aggregation: string;
 	unit?: string;
 }
 

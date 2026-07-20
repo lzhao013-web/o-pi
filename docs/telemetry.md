@@ -1,255 +1,239 @@
 # 本地遥测
 
-遥测系统共享同一套 decoder 和分析内核，并提供两个入口：
+o-pi 遥测保存本地、append-only 的一阶事实。采集失败不得改变 tool、turn 或 session 行为；采集层不推断工作流、不计算统计报告，也不把并行调用压成单一因果序列。
 
-* `npm run telemetry:report` 对全部持久化 JSONL 取稳定快照，生成跨会话 CSV、JSON 与 HTML。
-* `/telemetry` 从当前 session 的内存事件账本生成同口径报告，实时显示到最近完成的 turn。
-
-两者都只服务于本地个人分析。收集或报告失败不得改变工具、turn 或 session 行为。JSONL 是持久化权威数据；当前进程的内存账本还包含已经提交但尚未落盘的记录。报告不向原始记录写回推断结果。
-
-## 数据收集
-
-```text
-tool definition + repair hints + telemetry adapter
-  -> registerObservedTool
-  -> Pi lifecycle + shared telemetry event channel
-  -> session-scoped call store
-  -> turn_end message/results assembly
-  -> session event store
-  -> append-only JSONL writer
-```
-
-模块职责：
-
-* `src/telemetry/adapter.ts`：工具输入和结果事实的投影协议，并隔离投影异常。
-* `src/telemetry/tool.ts`：仓库内模型工具的统一注册入口，组合参数修复、执行和遥测观测。
-* `src/telemetry/channel.ts`：跨扩展传递当前调用的一阶事实。
-* `src/telemetry/runtime.ts`：collector 私有且随 session 重置的调用状态。
-* `src/telemetry/session-store.ts`：当前 session 的去重事件账本，供 `/telemetry` 读取。
-* `src/telemetry/collector.ts`：消费 Pi 生命周期，在 `turn_end` 汇合并写出记录。
-* `src/telemetry/record.ts`：组装记录并依据最终结果分类 outcome。
-* `src/telemetry/writer.ts`：按 session 顺序追加 JSONL，并公开 pending、persisted 和 failed 状态。
-* `src/telemetry/jsonl-reader.ts`：在与 writer 相同的文件锁下读取稳定 JSONL 快照。
-
-一次调用按 `toolCallId` 汇合以下原始遥测事实：
-
-```text
-tool_execution_start
-  -> argument preparation / repair
-  -> approval decision
-  -> execute start/end + adapter observation
-  -> turn_end assistant message + final tool result
-```
-
-这里的“原始”指未做跨调用统计或推断的一阶事实，不表示保存敏感正文。最终记录顺序以 `turn_end.message` 中的 tool-call 顺序为准，结果按 `toolCallId` 配对。记录先同步提交到内存账本，再异步排队落盘，因此 writer 变慢时 `/telemetry` 仍能看到最新完成的 turn。collector 不扫描 session tree，也不写自定义 session entry。
-
-恢复已有 session 时，collector 在 `session_start` 读取对应 JSONL，以 record `id` 去重并从历史最大 `sequence` 继续编号。session 切换前会 flush 旧 writer。水合失败时仅降级为本次进程的 live 视图，不阻断 session 启动。
-
-### 新工具接入
-
-新的模型可调用工具必须使用 `registerObservedTool()` 并提供 telemetry adapter：
-
-```ts
-const inspectTelemetry = defineToolTelemetry<InspectParams, InspectDetails>({
-  projectRequested(raw) {
-    return {
-      value: allowlistedRawInput(raw),
-      references: inputReferences(raw),
-    };
-  },
-  projectExecuted(params) {
-    return {
-      value: { path: params.path },
-      references: [{ relation: "target", kind: "path", value: params.path }],
-    };
-  },
-  observeResult(params, result) {
-    return {
-      metrics: { items: { value: result.details.items, unit: "item" } },
-      references: resultReferences(result),
-    };
-  },
-});
-
-registerObservedTool(pi, {
-  tool: inspectTool,
-  repair: { pathFields: ["path"] },
-  telemetry: inspectTelemetry,
-  cohort: {
-    implementationEntrypoints: ["src/inspect/index.ts", "src/inspect/telemetry.ts"],
-    config: () => loadInspectConfig(),
-  },
-});
-```
-
-三个阶段的职责为：
-
-* `projectRequested(raw)`：以 `value` 保存明确列入白名单的模型原始输入，并可提供标准化 `references`；省略时为空投影。
-* `projectExecuted(params)`：保存真正进入 `execute` 的强类型参数和语义引用。
-* `observeResult(params, result)`：从强类型结果提取无正文的 metrics、references、状态和结果修正事实。
-
-adapter 必填。没有可记录数据的工具应显式使用 `minimalTelemetry()`。投影抛错或返回不可序列化数据时，调用降级为空投影并标记 `annotations.projection_failed`，工具仍继续执行。
-
-`cohort` 也必填。实现 hash 只遍历该工具声明的入口及其相对源码依赖，不使用 Git tag、commit 或全仓库 hash。`config` 返回影响工具行为的有效配置；配置只参与 hash，原值不写入遥测。
-
-报告不维护工具白名单。任何工具都会先进入通用 parser；只要 adapter 提供 metrics 和 references，新工具无需报告端代码即可参与通用统计、目标匹配和 candidate conversion。数值、布尔值和字符串 metric 分别汇总为数值分布、真假计数和值计数，metric 的 name/unit 组合永久确定其语义。
-
-### 存储结构
-
-每个 Pi session 固定追加到同一个文件；文件名包含经过清洗和 hash 的 session 身份，避免不同 session 清洗后碰撞：
+持久化权威数据位于：
 
 ```text
 ~/.pi/telemetry/sessions/<session>.jsonl
 ```
 
-记录不包含且永远不增加日志版本字段。每行是一个自描述的独立 JSON 对象，事件类型为：
+主文件写入失败时，writer 尝试把失败事实写到同目录的 `<session>.health.jsonl`。`/telemetry` 使用当前进程的内存账本；`npm run telemetry:report` 读取持久化快照。
+
+## 采集链
 
 ```text
-session_start | turn_start | tool_call | turn_end | session_end
+Pi lifecycle + observed-tool runtime facts
+  -> TelemetryCallStore (tool_call_id keyed)
+  -> session event ledger
+  -> ordered JSONL writer
 ```
 
-`tool_call` 保存：
+模块边界：
+
+* `adapter.ts`：输入和结果的白名单投影、metric/reference 校验、投影异常隔离。
+* `identity.ts`：分别计算行为、定义、遥测口径和有效配置 hash。
+* `tool.ts`：组合参数修复、工具执行和 adapter 观测；不持久化事件。
+* `channel.ts`：在工具扩展与 collector 间传递 preparation、approval、execute 和 observation 一阶事实。
+* `runtime.ts`：按 `tool_call_id` 保存尚未完成的调用状态。
+* `collector.ts`：把 Pi 生命周期转换为原始事件并维护严格递增的 `sequence`。
+* `record.ts`：只组装单次调用 end 事实和 outcome，不做跨调用推断。
+* `session-store.ts`：当前 session 的内存事件账本。
+* `writer.ts`：串行追加主 JSONL，并独立记录 writer failure health sidecar。
+* `jsonl-reader.ts`：在同一文件锁下读取稳定快照。
+
+## 工具身份与运行 context
+
+不存在 cohort hash。每个工具暴露和调用都保存四个互不替代的 hash：
+
+* `behavior_hash`：工具行为源码、模型可见定义中的行为部分、execute 和 repair 配置；不包含 telemetry adapter。
+* `definition_hash`：当前模型可见的 name、description、parameters 和 prompt guidelines。
+* `telemetry_hash`：adapter 源码与 `projectRequested`、`projectExecuted`、`observeResult` 口径。
+* `config_hash`：当前有效的行为配置；原始配置值不落盘。
+
+修改 adapter 只改变 `telemetry_hash`，不会改变 `behavior_hash`。注册工具时必须把行为入口和遥测入口分开：
+
+```ts
+registerObservedTool(pi, {
+  tool: inspectTool,
+  repair: { pathFields: ["path"] },
+  telemetry: inspectTelemetry,
+  identity: {
+    behaviorEntrypoints: ["src/inspect/index.ts"],
+    telemetryEntrypoints: ["src/inspect/telemetry.ts"],
+    config: () => loadInspectConfig(),
+  },
+});
+```
+
+非 o-pi observed tool 若无法取得实现或 adapter 源码，仍保存可靠的 `definition_hash`，其余对应字段明确写为 `unavailable`，不以 definition hash 冒充行为 hash。
+
+以下运行维度保存在每条事件的 `context`，不参与上述身份 hash：
 
 ```jsonc
 {
-  "event": "tool_call",
-  "id": "<uuid>",
+  "cwd": "/workspace",
+  "model": { "provider": "openai", "id": "gpt-5.4" },
+  "thinking_level": "high",
+  "toolset": { "active": ["read", "grep"], "hash": "<sha256>" },
+  "host": {
+    "pi_version": "...",
+    "mode": "tui",
+    "platform": "linux",
+    "arch": "x64",
+    "node_version": "..."
+  },
+  "branch": { "leaf_id": "...", "lineage_hash": "<sha256>", "depth": 12 }
+}
+```
+
+`branch` 只来自 Pi session tree 中可读取的 leaf 和 ancestry。不可获得的字段省略。
+
+## 原始事件模型
+
+每行是一个自描述 JSON 对象，公共 envelope 为：
+
+```jsonc
+{
+  "event": "tool_call_start",
+  "id": "<record-uuid>",
   "timestamp": "2026-01-01T00:00:00.000Z",
   "session_id": "<session-id>",
   "sequence": 12,
-  "turn_id": "<turn-id>",
-  "tool_call_id": "<call-id>",
-  "context": {
-    "cwd": "/workspace",
-    "model": { "provider": "openai", "id": "..." },
-    "thinking_level": "high"
-  },
+  "context": {}
+}
+```
+
+事件集合：
+
+```text
+session_start
+turn_start
+tool_call_start
+tool_execution_start
+tool_call_end
+turn_end
+collection_health
+session_end
+```
+
+### turn_start
+
+`turn_start.data.tools` 为当前 turn 的完整 exposure。每个 active tool 都包含 name、四类 hash，以及 definition token 估算的 `value` 和 `method`。因此可以确定某个具体行为实现在哪些 turn 可用但未被调用。
+
+### tool_call_start
+
+Pi 发出 `tool_execution_start` 后立即提交最小事实，不等待参数修复、adapter、工具执行或 `turn_end`：
+
+```jsonc
+{
+  "event": "tool_call_start",
+  "turn_id": "...",
+  "tool_call_id": "call-1",
+  "interaction_id": "...",
+  "assistant_message_id": "...",
+  "tool_batch_id": "...",
+  "batch_size": 2,
+  "batch_index": 0,
   "data": {
     "turn_index": 3,
-    "tool": { "name": "read", "cohort": "<sha256>" },
-    "input": {
-      "requested": { "value": {}, "references": [] },
-      "executed": { "value": {}, "references": [] }
-    },
-    "annotations": {
-      "preparation": {},
-      "approval": {},
-      "execution": {}
-    },
-    "result": {
-      "ok": true,
-      "outcome": "success",
-      "output": {},
-      "metrics": {
-        "returned_lines": { "value": 20, "unit": "line" }
-      },
-      "references": []
-    }
+    "tool": { "name": "read", "identity": { "behavior_hash": "..." } }
   }
 }
 ```
 
-`id` 唯一标识记录；`sequence` 表示采集器观察到的事件顺序，文件行序表示实际落盘顺序。实例内 Promise 队列串行写入，跨实例和进程通过 session 文件锁串行追加；锁只覆盖单行 append 并在 finally 中释放。writer 统计待写、成功和失败记录，但错误仍不向 Pi 生命周期传播。每条记录重复保存解释自身所需的 context，不依赖文件名或前置事件。两条调用只有在 `data.tool.name` 与 `data.tool.cohort` 都相同时才可合并分析。cohort 是以下内容的 SHA-256：宿主 Pi 版本、该工具的 implementation hash、有效配置 hash、provider/model、thinking level 和当前工具集 hash。
+进程崩溃、强制终止或永久挂起时，只有 start 而没有 end 即表示 unfinished，不会静默丢失。
 
-`result.ok` 是稳定的通用成功事实；`outcome` 是开放字符串。当前 writer 使用 `success`、`tool_error`、`validation_error`、`blocked`、`timeout`、`aborted`、`exception` 和 `missing_result`，parser 不拒绝未来值。写入采用 best-effort 语义，序列化、建目录、append 和 flush 失败均被隔离。
+### tool_execution_start
 
-### 永久兼容约束
+adapter 已完成 requested/executed 投影且工具真正进入 execute 时写入。它保存执行开始时间（envelope timestamp）、完整工具 identity、输入投影、preparation、已有 approval 和 `projection_failed`。验证失败或审批拒绝的调用可以没有该事件。
 
-存储格式只允许单调扩展：
+### tool_call_end
 
-* 已发布字段永不改名、改变 JSON 类型、单位或含义；writer 可以停止写，reader 永久保留读取能力。
-* 新需求只增加可选字段、事件名或开放字符串值；设计错误通过新字段修正，旧字段不得复用。
-* 工具名、event、outcome、reference 的 relation/kind/group/source 均为开放字符串。
-* `additionalProperties` 始终允许；未知字段保留在 raw parse result 中，不导致整条记录失败。
-* 缺失表示未采集，不转换为 `0`、`false` 或空值；`null` 只表示明确无值。
-* 最小身份无效才拒绝记录；可选部分无效时产生 partial record，其余事实继续进入报告。
+Pi 的最终 `tool_execution_end` 与 observed-tool runtime 事实通过 `tool_call_id` 汇合后写入，不等待 `turn_end`。内容包括：
 
-`references` 是跨工具语义协议。输入目标和结果对象统一使用 `{ relation, kind, value }`，可选附加 rank、group、sources 和行区间。parser 只对已知 path/URL 做规范化，未知 kind 原样保留并仍可按 kind/value 匹配。因此工具可以增加、删除或改名，报告端无需新增 parser。
+* call start、execute start、execute end、execute duration 和 call duration；
+* requested/executed input；
+* preparation、approval、execution、projection failure；
+* `ok`、开放字符串 `outcome`、结构化 error；
+* 输出字符数、带 method 的 token 估算、截断状态；
+* typed metrics 和 references。
 
-### 数据边界
+当前 outcome 有 `success`、`tool_error`、`validation_error`、`blocked`、`timeout`、`aborted`、`exception` 和 `missing_result`。reader 必须允许未来字符串。
 
-adapter 只保存统计所需的最小事实。路径、查询词、URL、Bash command 和小型标量参数可按白名单保留。写入内容、编辑前后文本和 subagent 任务正文只保存 `{ chars, lines, sha256 }`。
+### 并行、interaction 与 lineage
 
-不保存工具输出正文、diff、网页正文、搜索标题或摘要、诊断正文、subagent 输出和错误消息。结果只保留字符数、带 method 的估算 token、截断状态、typed metrics，以及模型实际看到的语义 references。
+一次 `agent_start` 生成一个 collector interaction id。一个 assistant message 中的全部 tool calls 共享 `assistant_message_id` 和 `tool_batch_id`，`batch_index` 保留 assistant source order。
 
-## 报告生成
+采集层不声称 batch 一定并行，也不以结束顺序改写 source order。离线分析可用各调用真实的 execute 时间区间判断重叠；不同 branch 由 context 中的 lineage 标识区分。
 
-运行：
+### turn_end 与完整性
+
+`turn_end` 保存：
+
+* `expected_call_count`：assistant message 中声明的调用数；
+* `observed_start_count`、`observed_end_count`；
+* `unfinished_call_count`；
+* `projection_failure_count`；
+* `missing_start_ids`、`missing_end_ids`。
+
+缺少 `turn_end` 本身表示 unfinished turn。正常 shutdown 时若仍有活动 turn，先写 `collection_health(issue=unfinished_turn)`，`session_end` 也保存 unfinished call 数。
+
+恢复 session 时从历史最大 `sequence + 1` 继续，并检查无效 JSONL 和 sequence gap。`sequence` 是 collector 观察顺序；单 writer Promise 队列保持落盘顺序，跨 writer 通过单行文件锁串行追加。
+
+## Metric 语义
+
+metric 不允许只有 `value`。它是带判别字段的 union：
+
+| kind | aggregation | value | unit |
+| --- | --- | --- | --- |
+| `categorical` | `count_by_value` | string/number/boolean | 无 |
+| `count` | `sum` | 非负整数 | 必填 |
+| `distribution` | `distribution` | number | 必填 |
+| `duration` | `distribution` | 非负 number | `ms` 或 `s` |
+| `bytes` | `sum` 或 `distribution` | 非负 number | `byte` |
+| `ratio` | `mean` | 0..1 | `ratio` |
+
+使用 `categoricalMetric`、`countMetric`、`distributionMetric`、`durationMetric`、`bytesMetric` 和 `ratioMetric` 构造。`exit_code`、`http_status`、start/end line 是 categorical numeric；行数是 count；耗时和字节数使用专用 kind。
+
+collector 记录首次出现的 metric name schema；同一 session 后续若同名 metric 的 kind、aggregation 或 unit 冲突，会丢弃冲突值并写 `collection_health(issue=metric_schema_conflict)`。
+
+## Reference 语义
+
+reference 的最小字段为 `{ relation, kind, value }`，可选维度为：
+
+```jsonc
+{
+  "relation": "candidate",
+  "kind": "region",
+  "value": "src/a.ts",
+  "group": "primary",
+  "global_rank": 3,
+  "group_rank": 1,
+  "sources": [
+    { "id": "lsp-typescript", "family": "lsp", "source_rank": 2 },
+    { "id": "repo-map-symbol", "family": "repo-map" }
+  ],
+  "resource": {
+    "content_hash": { "algorithm": "sha256", "value": "..." },
+    "snapshot": "...",
+    "revision": "...",
+    "start_line": 10,
+    "end_line": 24
+  }
+}
+```
+
+raw source id 不归并；family 只是额外分层。不同 candidate group 可同时拥有独立 group rank；source rank 属于具体 source。无法可靠获得的 rank、snapshot、revision 或 hash 省略，不补默认值。
+
+## Collection health 与 writer 失败
+
+`collection_health` 可记录：`invalid_jsonl`、`sequence_gap`、`missing_start`、`missing_end`、`unfinished_turn`、`projection_failed`、`metric_schema_conflict` 和 `writer_failure`。
+
+主 JSONL append 失败时，writer 把 failed event id/type/sequence 和非敏感 error name/code 写入 health sidecar。sidecar 的 envelope `sequence` 与 `data.details.health_sequence` 都指向失败的主事件序号。恢复 session 时主文件和 health sidecar 共同决定下一个 sequence，避免复用失败事件的编号。若连 sidecar 也不可写，`health_failed` 会增加；任何失败都不抛回 agent 主流程。
+
+## 数据边界
+
+adapter 只保存分析所需的白名单事实。路径、查询词、URL、Bash command 和小型标量可按工具需要保留。写入内容、编辑文本和 subagent 任务正文只保存 chars、lines 和 SHA-256。
+
+不保存工具输出正文、diff、网页正文、搜索标题/摘要、诊断正文、subagent 输出或错误消息。未知可选字段允许扩展；缺失表示未采集，不伪装为 `0`、`false` 或空值。
+
+没有历史格式兼容层：reader 只把本模型的 `tool_call_end` 当作完整调用。当前报告模块内部仍以 `cohort_id` 字段名承载由 `behavior_hash` 派生的分析分组键；这不是原始事件字段，也不会重新把 config、adapter 或运行 context 混入 hash。
+
+## 报告
 
 ```bash
 npm run telemetry:report
 ```
 
-默认读取 `~/.pi/telemetry/sessions/*.jsonl`，完整统计后写入 `~/.pi/telemetry/reports/latest/`。可用 `--input DIR` 和 `--output DIR` 覆盖路径。输入目录不存在时生成空报告；无法解析的行只计入 metadata。
-
-`src/telemetry-report/` 的职责分层：
-
-* `reader.ts`：工具无关的容错读取；返回 known、partial、unknown_event 或 invalid，并保留 raw record。
-* `ingest.ts`：单次扫描记录，建立与采集端类型解耦的 canonical dataset。
-* `statistics.ts`：统一的纯分析入口，按 `tool_name + cohort_id` 计算统计量、精确重试和工具转移。
-* `live.ts`：把当前 collector snapshot 转换为相同的 `ReportSnapshot`，并按账本 revision 缓存。
-* `render-tui.ts`、`viewer.ts`：渲染 `/telemetry` 只读浮层。
-* `output.ts`：写出 CSV、JSON 和自包含 HTML；单文件完整报告 `report.json` 最后原子发布，作为本次 generation 的提交点。
-
-读取不检查或分派任何日志版本。必需身份字段缺失时记录为 invalid；可选字段缺失时保持未知；局部类型错误产生 partial；未知事件和开放字符串单独计数而不影响已知记录。重复 `id` 只摄入一次。metadata 分别报告 parsed line、decoded、partial、unknown event、invalid record、duplicate 和 JSON syntax error。
-
-输出包含：
-
-```text
-tools.csv
-tools.json
-tool_transitions.csv
-repeated_calls.csv
-candidate_conversions.csv
-failure_recoveries.csv
-near_retries.csv
-tool_oscillations.csv
-workflow.json
-summary.json
-metadata.json
-report.html
-report.json
-```
-
-CLI 先固定排序后的输入文件清单，再对每个文件使用与 writer 相同的锁读取。`metadata.consistency=durable_snapshot`；最后一个 lifecycle 事件为 `session_end` 的 session 计入 `complete_sessions`，其余计入 `open_sessions`。独立 CLI 无法强制另一个 Pi 进程清空尚未开始的异步写队列，因此开放 session 只保证包含快照时已经持久化的记录。
-
-## 会话内实时报告
-
-运行：
-
-```text
-/telemetry
-```
-
-TUI 中打开只读滚动浮层，展示 overview、工具对比、workflow 和 collection health；非 TUI 模式通过 notification 输出紧凑摘要。命令不追加 session entry，不发送模型消息，也不触发新 turn。
-
-`metadata.scope=current_session`、`metadata.consistency=live_committed`。报告统计到最近一个完成的 `turn_end`；正在执行的调用只计入 `in_progress_calls`，不参与成功率、恢复率和 workflow 推断。`pending_writes` 和 `failed_writes` 说明内存报告与持久化状态的差异。
-
-“当前 session”按 `session_id` 定义，包含该 session 实际执行过的全部 turn，包括导航后不再位于活动 branch 的执行记录。这与遥测不扫描 session tree 的边界一致。
-
-HTML 先按工具 cohort 提供横向比较，再为每个 cohort 单独展示调用量、成功率、outcome、错误码、执行时长、输出 token、参数修复、审批、候选来源、前后工具、重复调用和工具自有 metrics，最后展示 session 级工作流明细。所有统计均可由原始 JSONL 确定性重算。
-
-### Session 级工作流分析
-
-`tool_transitions.csv` 按同一 session 中相邻调用的工具 cohort 计算有向转移。除调用次数外，还记录独立 session 数、`P(to|from)`、相对目标工具 cohort 全局基线的 lift、同 turn/跨 turn 次数、输入 path/URL 相同次数，以及前后 outcome 分布。并行调用仍按 assistant message 中的稳定顺序排列；转移只表示相邻关系，不表示执行依赖或因果关系。
-
-`candidate_conversions.csv` 将任何工具产生的 `relation=candidate` reference 与同一 session 后续调用的 input reference 匹配。已知 path/URL 会规范化，未知 kind 按 kind/value 精确匹配。每个 producer、source、group 组合统计：
-
-* candidate 数、转化数、独立曝光/转化 session 数；
-* 全部、rank 1 和 rank 1-3 candidate 的转化率；
-* 已转化 candidate 的平均 rank、到首次使用的平均调用距离和 consumer 工具分布。
-
-一个 candidate 有多个 source 时会分别归因到每个 source，因此明细行可重叠；summary 中的曝光和转化数按 candidate 本身去重。首次匹配后的重复使用不重复计数。
-
-`failure_recoveries.csv` 对每次 `ok=false` 调用检查同一 session 的后续三次调用，取第一个 `ok=true` 调用；缺失 `ok` 的调用不猜测成功或失败：
-
-```text
-same tool + same normalized input -> exact_retry
-same tool + changed input         -> modified_retry
-different tool                    -> fallback
-no success in next 3 calls        -> unrecovered
-```
-
-恢复成本是失败调用之后、截至恢复调用的执行时长和输出 token 合计。该统计是有界的序列启发式，不能证明后续成功调用解决了同一用户意图。
-
-`near_retries.csv` 只记录失败后紧邻的同工具、不同输入调用，并列出变化的顶层字段。完全相同输入继续由 `repeated_calls.csv` 记录。`tool_oscillations.csv` 记录连续 `A -> B -> A`，同时标记是否同 turn、第一次和第三次调用是否指向相同 path/URL。两者用于发现试参循环和工具边界振荡，不自动判定为设计缺陷。
+默认读取 sessions 目录并生成 CSV、JSON 和 HTML；`/telemetry` 对当前内存账本运行同一分析。报告只读原始记录，不回写推断。并行 batch 的相邻展示或 transition 仅是 source order，不表示执行依赖或因果关系。

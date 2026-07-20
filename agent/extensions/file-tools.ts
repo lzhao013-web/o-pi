@@ -144,8 +144,9 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderLsCall,
 		renderResult: renderLsResult,
-	}, repair: { singleStringField: "path", pathFields: ["path"] }, telemetry: lsTelemetry, cohort: {
-		implementationEntrypoints: ["src/file-tools/pi/adapters/ls.ts", "src/file-tools/telemetry.ts"],
+	}, repair: { singleStringField: "path", pathFields: ["path"] }, telemetry: lsTelemetry, identity: {
+		behaviorEntrypoints: ["src/file-tools/pi/adapters/ls.ts"],
+		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
 		config: (ctx) => loadFileToolsConfig(ctx.cwd),
 	} });
 
@@ -164,8 +165,9 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderFindCall,
 		renderResult: renderFindResult,
-	}, repair: { singleStringField: "query", pathFields: ["path"] }, telemetry: findTelemetry, cohort: {
-		implementationEntrypoints: ["src/file-tools/pi/adapters/find.ts", "src/file-tools/telemetry.ts"],
+	}, repair: { singleStringField: "query", pathFields: ["path"] }, telemetry: findTelemetry, identity: {
+		behaviorEntrypoints: ["src/file-tools/pi/adapters/find.ts"],
+		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), repoMap: await loadRepoMapConfig() }),
 	} });
 
@@ -185,8 +187,9 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 		},
 		renderCall: renderGrepCall,
 		renderResult: renderGrepResult,
-	}, repair: { singleStringField: "query", pathFields: ["path"] }, telemetry: grepTelemetry, cohort: {
-		implementationEntrypoints: ["src/file-tools/pi/adapters/grep.ts", "src/file-tools/telemetry.ts"],
+	}, repair: { singleStringField: "query", pathFields: ["path"] }, telemetry: grepTelemetry, identity: {
+		behaviorEntrypoints: ["src/file-tools/pi/adapters/grep.ts"],
+		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig() }),
 	} });
 
@@ -214,8 +217,9 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 			startLine: "start_line",
 			endLine: "end_line",
 		},
-	}, telemetry: readTelemetry, cohort: {
-		implementationEntrypoints: ["src/file-tools/pi/adapters/read.ts", "src/file-tools/telemetry.ts"],
+	}, telemetry: readTelemetry, identity: {
+		behaviorEntrypoints: ["src/file-tools/pi/adapters/read.ts"],
+		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig() }),
 	} });
 
@@ -241,8 +245,9 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 			text: "content",
 			contents: "content",
 		},
-	}, telemetry: writeTelemetry, cohort: {
-		implementationEntrypoints: ["src/file-tools/pi/adapters/write.ts", "src/file-tools/telemetry.ts"],
+	}, telemetry: writeTelemetry, identity: {
+		behaviorEntrypoints: ["src/file-tools/pi/adapters/write.ts"],
+		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig(), approval: await loadApprovalGateConfig() }),
 	} });
 
@@ -275,8 +280,9 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 			"edits.*.newText": "new",
 		},
 		objectArrayFromFields: [{ arrayField: "edits", fields: ["old", "new"] }],
-	}, telemetry: editTelemetry, cohort: {
-		implementationEntrypoints: ["src/file-tools/pi/adapters/edit.ts", "src/file-tools/telemetry.ts"],
+	}, telemetry: editTelemetry, identity: {
+		behaviorEntrypoints: ["src/file-tools/pi/adapters/edit.ts"],
+		telemetryEntrypoints: ["src/file-tools/telemetry.ts"],
 		config: async (ctx) => ({ file: await loadFileToolsConfig(ctx.cwd), lsp: (await loadLspConfig()).config, repoMap: await loadRepoMapConfig(), approval: await loadApprovalGateConfig() }),
 	} });
 

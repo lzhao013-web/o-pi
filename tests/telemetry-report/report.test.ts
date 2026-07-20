@@ -73,11 +73,11 @@ describe("telemetry report", () => {
 		expect(find?.candidate_group_counts).toEqual({ primary: 1, related: 1 });
 		expect(find?.candidate_source_counts).toEqual({ lexical: 1, "repo-map": 1 });
 		expect(find?.metric_statistics).toMatchObject({
-			scanned: { numeric: { samples: 2, total: 150, min: 50, max: 100, average: 75 } },
+			"scanned[value]": { numeric: { samples: 2, total: 150, min: 50, max: 100, average: 75 } },
 			cached: { boolean: { true: 1, false: 1 } },
 			provider: { values: { local: 2 } },
 		});
-		expect(report.tools.find((row) => row.tool === "future-tool")?.metric_statistics).toHaveProperty("custom_score");
+		expect(report.tools.find((row) => row.tool === "future-tool")?.metric_statistics).toHaveProperty("custom_score[value]");
 		expect(report.tools.find((row) => row.tool === "ls")).toMatchObject({ calls: 0, unused_exposures: 1, unused_exposure_cost: 10 });
 	});
 
@@ -109,7 +109,7 @@ describe("telemetry report", () => {
 			calls: 1,
 			candidates: 1,
 			candidate_group_counts: { unknown: 1 },
-			metric_statistics: { custom_score: { numeric: { samples: 1, total: 9 } } },
+			metric_statistics: { "custom_score[value]": { numeric: { samples: 1, total: 9 } } },
 		});
 		expect(report.metadata).toMatchObject({ partial_records: 1, duplicate_records: 1, unknown_events: 1 });
 	});
@@ -281,7 +281,7 @@ describe("telemetry report", () => {
 			invalidLines: 1,
 			lastCompletedTurn: 0,
 			inProgressCalls: 1,
-			writer: { pending: 2, persisted: 3, failed: 1, last_failure_at: "2026-01-01T00:00:00.000Z" },
+			writer: { pending: 2, persisted: 3, failed: 1, health_persisted: 1, health_failed: 0, last_failure_at: "2026-01-01T00:00:00.000Z" },
 		};
 		const live = { report: calculateLiveReport(snapshot, "2026-01-02T00:00:00.000Z"), sessionId: "session-1234567890" };
 		const batch = calculateTelemetryReport(records, { generatedAt: "2026-01-02T00:00:00.000Z" });
@@ -318,7 +318,7 @@ describe("telemetry report", () => {
 				invalidLines: 0,
 				lastCompletedTurn: 0,
 				inProgressCalls: 0,
-				writer: { pending: 0, persisted: 1, failed: 0 },
+				writer: { pending: 0, persisted: 1, failed: 0, health_persisted: 0, health_failed: 0 },
 			}),
 		});
 		const registered = command;
@@ -343,12 +343,13 @@ function prefixRecords(calls: readonly object[]): object[] {
 			turn_id: "t1",
 			data: {
 				turn_index: 0,
-				active_tools: ["find", "grep", "ls", "read", "bash", "future-tool"],
-				toolset_hash: "toolset",
-				tool_definitions: [
-					{ name: "find", estimated_tokens: 20 },
-					{ name: "grep", estimated_tokens: 12 },
-					{ name: "ls", estimated_tokens: 10 },
+				tools: [
+					{ name: "find", definition_tokens: { value: 20, method: "test" } },
+					{ name: "grep", definition_tokens: { value: 12, method: "test" } },
+					{ name: "ls", definition_tokens: { value: 10, method: "test" } },
+					{ name: "read", definition_tokens: { value: 0, method: "test" } },
+					{ name: "bash", definition_tokens: { value: 0, method: "test" } },
+					{ name: "future-tool", definition_tokens: { value: 0, method: "test" } },
 				],
 				repo_map: { enabled: false },
 			},
@@ -382,12 +383,12 @@ interface CallOptions {
 
 function call(id: string, tool: string, requested: Record<string, unknown>, options: CallOptions = {}): object {
 	return {
-		...base("tool_call", options.sessionId ?? "s1"),
+		...base("tool_call_end", options.sessionId ?? "s1"),
 		turn_id: options.turnId ?? "t1",
 		tool_call_id: id,
 		data: {
 			turn_index: 0,
-			tool: { name: tool, cohort: options.cohortId ?? "cohort-a" },
+			tool: { name: tool, identity: { behavior_hash: options.cohortId ?? "cohort-a" } },
 			input: {
 				requested: projection(requested),
 				...(options.executed === undefined ? {} : { executed: projection(options.executed) }),
@@ -406,13 +407,17 @@ function call(id: string, tool: string, requested: Record<string, unknown>, opti
 					estimated_tokens: { value: options.outputTokens ?? 4, method: "test" },
 					truncated: options.truncated ?? false,
 				},
-				metrics: Object.fromEntries(Object.entries(options.metrics ?? {}).map(([name, value]) => [name, { value }])),
+				metrics: Object.fromEntries(Object.entries(options.metrics ?? {}).map(([name, value]) => [name, typeof value === "number"
+					? { kind: "distribution", aggregation: "distribution", unit: "value", value }
+					: { kind: "categorical", aggregation: "count_by_value", value }])),
 				references: (options.candidates ?? []).map((item) => ({
 					relation: "candidate",
-					rank: item.rank,
-					...item.target,
+					global_rank: item.rank,
+					kind: item.target.kind,
+					value: item.target.value,
 					group: item.group,
-					sources: item.sources,
+					sources: item.sources.map((id) => ({ id })),
+					resource: { start_line: item.target.start_line, end_line: item.target.end_line },
 				})),
 			},
 		},
@@ -425,9 +430,7 @@ function turnStart(sessionId: string, turnId: string): object {
 		turn_id: turnId,
 		data: {
 			turn_index: 0,
-			active_tools: ["find", "read", "edit"],
-			toolset_hash: "toolset",
-			tool_definitions: [],
+			tools: ["find", "read", "edit"].map((name) => ({ name, definition_tokens: { value: 0, method: "test" } })),
 			repo_map: { enabled: false },
 		},
 	};

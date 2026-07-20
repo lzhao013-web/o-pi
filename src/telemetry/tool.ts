@@ -6,7 +6,7 @@ import type { RepairObservation, RepairSpecHints } from "../tool-repair/types.js
 import type { ToolTelemetryAdapter } from "./adapter.js";
 import { safeObserve, safeProjectExecuted, safeProjectRequested } from "./adapter.js";
 import { emitTelemetryRuntime } from "./channel.js";
-import { computeToolCohortId, computeToolImplementationHash, type ToolCohortSpec } from "./cohort.js";
+import { registerToolIdentity, type ToolIdentitySpec } from "./identity.js";
 import type { ExecuteTelemetry } from "./types.js";
 
 type ExecutedParams<TParams extends TSchema, TDetails, TState> = Parameters<ToolDefinition<TParams, TDetails, TState>["execute"]>[1];
@@ -14,7 +14,7 @@ type ExecutedParams<TParams extends TSchema, TDetails, TState> = Parameters<Tool
 export interface ObservedToolOptions<TParams extends TSchema, TDetails, TState> {
 	tool: ToolDefinition<TParams, TDetails, TState>;
 	telemetry: ToolTelemetryAdapter<ExecutedParams<TParams, TDetails, TState>, TDetails>;
-	cohort: ToolCohortSpec;
+	identity: ToolIdentitySpec;
 	repair?: RepairSpecHints;
 }
 
@@ -36,12 +36,9 @@ export function registerObservedTool<TParams extends TSchema, TDetails = unknown
 	const pending: PendingStart[] = [];
 	const executions = new Map<string, PendingExecution<ExecutedParams<TParams, TDetails, TState>>>();
 	const { tool, telemetry } = options;
-	const implementationHash = computeToolImplementationHash(tool, telemetry, options.cohort.implementationEntrypoints, options.repair);
-	pi.on("tool_execution_start", async (event, ctx) => {
+	registerToolIdentity(tool, telemetry, options.identity, options.repair);
+	pi.on("tool_execution_start", (event) => {
 		captureStart(event, tool.name, pending);
-		if (event.toolName !== tool.name) return;
-		const cohortId = await computeToolCohortId(pi, ctx, implementationHash, options.cohort.config).catch(() => "unavailable");
-		emitCohort(pi.events, event.toolCallId, tool.name, cohortId);
 	});
 	pi.on("tool_execution_end", (event) => {
 		clearStart(event, tool.name, pending);
@@ -111,15 +108,6 @@ export function registerObservedTool<TParams extends TSchema, TDetails = unknown
 		}
 	};
 	pi.registerTool({ ...preparedTool, execute });
-}
-
-function emitCohort(events: ExtensionAPI["events"], toolCallId: string, toolName: string, cohortId: string): void {
-	emitTelemetryRuntime(events, {
-		kind: "cohort",
-		tool_call_id: toolCallId,
-		tool_name: toolName,
-		cohort_id: cohortId,
-	});
 }
 
 function captureStart(event: { toolCallId: string; toolName: string; args: unknown }, toolName: string, pending: PendingStart[]): void {

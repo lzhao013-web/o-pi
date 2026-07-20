@@ -18,12 +18,6 @@ export const TELEMETRY_RUNTIME_CHANNEL = "o-pi:telemetry-runtime";
 
 export type TelemetryRuntimeEvent =
 	| {
-			kind: "cohort";
-			tool_call_id: string;
-			tool_name: string;
-			cohort_id: string;
-	  }
-	| {
 			kind: "preparation";
 			tool_call_id: string;
 			tool_name: string;
@@ -70,15 +64,6 @@ export function decodeTelemetryRuntimeEvent(value: unknown): TelemetryRuntimeEve
 		const toolName = string(payload["tool_name"]);
 		if (toolCallId === undefined || toolName === undefined) return undefined;
 		switch (payload["kind"]) {
-			case "cohort": {
-				const cohortId = string(payload["cohort_id"]);
-				return cohortId === undefined ? undefined : {
-					kind: "cohort",
-					tool_call_id: toolCallId,
-					tool_name: toolName,
-					cohort_id: cohortId,
-				};
-			}
 			case "preparation": {
 				const status = argumentStatus(payload["status"]);
 				const operations = repairOperations(payload["operations"]);

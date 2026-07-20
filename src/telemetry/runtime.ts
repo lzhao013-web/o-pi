@@ -1,40 +1,73 @@
 import type { TelemetryRuntimeEvent } from "./channel.js";
-import type { InputProjection, ToolRuntimeTelemetry } from "./types.js";
+import type {
+	CallDimensions,
+	InputProjection,
+	ToolIdentity,
+	ToolRuntimeTelemetry,
+} from "./types.js";
 
-interface MutableCallState {
+export interface ToolResultData {
+	content: unknown;
+	details: unknown;
+	isError: boolean;
+}
+
+export interface ToolCallState extends CallDimensions {
 	toolCallId: string;
 	toolName: string;
+	turnId: string;
+	turnIndex: number;
+	identity: ToolIdentity;
+	callStartedAt: number;
+	executionStartedAt?: number;
+	executionEndedAt?: number;
 	requested: InputProjection;
 	projectionFailed: boolean;
-	cohortId?: string;
 	preparation?: ToolRuntimeTelemetry["preparation"];
 	executed?: InputProjection;
 	approval?: ToolRuntimeTelemetry["approval"];
 	execute?: ToolRuntimeTelemetry["execute"];
 	observation?: ToolRuntimeTelemetry["observation"];
+	result?: ToolResultData;
 }
 
-/** Session-scoped state owned exclusively by the telemetry extension realm. */
-export class TelemetryCallStore {
-	readonly #calls = new Map<string, MutableCallState>();
+export interface StartCallInput extends CallDimensions {
+	toolCallId: string;
+	toolName: string;
+	turnId: string;
+	turnIndex: number;
+	identity: ToolIdentity;
+	startedAt: number;
+}
 
-	start(toolCallId: string, toolName: string): void {
-		this.#calls.set(toolCallId, {
-			toolCallId,
-			toolName,
+/** Session-scoped raw call state. It never invents missing lifecycle facts. */
+export class TelemetryCallStore {
+	readonly #calls = new Map<string, ToolCallState>();
+
+	start(input: StartCallInput): ToolCallState {
+		const call: ToolCallState = {
+			toolCallId: input.toolCallId,
+			toolName: input.toolName,
+			turnId: input.turnId,
+			turnIndex: input.turnIndex,
+			identity: input.identity,
+			callStartedAt: input.startedAt,
 			requested: { value: {} },
 			projectionFailed: false,
-		});
+			...(input.interaction_id === undefined ? {} : { interaction_id: input.interaction_id }),
+			...(input.assistant_message_id === undefined ? {} : { assistant_message_id: input.assistant_message_id }),
+			...(input.tool_batch_id === undefined ? {} : { tool_batch_id: input.tool_batch_id }),
+			...(input.batch_size === undefined ? {} : { batch_size: input.batch_size }),
+			...(input.batch_index === undefined ? {} : { batch_index: input.batch_index }),
+		};
+		this.#calls.set(input.toolCallId, call);
+		return call;
 	}
 
-	apply(event: TelemetryRuntimeEvent): void {
+	apply(event: TelemetryRuntimeEvent, observedAt: number): ToolCallState | undefined {
 		const call = this.#calls.get(event.tool_call_id);
-		if (call === undefined) return;
-		if (event.tool_name !== call.toolName) return;
+		if (call === undefined || event.tool_name !== call.toolName) return undefined;
 		switch (event.kind) {
-			case "cohort":
-				call.cohortId = event.cohort_id;
-				break;
 			case "preparation":
 				call.requested = event.requested;
 				call.preparation = { status: event.status, operations: event.operations };
@@ -42,38 +75,41 @@ export class TelemetryCallStore {
 				break;
 			case "execute_start":
 				call.executed = event.executed;
+				call.executionStartedAt ??= observedAt;
 				call.projectionFailed ||= event.projection_failed === true;
 				break;
 			case "execute_end":
 				call.execute = event.execute;
 				call.observation = event.observation;
+				call.executionEndedAt ??= observedAt;
 				call.projectionFailed ||= event.projection_failed === true;
 				break;
 			case "approval":
 				call.approval = event.approval;
 				break;
 		}
+		return call;
 	}
 
-	take(toolCallId: string, toolName: string): ToolRuntimeTelemetry | undefined {
+	finish(toolCallId: string, toolName: string, result: ToolResultData): ToolCallState | undefined {
 		const call = this.#calls.get(toolCallId);
-		if (call === undefined) return undefined;
-		this.#calls.delete(toolCallId);
-		if (call.toolName !== toolName) return undefined;
-		return {
-			tool_call_id: call.toolCallId,
-			tool_name: call.toolName,
-			...(call.cohortId === undefined ? {} : { cohort_id: call.cohortId }),
-			input: {
-				requested: call.requested,
-				...(call.executed === undefined ? {} : { executed: call.executed }),
-			},
-			...(call.preparation === undefined ? {} : { preparation: call.preparation }),
-			...(call.approval === undefined ? {} : { approval: call.approval }),
-			...(call.execute === undefined ? {} : { execute: call.execute }),
-			...(call.observation === undefined ? {} : { observation: call.observation }),
-			...(call.projectionFailed ? { projection_failed: true } : {}),
-		};
+		if (call === undefined || call.toolName !== toolName) return undefined;
+		call.result = result;
+		return call;
+	}
+
+	get(toolCallId: string): ToolCallState | undefined {
+		return this.#calls.get(toolCallId);
+	}
+
+	take(toolCallId: string): ToolCallState | undefined {
+		const call = this.#calls.get(toolCallId);
+		if (call !== undefined) this.#calls.delete(toolCallId);
+		return call;
+	}
+
+	forTurn(turnId: string): ToolCallState[] {
+		return [...this.#calls.values()].filter((call) => call.turnId === turnId);
 	}
 
 	reset(): void {

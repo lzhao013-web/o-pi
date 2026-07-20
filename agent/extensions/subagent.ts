@@ -56,8 +56,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		},
 		repair: { pathFields: ["tasks.*.cwd"] },
 		telemetry: subagentTelemetry,
-		cohort: {
-			implementationEntrypoints: ["src/subagent/index.ts", "src/subagent/telemetry.ts"],
+		identity: {
+			behaviorEntrypoints: ["src/subagent/index.ts"],
+			telemetryEntrypoints: ["src/subagent/telemetry.ts"],
 			config: (ctx) => loadSubagentConfig(ctx.cwd),
 		},
 	});
