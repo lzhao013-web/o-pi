@@ -5,50 +5,50 @@ import type { LiveTelemetryReport } from "./live.js";
 
 const WIDE_WIDTH = 92;
 
-/** Render a compact, read-only current-session report for TUI or notifications. */
+/** 渲染紧凑的当前会话遥测报告，供 TUI 浮层和通知使用。 */
 export function renderLiveTelemetry(value: LiveTelemetryReport, width: number): string[] {
 	const maxWidth = Math.max(1, width);
 	const report = value.report;
 	const lines = [
-		align("Telemetry · current session", "q close  ↑↓ scroll", maxWidth),
+		align("遥测 · 当前会话", "q 关闭  ↑↓ 滚动", maxWidth),
 		join([
-			value.session_id === undefined ? "session unavailable" : `session ${shortId(value.session_id)}`,
-			value.run_id === undefined ? undefined : `run ${shortId(value.run_id)}`,
-			value.enabled ? "collection active" : "collection disabled",
-			value.pending_calls === 0 ? undefined : `${value.pending_calls} in progress`,
+			value.session_id === undefined ? "会话不可用" : `会话 ${shortId(value.session_id)}`,
+			value.run_id === undefined ? undefined : `运行 ${shortId(value.run_id)}`,
+			value.enabled ? "采集已启用" : "采集已禁用",
+			value.pending_calls === 0 ? undefined : `${value.pending_calls} 个调用进行中`,
 		]),
-		join([`${report.inventory.calls} completed calls`, `${report.inventory.tools} tools`, `generated ${report.metadata.generated_at}`]),
+		join([`${report.inventory.calls} 次已完成调用`, `${report.inventory.tools} 个工具`, `生成于 ${report.metadata.generated_at}`]),
 		"",
-		"Tools",
+		"工具",
 		...toolLines(report.tools, maxWidth),
 		"",
-		"Edit · single vs multi-file",
+		"编辑 · 单文件与多文件",
 		join([
-			`${report.edit.calls} calls`,
-			`${report.edit.failed_calls} failed`,
-			`${report.edit.no_change_calls} no-change`,
+			`${report.edit.calls} 次调用`,
+			`${report.edit.failed_calls} 次失败`,
+			`${report.edit.no_change_calls} 次无变化`,
 		]),
 		join([
-			`${report.edit.batches.batches} parallel batches`,
-			`${report.edit.batches.multi_file_batches} multi-file`,
-			`${report.edit.batches.partial_failure_batches} partial failures`,
-			`potential reduction ${report.edit.batches.potential_call_reduction}`,
+			`${report.edit.batches.batches} 个并行批次`,
+			`${report.edit.batches.multi_file_batches} 个多文件批次`,
+			`${report.edit.batches.partial_failure_batches} 个部分失败批次`,
+			`可能减少 ${report.edit.batches.potential_call_reduction} 次调用`,
 		]),
 		"",
-		"Candidate ranking · heuristic",
-		candidateLine("overall", report.candidate_ranking),
+		"候选项排序 · 启发式",
+		candidateLine("总体", report.candidate_ranking),
 		conversionLine(report.candidate_ranking),
 		consumerLine(report.candidate_ranking),
 		"",
-		"Source families",
+		"候选来源类别",
 		...(["repo-map", "lsp"] as const).flatMap((source) => {
 			const statistics = report.candidate_ranking.by_source_family[source];
 			return statistics === undefined
-				? [`${source} · no candidates`]
+				? [`${source} · 无候选项`]
 				: [candidateLine(source, statistics), conversionLine(statistics), consumerLine(statistics)];
 		}),
 		"",
-		"Detailed sources",
+		"候选来源明细",
 		...sourceLines(report.candidate_ranking.by_source),
 	];
 	return lines.filter((line, index) => line.length > 0 || lines[index - 1]?.length !== 0)
@@ -58,54 +58,54 @@ export function renderLiveTelemetry(value: LiveTelemetryReport, width: number): 
 export function formatLiveTelemetrySummary(value: LiveTelemetryReport): string {
 	const report = value.report;
 	return join([
-		"Telemetry current session:",
-		`${report.inventory.calls} completed calls`,
-		`${report.inventory.tools} tools`,
-		`edit multi-file ${report.edit.batches.multi_file_batches}/${report.edit.batches.batches}`,
-		`candidates ${report.candidate_ranking.converted_candidates}/${report.candidate_ranking.candidates}`,
-		value.pending_calls === 0 ? undefined : `${value.pending_calls} in progress`,
-		value.enabled ? undefined : "collection disabled",
+		"当前会话遥测：",
+		`${report.inventory.calls} 次已完成调用`,
+		`${report.inventory.tools} 个工具`,
+		`编辑多文件批次 ${report.edit.batches.multi_file_batches}/${report.edit.batches.batches}`,
+		`候选项已使用 ${report.candidate_ranking.converted_candidates}/${report.candidate_ranking.candidates}`,
+		value.pending_calls === 0 ? undefined : `${value.pending_calls} 个调用进行中`,
+		value.enabled ? undefined : "采集已禁用",
 	]);
 }
 
 function toolLines(tools: readonly ToolStatistics[], width: number): string[] {
-	if (tools.length === 0) return ["no completed tool calls"];
+	if (tools.length === 0) return ["没有已完成的工具调用"];
 	if (width < WIDE_WIDTH) return tools.map((tool) => join([
 		tool.tool,
-		`${tool.calls} calls`,
-		`ok ${percent(tool.success_rate.value)}`,
-		`${tool.error_rate.numerator} errors`,
-		`p50 ${number(tool.duration_ms.p50)} ms`,
-		`${tool.repair.repaired_rate.numerator} repaired`,
+		`${tool.calls} 次调用`,
+		`成功率 ${percent(tool.success_rate.value)}`,
+		`${tool.error_rate.numerator} 个错误`,
+		`P50 ${number(tool.duration_ms.p50)} 毫秒`,
+		`${tool.repair.repaired_rate.numerator} 次修复`,
 	]));
 	return [
-		`${pad("tool", 20)} ${pad("calls", 7, true)} ${pad("success", 10, true)} ${pad("errors", 8, true)} ${pad("p50 ms", 10, true)} ${pad("repaired", 10, true)} ${pad("trunc", 7, true)}`,
+		`${pad("工具", 20)} ${pad("调用", 7, true)} ${pad("成功率", 10, true)} ${pad("错误", 8, true)} ${pad("P50(毫秒)", 10, true)} ${pad("修复", 10, true)} ${pad("截断", 7, true)}`,
 		...tools.map((tool) => `${pad(tool.tool, 20)} ${pad(tool.calls, 7, true)} ${pad(percent(tool.success_rate.value), 10, true)} ${pad(tool.error_rate.numerator, 8, true)} ${pad(number(tool.duration_ms.p50), 10, true)} ${pad(tool.repair.repaired_rate.numerator, 10, true)} ${pad(tool.truncation_rate.numerator, 7, true)}`),
 	];
 }
 
 function sourceLines(sources: Readonly<Record<string, CandidateRankingCoreStatistics>>): string[] {
 	const values = Object.entries(sources);
-	return values.length === 0 ? ["no candidate sources"] : values.map(([source, statistics]) => candidateLine(source, statistics));
+	return values.length === 0 ? ["没有候选来源"] : values.map(([source, statistics]) => candidateLine(source, statistics));
 }
 
 function candidateLine(label: string, statistics: CandidateRankingCoreStatistics): string {
 	return join([
 		label,
-		`${statistics.producer_calls} producers`,
-		`${statistics.candidates} candidates`,
-		`${statistics.converted_candidates} converted (${percent(statistics.candidate_conversion_rate)})`,
-		`MRR ${decimal(statistics.mrr.value)}`,
+		`${statistics.producer_calls} 个生成调用`,
+		`${statistics.candidates} 个候选项`,
+		`${statistics.converted_candidates} 个已使用候选项 (${percent(statistics.candidate_conversion_rate)})`,
+		`MRR(平均倒数排名) ${decimal(statistics.mrr.value)}`,
 	]);
 }
 
 function conversionLine(statistics: CandidateRankingCoreStatistics): string {
-	return `  ${statistics.conversion_at_k.map((item) => `@${item.k} ${item.converted_lists}/${item.lists} (${percent(item.rate)})`).join(" · ")}`;
+	return `  前 K 项命中 · ${statistics.conversion_at_k.map((item) => `前${item.k}项 ${item.converted_lists}/${item.lists} (${percent(item.rate)})`).join(" · ")}`;
 }
 
 function consumerLine(statistics: CandidateRankingCoreStatistics): string {
 	const consumers = Object.entries(statistics.downstream_consumers).map(([tool, count]) => `${tool} ${count}`).join(", ");
-	return `  downstream · ${consumers || "none"}`;
+	return `  下游使用 · ${consumers || "无"}`;
 }
 
 function wrap(value: string, width: number): string[] {
@@ -131,7 +131,8 @@ function align(left: string, right: string, width: number): string {
 
 function pad(value: string | number, width: number, start = false): string {
 	const text = truncateToWidth(String(value), width, "");
-	return start ? text.padStart(width) : text.padEnd(width);
+	const padding = " ".repeat(Math.max(0, width - visibleWidth(text)));
+	return start ? `${padding}${text}` : `${text}${padding}`;
 }
 
 function join(values: Array<string | undefined>): string {

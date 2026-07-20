@@ -172,10 +172,11 @@ describe("telemetry service", () => {
 			ui: { notify(message: string) { notifications.push(message); } },
 		}));
 		expect(notifications).toHaveLength(1);
-		expect(notifications[0]).toContain("Telemetry · current session");
-		expect(notifications[0]).toContain("collection disabled");
+		expect(notifications[0]).toContain("遥测 · 当前会话");
+		expect(notifications[0]).toContain("采集已禁用");
 
 		let customCalled = false;
+		const colors: string[] = [];
 		await command.handler("", fixture({
 			mode: "tui",
 			ui: {
@@ -183,15 +184,16 @@ describe("telemetry service", () => {
 					customCalled = true;
 					const viewer = factory(
 						{ terminal: { rows: 30 } },
-						{ fg: (_color: string, text: string) => text },
+						{ fg: (color: string, text: string) => { colors.push(color); return text; } },
 						{},
 						() => undefined,
 					);
-					expect(viewer.render(80).join("\n")).toContain("Telemetry · current session");
+					expect(viewer.render(80).join("\n")).toContain("遥测 · 当前会话");
 				},
 			},
 		}));
 		expect(customCalled).toBe(true);
+		expect(colors).toContain("mdHeading");
 	});
 
 	it("classifies projected tool failures and preserves projector diagnostics", async () => {

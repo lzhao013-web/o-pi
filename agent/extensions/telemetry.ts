@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerTelemetry, type TelemetryService } from "../../src/telemetry/service.js";
 
-const COMMAND_DESCRIPTION = "Show current session telemetry analysis.";
+const COMMAND_DESCRIPTION = "显示当前会话的遥测分析。";
 
 /** 启用本地工具调用遥测，并注册当前 session 的只读分析视图。 */
 export default function telemetryExtension(pi: ExtensionAPI): void {

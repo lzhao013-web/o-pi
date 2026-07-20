@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 
 import type { CallRecord, Candidate, RunRecord, TelemetryRecord } from "../../src/telemetry/types.js";
@@ -7,7 +8,7 @@ import { aggregateTelemetry } from "../../src/telemetry-report/aggregate.js";
 import { analyzeCandidateRanking } from "../../src/telemetry-report/analyzers/candidate-ranking.js";
 import { analyzeEdits } from "../../src/telemetry-report/analyzers/edit.js";
 import { generateTelemetryReport } from "../../src/telemetry-report/command.js";
-import { formatTelemetrySummary } from "../../src/telemetry-report/html.js";
+import { formatTelemetrySummary, renderTelemetryHtml } from "../../src/telemetry-report/html.js";
 import { renderLiveTelemetry } from "../../src/telemetry-report/render-live.js";
 import { readTelemetryDirectory } from "../../src/telemetry-report/read.js";
 import { useTempDir } from "../helpers/lifecycle.js";
@@ -136,8 +137,32 @@ describe("telemetry report", () => {
 		const json = JSON.parse(await readFile(path.join(output, "report.json"), "utf8"));
 		const html = await readFile(path.join(output, "report.html"), "utf8");
 		expect(json.inventory.calls).toBe(1);
+		expect(html).toContain("Tool performance");
 		expect(html).toContain("Edit: single vs multi-file");
+		expect(html).toContain("Conversion by rank");
+		expect(html).not.toContain("<pre>");
+		expect(html).not.toContain('"candidate_ranking"');
 		expect(formatTelemetrySummary(result.report)).toContain("1 calls");
+	});
+
+	it("escapes report values and marks unavailable Git provenance as unknown", () => {
+		const runWithoutGit: RunRecord = {
+			type: "run",
+			run_id: "run-a",
+			at: at(0),
+			session_id: "session-run-a",
+			reason: "startup",
+			cwd: "/repo",
+		};
+		const records: TelemetryRecord[] = [
+			runWithoutGit,
+			call("call", 0, "<script>alert(1)</script>", { status: "error" }),
+		];
+		const html = renderTelemetryHtml(aggregateTelemetry(records, { generatedAt: at(9) }));
+		expect(html).toContain("unknown");
+		expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+		expect(html).toContain('class="rate-text bad"');
+		expect(html).not.toContain("<script>alert(1)</script>");
 	});
 
 	it("renders the current-session report at narrow and wide widths", () => {
@@ -157,9 +182,9 @@ describe("telemetry report", () => {
 		};
 		for (const width of [48, 100]) {
 			const lines = renderLiveTelemetry(live, width);
-			expect(lines.every((line) => line.length <= width)).toBe(true);
+			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 			expect(lines.join("\n")).toContain("lsp");
-			expect(lines.join("\n")).toContain("1 in progress");
+			expect(lines.join(" ")).toContain("1 个调用进行中");
 		}
 	});
 });
