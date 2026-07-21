@@ -195,7 +195,7 @@
 - 关闭：`Esc`、`q` 或 `Enter`。
 - 滚动：方向键、`PageUp`、`PageDown`、`Home`、`End`。
 
-## `/quota`
+## `/codex-quota`
 
 来源：`agent/extensions/quota.ts`
 
@@ -204,7 +204,7 @@
 用法：
 
 ```text
-/quota
+/codex-quota
 ```
 
 行为：

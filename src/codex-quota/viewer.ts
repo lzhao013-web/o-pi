@@ -5,7 +5,7 @@ import type { CodexQuotaSnapshot } from "./types.js";
 
 const BODY_ROWS_RATIO = 0.72;
 
-/** /quota 的只读 overlay；额度数据不会写入模型上下文或会话历史。 */
+/** /codex-quota 的只读 overlay；额度数据不会写入模型上下文或会话历史。 */
 export class CodexQuotaViewer extends BorderedScrollViewer {
 	constructor(
 		private readonly result: CodexQuotaSnapshot | Error,

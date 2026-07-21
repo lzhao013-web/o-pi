@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import quotaExtension from "../../agent/extensions/quota.js";
 
 describe("quota extension", () => {
-	it("注册 /quota 命令", () => {
+	it("注册 /codex-quota 命令", () => {
 		type CommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
 		let commandName: string | undefined;
 		let commandOptions: CommandOptions | undefined;
@@ -15,7 +15,7 @@ describe("quota extension", () => {
 			},
 		});
 
-		expect(commandName).toBe("quota");
+		expect(commandName).toBe("codex-quota");
 		expect(commandOptions?.description).toBe("Show Codex quota and reset credits.");
 	});
 });

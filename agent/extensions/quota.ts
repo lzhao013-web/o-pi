@@ -5,9 +5,9 @@ import { CodexQuotaViewer } from "../../src/codex-quota/viewer.js";
 
 const COMMAND_DESCRIPTION = "Show Codex quota and reset credits.";
 
-/** 注册 /quota：通过 codex app-server 查询额度，并在 TUI 中显示只读浮层。 */
+/** 注册 /codex-quota：通过 codex app-server 查询额度，并在 TUI 中显示只读浮层。 */
 export default function quotaExtension(pi: Pick<ExtensionAPI, "registerCommand">): void {
-	pi.registerCommand("quota", {
+	pi.registerCommand("codex-quota", {
 		description: COMMAND_DESCRIPTION,
 		async handler(_args, ctx) {
 			let result: Awaited<ReturnType<typeof collectCodexQuotaSnapshot>> | Error;
