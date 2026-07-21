@@ -22,6 +22,9 @@ export async function resolveWorkspaceRoot(cwd: string): Promise<string> {
 export function normalizeToolPath(workspaceRoot: string, inputPath: string): ToolOutcome<LexicalToolPath> {
 	if (inputPath.length === 0) return fail("INVALID_PATH", "Path must not be empty.", { path: inputPath });
 	if (inputPath.includes("\0")) return fail("INVALID_PATH", "Path must not contain NUL bytes.", { path: inputPath });
+	if (inputPath.startsWith("skill://")) {
+		return fail("INVALID_PATH", "skill:// is a read-only locator supported only by read.", { path: inputPath });
+	}
 
 	const absolutePath = resolveInputPath(workspaceRoot, inputPath);
 	const workspacePath = workspaceRelativePath(workspaceRoot, absolutePath);

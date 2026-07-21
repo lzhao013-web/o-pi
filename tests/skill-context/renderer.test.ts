@@ -1,71 +1,22 @@
-import type { ExtensionAPI, MessageRenderer } from "@earendil-works/pi-coding-agent";
+import type { MessageRenderer } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { registerSkillStatusRenderer } from "../../src/skill-context/renderer.js";
-import { SKILL_CONTEXT_STATUS_MESSAGE, type SkillContextStatusMessage } from "../../src/skill-context/types.js";
+import { registerSkillMessageRenderer } from "../../src/skill-context/renderer.js";
+import { SKILL_CONTEXT_MESSAGE, type SkillLoadDetails } from "../../src/skill-context/types.js";
 
-describe("skill status renderer", () => {
-	it("注册 skill 状态卡片 renderer，样式包含 [skill] 标签和状态", () => {
-		let customType: string | undefined;
-		let renderer: MessageRenderer<SkillContextStatusMessage> | undefined;
-
-		registerSkillStatusRenderer({
-			registerMessageRenderer(type, render) {
-				customType = type;
-				renderer = render as MessageRenderer<SkillContextStatusMessage>;
-			},
-		} as Pick<ExtensionAPI, "registerMessageRenderer">);
-
-		expect(customType).toBe(SKILL_CONTEXT_STATUS_MESSAGE);
-		const component = renderer?.(
-			{
-				role: "custom",
-				customType: SKILL_CONTEXT_STATUS_MESSAGE,
-				content: "skill demo loaded",
-				display: true,
-				details: { action: "loaded", name: "demo", chars: 4, path: "/skills/demo/SKILL.md" },
-				timestamp: 1,
-			},
-			{ expanded: true },
-			{
-				fg: (_color: string, text: string) => text,
-				bg: (_color: string, text: string) => text,
-				bold: (text: string) => text,
-			} as never,
-		);
-
-		const rendered = component?.render(80).join("\n") ?? "";
-		expect(rendered).toContain("[skill]");
-		expect(rendered).toContain("demo");
-		expect(rendered).toContain("loaded");
-		expect(rendered).toContain("/skills/demo/SKILL.md");
-	});
-
-	it("hard clear 状态卡片标题显示 hard cleared", () => {
-		let renderer: MessageRenderer<SkillContextStatusMessage> | undefined;
-		registerSkillStatusRenderer({
-			registerMessageRenderer(_type, render) {
-				renderer = render as MessageRenderer<SkillContextStatusMessage>;
-			},
-		} as Pick<ExtensionAPI, "registerMessageRenderer">);
-
-		const component = renderer?.(
-			{
-				role: "custom",
-				customType: SKILL_CONTEXT_STATUS_MESSAGE,
-				content: "skill all skills hard cleared",
-				display: true,
-				details: { action: "cleared", mode: "hard" },
-				timestamp: 1,
-			},
-			{ expanded: false },
-			{
-				fg: (_color: string, text: string) => text,
-				bg: (_color: string, text: string) => text,
-				bold: (text: string) => text,
-			} as never,
-		);
-
-		const rendered = component?.render(80).join("\n") ?? "";
-		expect(rendered).toContain("all hard cleared");
+describe("技能消息渲染器", () => {
+	it("展示逻辑技能标识且不包含宿主路径", () => {
+		let renderer: MessageRenderer<SkillLoadDetails> | undefined;
+		registerSkillMessageRenderer({ registerMessageRenderer(_type, value) { renderer = value as MessageRenderer<SkillLoadDetails>; } });
+		const component = renderer?.({
+			role: "custom", customType: SKILL_CONTEXT_MESSAGE, content: "body", display: true, timestamp: 1,
+			details: { name: "demo", root: "skill://demo", contentHash: "hash", disableModelInvocation: true, scope: "project", loadedBy: "manual", deduplicated: false, chars: 4 },
+		}, { expanded: true }, {
+			fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text,
+		} as never);
+		const output = component?.render(80).join("\n") ?? "";
+		expect(output).toContain("[skill]");
+		expect(output).toContain("demo loaded");
+		expect(output).toContain("project · manual · 4 chars");
+		expect(output).not.toContain("/skills/");
 	});
 });

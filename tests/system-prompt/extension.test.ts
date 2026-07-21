@@ -1,7 +1,9 @@
 import type { BuildSystemPromptOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { preserveEnv } from "../helpers/lifecycle.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { preserveEnv, useTempDir } from "../helpers/lifecycle.js";
 
 vi.mock(import("os"), async (importOriginal) => ({
 	...(await importOriginal()),
@@ -22,13 +24,14 @@ const toolSnippets = {
 	bash: "run commands",
 };
 preserveEnv("PI_SUBAGENT_CHILD");
+const temp = useTempDir("o-pi-system-skills-");
 
 describe("system prompt extension", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 	});
 
-	it("生成结构化 prompt，但不重复工具定义或泄露 skill 元数据", () => {
+	it("同步 prompt builder 不信任未解析的 Pi skill metadata", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-07-05T00:00:00Z"));
 
@@ -60,7 +63,8 @@ describe("system prompt extension", () => {
 
 		expect(prompt).not.toContain("\r");
 		expect(prompt).toContain("<tool_policy>");
-		expect(prompt).toContain("<skill_policy>");
+		expect(prompt).not.toContain("<skill_policy>");
+		expect(prompt).not.toContain("<model_invocable_skills>");
 		expect(prompt).not.toContain("<available_tools>");
 		expect(prompt).toContain("<project_context>");
 		expect(prompt).toContain("<context>");
@@ -110,12 +114,36 @@ describe("system prompt extension", () => {
 		});
 
 		expect(prompt).toContain("<custom_prompt>\nOnly this base prompt.\n</custom_prompt>");
-		expect(prompt).toContain("<skill_policy>");
+		expect(prompt).not.toContain("<skill_policy>");
 		expect(prompt).toContain("<append_system_prompt>\nAppend this.\n</append_system_prompt>");
 		expect(prompt).not.toContain("<available_tools>");
 		expect(prompt).not.toContain("- read: read files");
 		expect(prompt).toContain("<context>");
 		expect(prompt).not.toContain("<role>");
+	});
+
+	it("runtime prompt 只索引显式允许模型调用的技能且不包含正文或路径", async () => {
+		const allowedPath = await writeSkill("allowed", "Allowed description", "false", "ALLOWED BODY");
+		const hiddenPath = await writeSkill("hidden", "Hidden description", "true", "HIDDEN BODY");
+		const quotedPath = await writeSkill("quoted", "Quoted description", "'false'", "QUOTED BODY");
+		const missingPath = await writeSkill("missing", "Missing description", undefined, "MISSING BODY");
+		const prompt = await buildRuntimeSystemPrompt({
+			cwd: temp.path,
+			skills: [
+				skillInfo("allowed", allowedPath, "Allowed description"),
+				skillInfo("hidden", hiddenPath, "Hidden description"),
+				skillInfo("quoted", quotedPath, "Quoted description"),
+				skillInfo("missing", missingPath, "Missing description"),
+			],
+		}, temp.path);
+
+		expect(prompt).toContain("<model_invocable_skills>\n- allowed: Allowed description\n</model_invocable_skills>");
+		expect(prompt).toContain("Relative paths mentioned by a loaded skill resolve under skill://<skill-name>/.");
+		expect(prompt).not.toContain("hidden:");
+		expect(prompt).not.toContain("quoted:");
+		expect(prompt).not.toContain("missing:");
+		expect(prompt).not.toContain("ALLOWED BODY");
+		expect(prompt).not.toContain(allowedPath);
 	});
 
 	it("从标准 Agent Markdown 合成 subagent_role，同时保留 append 与项目规则", () => {
@@ -269,3 +297,33 @@ describe("system prompt extension", () => {
 		expect(rendered.some((line) => line.includes("用户不负责"))).toBe(true);
 	});
 });
+
+async function writeSkill(name: string, description: string, disableModelInvocation: string | undefined, body: string): Promise<string> {
+	const dir = path.join(temp.path, name);
+	await mkdir(dir, { recursive: true });
+	const file = path.join(dir, "SKILL.md");
+	const invocationField = disableModelInvocation === undefined ? "" : `disable-model-invocation: ${disableModelInvocation}\n`;
+	await writeFile(file, `---\nname: ${name}\ndescription: ${description}\n${invocationField}---\n${body}\n`);
+	return file;
+}
+
+function skillInfo(
+	name: string,
+	filePath: string,
+	description: string,
+): NonNullable<BuildSystemPromptOptions["skills"]>[number] {
+	return {
+		name,
+		description,
+		filePath,
+		baseDir: path.dirname(filePath),
+		disableModelInvocation: false,
+		sourceInfo: {
+			path: filePath,
+			source: "project",
+			scope: "project",
+			origin: "top-level",
+			baseDir: path.dirname(filePath),
+		},
+	};
+}

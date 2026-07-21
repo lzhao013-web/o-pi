@@ -1,73 +1,91 @@
 # Skill Context
 
-`skill-context` 用 host-managed selected context 替换 Pi 默认 `/skill:name` 展开流程。
+`skill-context` 提供静态 `skill` 工具、手动 `/skill:<name>` 加载和只读 `skill://` 资源定位。
 
-## 行为
+## SKILL.md frontmatter
 
-- `/skill:<name>` 由 extension host 直接读取对应 `SKILL.md`，写入 session custom entry。
-- 扩展不重复注册每个 `/skill:<name>`；命令列表使用 Pi 内置 skill 项，执行由 input hook 接管。
-- 加载/卸载状态显示为 skill 状态卡片；卡片不启动模型、不产生 assistant message、不触发 read 工具。
-- 下一次真实用户请求前，context hook 按 session 时间线注入 `<skill name="..." status="active" base_dir="<skill directory>">` user-role synthetic message；模型可据此读取该目录下 `references/` 和 `scripts/` 的相关文件。
-- skill body 不进入 system prompt；扫描到 skill 时 `/system` 只显示 `<skill_policy>`，不显示 skill name、path 或 description。
-- 模型尝试 read 已加载 skill 的 `SKILL.md` 时会被阻止；需要读取引用文件时读取 reference 文件。
+`SKILL.md` 使用 YAML frontmatter。当前允许的字段包括 Agent Skills 标准字段和 Pi 兼容字段；o-pi 不再新增权限字段：
 
-## 清理
+| 字段 | 必填 | 类型与约束 | 当前行为 |
+| --- | --- | --- | --- |
+| `name` | 标准要求必填；o-pi 允许省略 | 1-64 个字符，只能包含小写字母、数字和单连字符；不能以连字符开头或结尾 | 省略时使用 `SKILL.md` 父目录名。为兼容其他客户端，应显式填写并与父目录名一致 |
+| `description` | 是 | 非空字符串，最多 1024 个字符 | 用于 skill 索引和 `/skill` 命令说明，应同时描述功能和适用场景 |
+| `license` | 否 | 简短的许可证名称，或指向 skill 内许可证文件的说明 | Agent Skills 标准字段；o-pi 接受但当前不消费，也不会随正文披露给模型 |
+| `compatibility` | 否 | 非空字符串，标准上限为 500 个字符 | Agent Skills 标准字段，用于声明产品、系统依赖或网络要求；o-pi 当前不校验、不消费，也不会随正文披露给模型 |
+| `metadata` | 否 | 字符串键到字符串值的映射 | Agent Skills 标准扩展容器；o-pi 当前不消费 |
+| `allowed-tools` | 否 | 以空格分隔的工具声明字符串 | Agent Skills 实验字段；o-pi 当前忽略，不会授予工具权限或绕过审批 |
+| `disable-model-invocation` | 否 | YAML 布尔值；o-pi 默认 `true` | Pi 兼容字段；只有严格布尔值 `false` 才允许模型发现并通过 `skill` 工具加载 |
 
-`/skill clear` 默认 lazy deactivate：
+完整示例：
 
-- 单个 skill 追加 `<skill name="..." status="inactive"/>`；`--all` 追加 `<skill status="previous all inactive"/>`。
-- 保留旧 active skill body，保护 llama.cpp / prompt cache 的稳定前缀。
-- 后续模型应知道该 skill inactive，不再应用。
+```yaml
+---
+name: code-writing
+description: 编写和修改代码；当任务需要实现、重构或修复代码时使用。
+license: Apache-2.0
+compatibility: Requires git and Node.js 22+
+metadata:
+  author: example-org
+  version: "1.0"
+allowed-tools: Read Bash(git:*)
+disable-model-invocation: false
+---
+```
 
-`/skill clear --hard`：
+`disable-model-invocation` 必须写成不带引号的 YAML 布尔值。字段缺失、`true`、字符串 `"false"`、数字和其他非布尔值都会禁用模型调用；只有显式 `false` 才会开放。Pi 原生默认值是 `false`，o-pi 为保持默认拒绝策略将缺失值覆盖为 `true`。未列出的自定义信息应放入 `metadata`；顶层未知字段可能被 YAML 解析器接受，但不属于受支持接口，也不会产生运行时行为。
 
-- 允许后续上下文物理省略旧 skill body。
-- 不注入 inactive tag，减少后续上下文 token。
-- 下一轮可能降低 prompt cache 命中。
-- 适合确认不再需要该 skill 或准备压缩上下文时使用。
+o-pi 加载时会移除整个 frontmatter，只向模型披露 Markdown 正文。因此，影响模型执行的环境要求和权限规则仍应写入正文；`compatibility`、`metadata` 和 `allowed-tools` 目前都不是运行时控制机制。
 
-## 命令
+## 声明与索引
+
+system prompt 只索引允许模型加载的 skill：
 
 ```text
-/skill:<name>
-/skill
-/skill clear
-/skill clear <name>
-/skill clear --all
-/skill clear --hard
+<model_invocable_skills>
+- code-writing: 编写和修改代码
+</model_invocable_skills>
 ```
 
-`/skill` 用 UI notification 显示 active、inactive retained 和 hard cleared 状态；加载/卸载使用状态卡片。
+索引不包含正文、真实路径或资源列表。`skill` 工具使用固定 schema `skill({ name: string })`，skill 名称不会进入动态 enum。
 
-## 配置
+索引阶段只分块读取 frontmatter，不读取正文或计算正文哈希；解析结果按文件身份缓存，文件内容变化后会在下一次构建 prompt 时自动刷新。多个 skill 使用有界并发读取，输出顺序仍与 Pi 的发现顺序一致。
 
-配置文件：`agent/configs/skill-context.jsonc`。仓库文件完整列出默认值；对应写法如下：
+## 加载
 
-```jsonc
-{
-	"$schema": "../schemas/skill-context.schema.json",
-	"enabled": true,
-	"max_active": 1,
-	"on_load_conflict": "replace",
-	"clear_mode": "lazy",
-	"dedupe_read": true,
-	"max_body_chars": 20000
-}
+模型只能通过 `skill` 工具加载显式声明 `disable-model-invocation: false` 的 skill。成功结果只包含逻辑根边界和去掉 frontmatter 的完整正文：
+
+```text
+<invoked_skill root="skill://code-writing"/>
+
+SKILL.md body
 ```
 
-字段：
+用户执行 `/skill:<name>` 时可以加载任意已发现 skill。手动加载与工具加载复用同一执行器、校验、分支记录、去重和 UI 数据，但不会启动模型推理，也不会伪造 assistant tool call。
 
-- `enabled`: 启用 host-side skill context。
-- `max_active`: 同时 active 的 skill 数。
-- `on_load_conflict`: 超过 `max_active` 时 `replace` 停用旧 skill，`stack` 保留。
-- `clear_mode`: `/skill clear` 默认 `lazy` 或 `hard`。
-- `dedupe_read`: 阻止重复读取已加载 skill 的 `SKILL.md`。
-- `max_body_chars`: 单个 skill body 字符上限。
+每次成功披露会写入 Host-only session custom entry，用于当前分支的资源权限和去重；该记录不复制正文、描述或调用策略。相同 content hash 不重复写入或披露正文；文件内容改变后允许追加新版本，后出现的版本生效。系统没有 unload、clear 或 active/inactive 状态。
 
-## Prompt Cache
+`/skill` 只显示当前分支已披露的 skill。`/skill clear` 不再存在。
 
-skill activation/deactivation 都写为 append-only custom entry。context hook 按这些 entry 在 branch 中的位置生成 synthetic message，不把 skill block 每轮移动到最新 user prompt 前。
+## 二级资源
 
-如果连续 load/clear 之间没有真实会话消息，context hook 会只注入该段结束时的净效果。例如 load → clear → load 只产生最后一个 active `<skill>`；load → clear 不产生 skill block。
+已加载 skill 可让模型继续使用 `read` 读取相关资源：
 
-lazy clear 追加 inactive skill tag，旧 body 仍留在上下文前缀中；hard clear 只省略旧 body，不注入 inactive tag。
+```text
+skill://code-writing/references/testing.md
+skill://code-writing/assets/example.txt
+```
+
+`skill://` 只是 `read` 识别的只读逻辑定位符，不是操作系统路径。它不能传给 `write`、`edit` 或 shell。
+
+资源解析遵守以下边界：
+
+- 只允许当前 session branch 已加载的精确 skill 名称。
+- 拒绝 `..`、`.`、空路径段、反斜杠、NUL、query、fragment 和百分号编码。
+- 对 skill root 与目标执行 `realpath`，目标必须仍位于 root 内，符号链接不能逃逸。
+- 模型输出和遥测中的读取路径保持逻辑 URI，不泄漏真实目录。
+- 对已发现 skill root 的普通绝对路径读取会被拒绝，不能绕过 `skill://` 权限。
+- skill 资源读取不运行 LSP 或 Repo Map 增强，也不会写入供 `edit` 使用的 read-version 缓存。
+
+file-tools 扩展实例会复用 Pi 命令生成的 skill 候选和根目录索引。普通路径先执行无 I/O 的词法边界检查；只有检测外部符号链接时才按需解析并缓存 canonical roots。`skill://` 使用加载时已规范化的 root，只对目标执行 `realpath`。执行 `/reload` 后新扩展实例会重建这些缓存。
+
+实现没有独立配置文件；`SKILL.md` 始终完整加载。

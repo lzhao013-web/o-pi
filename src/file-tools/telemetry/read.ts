@@ -6,6 +6,13 @@ export const readTelemetry = defineToolTelemetry<ReadParams, ToolOutcome<ReadFil
 	input: projectFileInput(["path", "start_line", "end_line"], "file"),
 	result(_params, result) {
 		const details = record(result.details);
-		return { fields: fileResultFields(details) };
+		const skill = record(details["skill_resource"]);
+		return {
+			fields: {
+				...fileResultFields(details),
+				...(typeof skill["skill"] === "string" ? { skill: skill["skill"] } : {}),
+				...(typeof skill["path"] === "string" ? { skill_resource: skill["path"] } : {}),
+			},
+		};
 	},
 });

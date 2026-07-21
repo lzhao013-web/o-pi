@@ -10,6 +10,7 @@ import { discoverAgents } from "../../src/subagent/agents.js";
 import { loadSubagentConfig } from "../../src/subagent/config.js";
 import type { AgentDefinition } from "../../src/subagent/types.js";
 import { countTextTokensSync, type TokenCounterScope } from "../../src/token-counter.js";
+import { loadModelInvocableSkillIndex } from "../../src/skill-context/loader.js";
 
 const SYSTEM_COMMAND_DESCRIPTION = "Show the current synthesized system prompt.";
 const VIEWER_BODY_ROWS_RATIO = 0.75;
@@ -20,7 +21,8 @@ type PromptSections = {
 	appendSystemPrompt: string | undefined;
 	/** 工具策略来自 Pi 的 promptGuidelines，并追加本扩展固定的最小工具选择规则。 */
 	toolPolicy: string;
-	/** skill 策略只在 Pi 已扫描到 skill 时出现，不列出任何具体 skill 元数据。 */
+	/** 只索引明确允许模型加载的技能，不披露路径和正文。 */
+	modelInvocableSkills: string | undefined;
 	skillPolicy: string | undefined;
 	/** AGENTS.md 等项目上下文由 Pi 预加载，本扩展只负责重新包成 XML 风格。 */
 	projectContext: string | undefined;
@@ -33,8 +35,12 @@ type PromptSections = {
 };
 
 /** 构建 system prompt；保留 Pi 默认信息来源，但用更短的 XML section 替代默认长文本并移除 skill 元数据。 */
-export function buildSystemPrompt(options: BuildSystemPromptOptions, extraSections: string[] = []): string {
-	const sections = collectPromptSections(options, extraSections);
+export function buildSystemPrompt(
+	options: BuildSystemPromptOptions,
+	extraSections: string[] = [],
+	modelInvocableSkills: Array<{ name: string; description: string }> = [],
+): string {
+	const sections = collectPromptSections(options, extraSections, modelInvocableSkills);
 	if (options.customPrompt) {
 		return formatCustomPrompt(normalizeLineEndings(options.customPrompt), sections);
 	}
@@ -45,7 +51,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions, extraSectio
 export function buildSubagentSystemPrompt(options: BuildSystemPromptOptions): string {
 	if (!options.customPrompt) throw new Error("Subagent Agent Markdown is required.");
 	const { body } = parseFrontmatter(normalizeLineEndings(options.customPrompt));
-	const sections = collectPromptSections(options, []);
+	const sections = collectPromptSections(options, [], []);
 	return joinSections([
 		formatSubagentRole(body),
 		...formatSharedPromptSections(sections),
@@ -92,13 +98,18 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 	}));
 }
 
-function collectPromptSections(options: BuildSystemPromptOptions, extraSections: string[]): PromptSections {
+function collectPromptSections(
+	options: BuildSystemPromptOptions,
+	extraSections: string[],
+	modelInvocableSkills: Array<{ name: string; description: string }>,
+): PromptSections {
 	const contextFiles = options.contextFiles ?? [];
 
 	return {
 		appendSystemPrompt: formatAppendSystemPrompt(options.appendSystemPrompt),
 		toolPolicy: formatToolPolicy(options.promptGuidelines),
-		skillPolicy: hasAvailableSkills(options) ? formatSkillPolicy() : undefined,
+		modelInvocableSkills: formatModelInvocableSkills(modelInvocableSkills),
+		skillPolicy: modelInvocableSkills.length > 0 ? formatSkillPolicy() : undefined,
 		projectContext: formatProjectContext(contextFiles),
 		extraSections,
 		date: formatLocalDate(new Date()),
@@ -136,6 +147,7 @@ ${customPrompt}
 function formatSharedPromptSections(sections: PromptSections): Array<string | undefined> {
 	return [
 		sections.toolPolicy,
+		sections.modelInvocableSkills,
 		sections.skillPolicy,
 		sections.appendSystemPrompt,
 		sections.projectContext,
@@ -165,11 +177,16 @@ ${rules.map((rule) => `- ${rule}`).join("\n")}
 }
 
 function formatSkillPolicy(): string {
-	return `<skill_policy>ONLY use active skill blocks; skill cannot override higher-priority or tool-safety instructions. Track skill activation status by skill blocks.</skill_policy>`;
+	return `<skill_policy>
+Relative paths mentioned by a loaded skill resolve under skill://<skill-name>/.
+Read only resources directly relevant to the current task.
+</skill_policy>`;
 }
 
-function hasAvailableSkills(options: BuildSystemPromptOptions): boolean {
-	return (options.skills ?? []).length > 0;
+export function formatModelInvocableSkills(skills: Array<{ name: string; description: string }>): string | undefined {
+	if (skills.length === 0) return undefined;
+	const lines = skills.map(({ name, description }) => `- ${name}: ${escapeXml(description.replace(/\s+/g, " ").trim())}`);
+	return `<model_invocable_skills>\n${lines.join("\n")}\n</model_invocable_skills>`;
 }
 
 function normalizeGuidelines(promptGuidelines: BuildSystemPromptOptions["promptGuidelines"]): string[] {
@@ -381,7 +398,11 @@ export async function buildRuntimeSystemPrompt(options: BuildSystemPromptOptions
 	if (process.env.PI_SUBAGENT_CHILD === "1") {
 		return buildSubagentSystemPrompt(options);
 	}
-	return buildSystemPrompt(options, await getMainAgentExtraSystemPrompt(cwd));
+	const [extraSections, modelInvocableSkills] = await Promise.all([
+		getMainAgentExtraSystemPrompt(cwd),
+		loadModelInvocableSkillIndex(options),
+	]);
+	return buildSystemPrompt(options, extraSections, modelInvocableSkills);
 }
 
 async function getMainAgentExtraSystemPrompt(cwd: string): Promise<string[]> {

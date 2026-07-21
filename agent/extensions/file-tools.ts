@@ -28,6 +28,8 @@ import { lsTelemetry } from "../../src/file-tools/telemetry/ls.js";
 import { readTelemetry } from "../../src/file-tools/telemetry/read.js";
 import { writeTelemetry } from "../../src/file-tools/telemetry/write.js";
 import { registerObservedTool } from "../../src/telemetry/tool.js";
+import { collectSkillCandidates } from "../../src/skill-context/loader.js";
+import { buildSkillReadIndex } from "../../src/skill-context/resources.js";
 
 const lsParameters = Type.Object({ path: Type.Optional(Type.String({ minLength: 1, description: "Directory; default workspace." })) }, { additionalProperties: false });
 const findParameters = Type.Object(
@@ -121,6 +123,9 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 	const versionCaches = new Map<string, ReadVersionCache>();
 	const repoMaps = new Map<string, LazyRepoMap>();
 	const lsp = createLazyLspFileHooks(loaders.lsp);
+	const skillReadIndex = createRetryableLoader(async () => buildSkillReadIndex(
+		collectSkillCandidates(undefined, typeof pi.getCommands === "function" ? pi.getCommands() : []),
+	));
 	const repoMapFor = (ctx: ExtensionContext): LazyRepoMap => {
 		const sessionId = ctx.sessionManager.getSessionId();
 		const existing = repoMaps.get(sessionId);
@@ -208,6 +213,8 @@ function registerFileTools(pi: ExtensionAPI, loaders: FileToolsModuleImports, ca
 				versionCache: versionCacheFor(ctx, versionCaches),
 				lsp,
 				repoMap: repoMapFor(ctx),
+				branch: typeof ctx.sessionManager.getBranch === "function" ? ctx.sessionManager.getBranch() : [],
+				skillIndex: await skillReadIndex(),
 			});
 		},
 		renderCall: renderReadCall,

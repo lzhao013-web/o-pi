@@ -23,14 +23,14 @@
 ```text
 custom_prompt 或 role
 tool_policy
-skill_policy（仅扫描到 skill 时）
+model_invocable_skills + skill_policy（仅存在允许模型调用的 skill 时）
 append_system_prompt
 project_context
 subagents
 context
 ```
 
-`custom_prompt` 可以替换角色、风格和通用行为，但不能移除共享工具策略。`system-prompt.ts` 只合成 active tools 的长期规则和最小 skill 策略，不维护具体工具或 skill 能力表。工具名、能力和参数由 provider-native tool definition 提供。
+`custom_prompt` 可以替换角色、风格和通用行为，但不能移除共享工具策略。`system-prompt.ts` 合成 active tools 的长期规则、最小 skill 策略和仅含名称/描述的可加载 skill 索引。工具名、能力和参数由 provider-native tool definition 提供。
 
 ### `<tool_policy>`
 

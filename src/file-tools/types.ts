@@ -292,12 +292,14 @@ export interface ReadSuccess {
 		enclosing_symbol?: LspEnclosingSymbol;
 	};
 	repo_map?: RepoMapReadContext;
+	skill_resource?: { skill: string; path: string };
 }
 
 export interface ReadImageSuccess {
 	path: string;
 	media_type: "image";
 	mime_type: string;
+	skill_resource?: { skill: string; path: string };
 	content: string;
 	size_bytes: number;
 	version: string;

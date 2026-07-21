@@ -2,8 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BuildSystemPromptOptions, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it } from "vitest";
-import { defaultSkillContextConfig } from "../../src/skill-context/config.js";
-import { collectSkillCandidates, loadSkill } from "../../src/skill-context/loader.js";
+import { collectSkillCandidates, loadModelInvocableSkillIndex, loadSkill } from "../../src/skill-context/loader.js";
 import { useTempDir } from "../helpers/lifecycle.js";
 
 let tempDir: string;
@@ -43,10 +42,43 @@ describe("skill loader", () => {
 		const dir = path.join(tempDir, "demo");
 		await mkdir(dir);
 		const skillPath = path.join(dir, "SKILL.md");
-		await writeFile(skillPath, "---\nname: demo\ndescription: desc\n---\n\nbody\n");
-		const loaded = await loadSkill({ name: "demo", path: skillPath, scope: "user" }, defaultSkillContextConfig());
-		expect(loaded).toMatchObject({ name: "demo", description: "desc", path: skillPath, baseDir: dir, body: "body" });
+		await writeFile(skillPath, "---\nname: demo\ndescription: desc\ndisable-model-invocation: false\n---\n\nbody\n");
+		const loaded = await loadSkill({ name: "demo", path: skillPath, scope: "user" });
+		expect(loaded).toMatchObject({ name: "demo", description: "desc", path: skillPath, root: dir, body: "body", disableModelInvocation: false, scope: "user" });
 		expect(loaded.contentHash).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it("始终完整加载正文，不使用配置或长度上限", async () => {
+		const dir = path.join(tempDir, "large");
+		await mkdir(dir);
+		const skillPath = path.join(dir, "SKILL.md");
+		const body = "x".repeat(25_000);
+		await writeFile(skillPath, `---\nname: large\ndescription: desc\ndisable-model-invocation: false\n---\n${body}\n`);
+		const loaded = await loadSkill({ name: "large", path: skillPath, scope: "project" });
+		expect(loaded.body).toBe(body);
+	});
+
+	it("索引读取跨块 frontmatter，并在文件变化后刷新缓存", async () => {
+		const dir = path.join(tempDir, "cached");
+		await mkdir(dir);
+		const skillPath = path.join(dir, "SKILL.md");
+		const padding = "x".repeat(5_000);
+		await writeFile(skillPath, `---\nname: cached\ndescription: desc\nmetadata:\n  padding: ${padding}\ndisable-model-invocation: false\n---\nbody\n`);
+		const options: BuildSystemPromptOptions = {
+			cwd: tempDir,
+			skills: [{
+				name: "cached",
+				description: "desc",
+				filePath: skillPath,
+				baseDir: dir,
+				disableModelInvocation: false,
+				sourceInfo: { path: skillPath, source: "user", scope: "user", origin: "top-level", baseDir: dir },
+			}],
+		};
+
+		expect(await loadModelInvocableSkillIndex(options)).toEqual([{ name: "cached", description: "desc" }]);
+		await writeFile(skillPath, `---\nname: cached\ndescription: desc\nmetadata:\n  padding: ${padding}\ndisable-model-invocation: true\n---\nbody\n`);
+		expect(await loadModelInvocableSkillIndex(options)).toEqual([]);
 	});
 });
 

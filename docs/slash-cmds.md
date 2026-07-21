@@ -108,7 +108,7 @@
 
 来源：`agent/extensions/skill-context.ts`
 
-用途：host 侧加载 Pi skill，作为 selected context 注入下一次真实模型请求。
+用途：Host 侧加载 Pi skill，并把完整正文作为不触发推理的 custom message 写入上下文。
 
 用法：
 
@@ -118,36 +118,29 @@
 
 行为：
 
-- 直接读取对应 `SKILL.md` 并写入 session custom entry。
+- 直接读取对应完整 `SKILL.md`，去除 frontmatter 后披露正文。
 - 命令列表中的 `/skill:<name>` 来自 Pi 内置 skill discovery；执行阶段由本扩展 input hook 接管。
 - 不启动模型，不产生 assistant message，不触发 read 工具。
-- 成功加载后显示 skill 状态卡片；卡片不进入模型上下文。
-- skill body 不进入 system prompt；扫描到 skill 时 `/system` 只显示 `<skill_policy>`。
-- 已加载 skill 的 `SKILL.md` 会被 read dedupe 阻止重复读取。
+- 手动加载可以加载任意已发现 skill，不受 `disable-model-invocation` 限制。
+- 与模型的 `skill` 工具共用加载、校验、分支记录、去重和 UI 逻辑。
+- 不披露真实路径；二级资源使用 `read skill://<name>/<relative-path>`。
 
 ## `/skill`
 
 来源：`agent/extensions/skill-context.ts`
 
-用途：显示或清理当前 skill context。
+用途：显示当前分支已披露的 skill。
 
 用法：
 
 ```text
 /skill
-/skill clear
-/skill clear demo
-/skill clear --all
-/skill clear --hard
 ```
 
 行为：
 
-- 无参数时显示 active、inactive retained 和 hard cleared 状态。
-- 默认 lazy deactivate：追加 inactive 状态，保留旧 body 以保护 prompt cache。
-- `--hard` 允许后续上下文省略旧 body，不注入 inactive tag，下一轮 cache prefix 可能重算。
-- 成功清理后显示 skill 状态卡片；卡片不进入模型上下文。
-- 如果连续 load/clear 之间没有真实会话消息，下一轮上下文只包含该段结束时的净 skill 状态。
+- 显示每个 skill 的名称、scope 和加载来源。
+- 不提供 clear 或 unload；旧披露由 context compaction、新 branch 或新 session 移除。
 
 ## `/stats`
 

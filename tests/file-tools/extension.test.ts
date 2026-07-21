@@ -276,6 +276,7 @@ describe("file-tools extension", () => {
 			lsp: vi.fn(async () => ({ ...(await import("../../src/lsp/index.js")), lspFileHooks: { enhanceRead } })),
 			repoMap: vi.fn(() => import("../../src/file-tools/pi/repo-map-runtime.js")),
 		} satisfies FileToolsModuleImports;
+		const getCommands = vi.fn(() => []);
 		createFileToolsExtension(imports)({
 			registerTool(tool: { name: string; execute?: ExecuteTool }) {
 				registered.push(tool);
@@ -283,6 +284,7 @@ describe("file-tools extension", () => {
 			on(name: string, handler: LifecycleHandler) {
 				handlers.set(name, handler);
 			},
+			getCommands,
 		} as unknown as ExtensionAPI);
 
 		const cwd = await mkdtemp(join(tmpdir(), "o-pi-lazy-read-"));
@@ -291,10 +293,12 @@ describe("file-tools extension", () => {
 			const ctx = { cwd, sessionManager: { getSessionId: () => "lazy-read", getBranch: () => [] } };
 			await executeTool(registered, "read", { path: "a.ts" }, ctx);
 			expect(imports.read).toHaveBeenCalledTimes(1);
+			expect(getCommands).toHaveBeenCalledTimes(1);
 			expect(imports.lsp).not.toHaveBeenCalled();
 
 			const partial = await executeTool(registered, "read", { path: "a.ts", start_line: 1, end_line: 1 }, ctx);
 			expect(imports.read).toHaveBeenCalledTimes(1);
+			expect(getCommands).toHaveBeenCalledTimes(1);
 			expect(imports.lsp).toHaveBeenCalledTimes(1);
 			expect(enhanceRead).toHaveBeenCalledTimes(1);
 			expect(partial.details).toMatchObject({ lsp: { enclosing_symbol: { name: "value" } } });

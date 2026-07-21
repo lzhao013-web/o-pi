@@ -2,9 +2,7 @@ import type { BuildSystemPromptOptions, ContextUsage, SessionEntry, ToolInfo } f
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 import { countContentTokens, countTextTokens, type TokenCounterScope } from "../token-counter.js";
 import type { ContextBreakdownItem, ContextStats } from "./types.js";
-import { collectInjectedSkillContextTexts } from "../skill-context/context.js";
-import { computeSkillContextState } from "../skill-context/state.js";
-import { SKILL_CONTEXT_STATUS_MESSAGE } from "../skill-context/types.js";
+import { SKILL_CONTEXT_MESSAGE } from "../skill-context/types.js";
 
 export interface ContextBreakdownInput {
 	usage: ContextUsage | undefined;
@@ -55,10 +53,7 @@ export async function buildContextBreakdown(input: ContextBreakdownInput): Promi
 		...(contextWindow !== undefined && totalTokens !== undefined ? { remainingTokens: Math.max(0, contextWindow - totalTokens) } : {}),
 		confidence: totalTokens === undefined ? "estimated" : "mixed",
 		items: applyShares(items, displayTotal),
-		notes: [
-			"Context breakdown uses provider-aware tokenization where available; exact total still comes from Pi/provider usage.",
-			"Lazy-cleared skills may remain in context until hard clear/compaction.",
-		],
+		notes: ["Context breakdown uses provider-aware tokenization where available; exact total still comes from Pi/provider usage."],
 	};
 }
 
@@ -108,24 +103,23 @@ function formatContextFilesNote(options: BuildSystemPromptOptions | undefined): 
 
 interface SkillEstimate {
 	tokens: number;
-	active: number;
-	retainedInactive: number;
+	disclosures: number;
 }
 
 async function estimateSkillContext(entries: SessionEntry[], counter: TokenCounterScope): Promise<SkillEstimate> {
-	const state = computeSkillContextState(entries);
-	const text = collectInjectedSkillContextTexts(entries).join("\n");
-
+	const messages = entries.filter((entry): entry is Extract<SessionEntry, { type: "custom_message" }> =>
+		entry.type === "custom_message" && entry.customType === SKILL_CONTEXT_MESSAGE);
+	let tokens = 0;
+	for (const message of messages) tokens += await estimateContent(message.content, counter);
 	return {
-		tokens: await estimateTokens(text.trim(), counter),
-		active: state.active.length,
-		retainedInactive: state.retained.filter((skill) => !state.active.some((active) => active.name === skill.name)).length,
+		tokens,
+		disclosures: messages.length,
 	};
 }
 
 function formatSkillContextNote(stats: SkillEstimate): string | undefined {
 	if (stats.tokens <= 0) return undefined;
-	return `${stats.active} active, ${stats.retainedInactive} retained`;
+	return `${stats.disclosures} manual disclosures`;
 }
 
 function extractTaggedSection(text: string, tag: string): string {
@@ -164,7 +158,7 @@ async function estimateMessages(entries: SessionEntry[], counter: TokenCounterSc
 
 	for (const entry of entries) {
 		if (entry.type === "custom_message") {
-			if (entry.customType === SKILL_CONTEXT_STATUS_MESSAGE) continue;
+			if (entry.customType === SKILL_CONTEXT_MESSAGE) continue;
 			historyTokens += await estimateContent(entry.content, counter);
 			historyMessages += 1;
 			continue;

@@ -97,7 +97,7 @@ event.systemPromptOptions
 
 扩展可以在 `before_agent_start` 返回新的 `systemPrompt`，从而重写或追加默认提示词。但 provider tool definition 仍由 `name`、`description`、`parameters` 等工具定义字段生成，不等同于 system prompt 文本。
 
-本项目的 system prompt 顺序为：`custom_prompt` 或默认 `role`、`tool_policy`、可选 `skill_policy`、`append_system_prompt`、`project_context`、`subagents`、`context`。工具名、description 和参数 schema 由 provider-native tool definition 独立提供；自定义 `SYSTEM.md` 不会移除共享工具策略。
+本项目的 system prompt 顺序为：`custom_prompt` 或默认 `role`、`tool_policy`、可选 `model_invocable_skills` 与 `skill_policy`、`append_system_prompt`、`project_context`、`subagents`、`context`。工具名、description 和参数 schema 由 provider-native tool definition 独立提供；自定义 `SYSTEM.md` 不会移除共享工具策略。
 
 ## 设计建议
 
