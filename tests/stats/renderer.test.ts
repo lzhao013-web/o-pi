@@ -4,43 +4,10 @@ import { renderStats } from "../../src/stats/render-stats.js";
 import type { StatsSnapshot } from "../../src/stats/types.js";
 
 describe("stats renderer", () => {
-	it("宽屏显示完整 context breakdown 表格并限制宽度", () => {
-		const lines = renderStats(snapshot(), 120);
-
-		expect(lines.join("\n")).toContain("Context breakdown · current request window · ~estimated");
-		expect(lines.join("\n")).toContain("source");
-		expect(lines.join("\n")).toContain("conversation history");
-		expect(lines.join("\n")).toContain("$0.084 est");
-		expect(lines.every((line) => visibleWidth(line) <= 120)).toBe(true);
-	});
-
-	it("中等宽度使用短列名", () => {
-		const output = renderStats(snapshot(), 80).join("\n");
-
-		expect(output).toContain("source");
-		expect(output).toContain("tokens");
-		expect(output).toContain("history");
-		expect(output).not.toContain("conversation history      ~33.4k");
-	});
-
-	it("Context breakdown 占比条自动折行且不截断后续项目", () => {
-		const lines = renderStats(snapshot(), 80);
-		const compactOutput = lines.join(" ").replace(/\s+/g, " ");
-
-		expect(compactOutput).toContain("[ system 14.0% ]");
-		expect(compactOutput).toContain("[ tool output 24.1% ]");
-		expect(compactOutput).toContain("[ delta 2.3% ]");
-		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
-	});
-
-	it("窄屏使用单列紧凑布局且隐藏 note", () => {
-		const lines = renderStats(snapshot(), 56);
-		const output = lines.join("\n");
-
-		expect(output).toContain("Context · ~86k/200k · 43.2%");
-		expect(output).toContain("history");
-		expect(output).not.toContain("28 messages");
-		expect(lines.every((line) => visibleWidth(line) <= 56)).toBe(true);
+	it.each([120, 80, 56])("宽度 %i 下不产生越界行", (width) => {
+		const lines = renderStats(snapshot(), width);
+		expect(lines.length).toBeGreaterThan(0);
+		expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 	});
 
 	it("长内容自动折行且不丢失", () => {

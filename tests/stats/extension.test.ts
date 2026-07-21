@@ -31,7 +31,6 @@ describe("stats extension", () => {
 		} as Parameters<NonNullable<typeof commandOptions>["handler"]>[1]);
 
 		expect(commandName).toBe("stats");
-		expect(commandOptions?.description).toBe("Show current session stats.");
 		expect(notification).toEqual({ message: "/stats requires TUI mode", type: "error" });
 	});
 

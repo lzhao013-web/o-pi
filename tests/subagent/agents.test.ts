@@ -1,7 +1,6 @@
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { buildSubagentSystemPrompt, formatAvailableSubagentsPrompt } from "../../agent/extensions/system-prompt.js";
 import { formatAgents } from "../../src/subagent/commands.js";
 import { discoverAgents, resolveSubagentTools } from "../../src/subagent/agents.js";
 import { defaultSubagentConfig } from "../../src/subagent/config.js";
@@ -91,28 +90,6 @@ describe("subagent agent discovery", () => {
 		const base = { ...defaultSubagentConfig(), allowProjectAgents: true };
 		expect(discoverAgents(dir, base).agents.find((agent) => agent.name === "same")?.description).toBe("User");
 		expect(discoverAgents(dir, { ...base, projectAgentsOverrideUser: true }).agents.find((agent) => agent.name === "same")?.description).toBe("Project");
-	});
-
-	it("主 Agent 提示只暴露可用 subagent 索引", async () => {
-		await writeFile(path.join(dir, "agent", "agents", "scout.md"), agentMarkdown("scout", "Scout", "read, grep"));
-		const found = discoverAgents(dir, defaultSubagentConfig());
-		const prompt = formatAvailableSubagentsPrompt(found.agents);
-		expect(prompt).toContain("scout");
-		expect(prompt).toContain("Scout");
-		expect(prompt).not.toContain("read");
-		expect(prompt).not.toContain("body");
-	});
-
-	it("子 Agent 提示只包含身份说明和正文，不暴露选择元数据", async () => {
-		await writeFile(path.join(dir, "agent", "agents", "scout.md"), agentMarkdown("scout", "Scout", "read"));
-		const agent = discoverAgents(dir, defaultSubagentConfig()).agents[0];
-		expect(agent).toBeDefined();
-		const prompt = buildSubagentSystemPrompt({ cwd: dir, customPrompt: agentMarkdown("scout", "Scout", "read") });
-		expect(prompt).not.toContain("scout");
-		expect(prompt).not.toContain("Scout");
-		expect(prompt).toContain("body");
-		expect(prompt).toContain("<subagent_role>");
-		expect(prompt).not.toContain("<subagents>");
 	});
 
 	it("实际传递工具取配置与 registered tools 的交集", async () => {

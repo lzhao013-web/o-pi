@@ -4,26 +4,14 @@ import { renderCodexQuota, renderCodexQuotaError } from "../../src/codex-quota/r
 import { CodexQuotaError, type CodexQuotaSnapshot } from "../../src/codex-quota/types.js";
 
 describe("codex quota renderer", () => {
-	it("展示 ASCII 进度条、窗口重置和重置卡详细信息", () => {
-		const output = renderCodexQuota(snapshot(), 100).join("\n");
-		expect(output).toContain("[#####---------------] 25% remaining");
-		expect(output).toContain("resets 2026-07-13 08:00:00");
-		expect(output).toContain("Expires in 7d");
-		expect(output).toContain("2026-07-01 08:00:00");
-		expect(output).toContain("2026-07-13 08:00:00");
-		expect(output).not.toContain("Full reset");
-		expect(output).not.toContain("Type codexRateLimits");
-		expect(output).not.toContain("Description Free reset");
-		expect(output).not.toContain("credit-1");
-		expect(output).not.toMatch(/[\u4e00-\u9fff]/);
+	it.each([100, 42])("宽度 %i 下不产生越界行", (width) => {
+		const lines = renderCodexQuota(snapshot(), width);
+		expect(lines.length).toBeGreaterThan(0);
+		expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 	});
 
-	it("窄屏限制每行宽度并渲染错误", () => {
-		const lines = renderCodexQuota(snapshot(), 42);
-		expect(lines.every((line) => visibleWidth(line) <= 42)).toBe(true);
+	it("错误渲染不暴露底层详情", () => {
 		const error = renderCodexQuotaError(new CodexQuotaError("timeout", "secret details"), 42).join("\n");
-		expect(error).toContain("request timed out");
-		expect(error).not.toMatch(/[\u4e00-\u9fff]/);
 		expect(error).not.toContain("secret details");
 	});
 

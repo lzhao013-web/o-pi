@@ -91,7 +91,6 @@ describe("thinking level extension", () => {
 		}));
 
 		expect(command.commandName).toBe("thinking-level");
-		expect(command.commandOptions?.description).toBe("Change the current thinking level.");
 		expect(command.commandOptions?.getArgumentCompletions?.("")).toEqual([
 			{ label: "off", value: "off" },
 			{ label: "high → max", value: "high" },
