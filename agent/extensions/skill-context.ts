@@ -1,10 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { registerSkillCommands } from "../../src/skill-context/commands.js";
 import { executeSkillLoad, SkillLoadError } from "../../src/skill-context/executor.js";
 import { collectSkillCandidates } from "../../src/skill-context/loader.js";
-import { registerSkillMessageRenderer, renderSkillCall, renderSkillDetails } from "../../src/skill-context/renderer.js";
+import { registerSkillMessageRenderer, renderSkillCall, renderSkillResult } from "../../src/skill-context/renderer.js";
 import type { SkillCandidate, SkillLoadDetails, SkillToolErrorDetails } from "../../src/skill-context/types.js";
 import { defineToolTelemetry } from "../../src/telemetry/projection.js";
 import { registerObservedTool } from "../../src/telemetry/tool.js";
@@ -56,13 +55,9 @@ function registerSkillTool(pi: ExtensionAPI): void {
 					return { content: [{ type: "text", text: `<error tool="skill">${escapeXml(message)}</error>` }], details };
 				}
 			},
-			renderCall(params, theme) {
-				return renderSkillCall(params.name, theme);
-			},
-			renderResult(result, options, theme) {
-				if (isSkillLoadDetails(result.details)) return renderSkillDetails(result.details, options.expanded, theme);
-				const message = isFailedSkillDetails(result.details) ? result.details.error.message : "skill loading failed.";
-				return new Text(theme.fg("error", message), 0, 0);
+			renderCall: renderSkillCall,
+			renderResult(result, options, theme, context) {
+				return renderSkillResult(result.details, options, theme, context);
 			},
 		},
 		telemetry: defineToolTelemetry<{ name: string }, SkillToolDetails>({
@@ -87,10 +82,6 @@ function registerSkillTool(pi: ExtensionAPI): void {
 
 function isFailedSkillDetails(value: unknown): value is SkillToolErrorDetails {
 	return typeof value === "object" && value !== null && "status" in value && value.status === "failed";
-}
-
-function isSkillLoadDetails(value: unknown): value is SkillLoadDetails {
-	return typeof value === "object" && value !== null && "deduplicated" in value && typeof value.deduplicated === "boolean";
 }
 
 function escapeXml(value: string): string {
