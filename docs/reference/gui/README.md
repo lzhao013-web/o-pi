@@ -16,6 +16,8 @@ Desktop 和 Web 共用 React 界面与 SDK 宿主。日常操作见 [GUI 使用�
 
 模型与 MCP 的设置分别见[模型](../models/README.md)和 [MCP](../mcp/README.md)。通用模块设置沿用[配置分层](../runtime/configuration.md)。
 
+启用[查询编排器插件](../../../plugins/orchestrator/README.md#webdesktop-执行视图)后，聊天中可查看阶段、并发操作、条件、实时状态和步骤结果。
+
 ## SDK 更新日志
 
 应用从随包分发的 SDK `CHANGELOG.md` 读取更新日志，在首次打开空会话时展示。已读状态使用 `settings.json.lastChangelogVersion`，与 TUI 共用。首次使用只建立版本基线，实际展示后才更新已读版本。

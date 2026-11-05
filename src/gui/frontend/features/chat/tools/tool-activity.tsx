@@ -6,6 +6,7 @@ import { Disclosure } from "@/ui/disclosure.tsx";
 import { ActivityError, errorSummary } from "./tool-display.tsx";
 import { ToolSummary } from "./tool-summary.tsx";
 import { CodemodeActivity } from "./codemode-activity.tsx";
+import { OrchestratorActivity } from "./orchestrator-activity.tsx";
 import { ToolBody } from "./tool-body.tsx";
 import { ParameterValue } from "./tool-parameters.tsx";
 import { sameToolActivity, type ToolActivity as Activity } from "./activity.ts";
@@ -14,7 +15,9 @@ import { SkillCard } from "../messages/skill-card.tsx";
 import { isSkillLoadDetails } from "../../../../shared/messages/skill-facts.ts";
 
 export const ToolActivity = memo(function ToolActivity({ tool }: { tool: Activity }) {
-	return tool.name === "codemode" ? <CodemodeActivity tool={tool} /> : <StandardToolActivity tool={tool} />;
+	if (tool.name === "codemode") return <CodemodeActivity tool={tool} />;
+	if (tool.name === "orchestrate") return <OrchestratorActivity tool={tool} />;
+	return <StandardToolActivity tool={tool} />;
 }, (before, after) => sameToolActivity(before.tool, after.tool));
 
 function StandardToolActivity({ tool }: { tool: Activity }) {

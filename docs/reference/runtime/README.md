@@ -40,6 +40,8 @@ opi -ne -e ./my-extension.ts
 
 `/reload` 重新读取外部扩展和资源并重建状态。静态集成代码修改后需要重新构建和启动。
 
+仓库提供可选的[查询编排器插件](../../../plugins/orchestrator/README.md)，支持只读工具的串行、限并发调用和简单条件判断。
+
 ## 工具注册
 
 `src/harness/register-tool.ts` 组合工具定义、参数修复和遥测投影。执行结果同时提供模型可见的 `content` 和宿主使用的 `details`，支持结构化返回的工具还声明 `outputSchema`。
